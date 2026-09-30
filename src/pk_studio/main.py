@@ -9,6 +9,7 @@ from pk_studio.ui.tabs.tab_data import DataTab
 from pk_studio.ui.tabs.tab_autolabeler import AutoLabelerTab
 from pk_studio.ui.tabs.tab_curator_splitter import CuratorSplitterTab
 from pk_studio.ui.tabs.tab_analytics import AnalyticsTab
+from pk_studio.ui.tabs.tab_zone_editor import ZoneEditorTab
 from pk_studio.ui.tabs.tab_other import OtherTab
 
 
@@ -20,6 +21,7 @@ class PKStudioApp:
         ("autolabeler", "◇", "Label", "Annotate and review objects"),
         ("curator_splitter", "✂", "Curate", "Select, balance and split data"),
         ("analytics", "◫", "Analytics", "Understand dataset quality and shape"),
+        ("zone_editor", "⬡", "Zone", "Draw polygon zones on video frames"),
         ("other", "⋯", "Other", "Extra video utilities"),
     ]
 
@@ -28,6 +30,7 @@ class PKStudioApp:
         "autolabeler": ("Label", "Create, review and refine bounding-box annotations."),
         "curator_splitter": ("Curate", "Select the most useful samples and prepare splits."),
         "analytics": ("Analytics", "See the distribution and structure of your dataset."),
+        "zone_editor": ("Zone", "Draw polygon zones on a video frame for zone-based detection."),
         "other": ("Other", "Extra video utilities that sit outside the main dataset workflow."),
     }
 
@@ -70,6 +73,7 @@ class PKStudioApp:
             "autolabeler": AutoLabelerTab(self.workspace),
             "curator_splitter": CuratorSplitterTab(self.workspace),
             "analytics": AnalyticsTab(self.workspace),
+            "zone_editor": ZoneEditorTab(self.workspace),
             "other": OtherTab(self.workspace),
         }
 
