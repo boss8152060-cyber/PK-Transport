@@ -205,8 +205,8 @@ class ZoneEditorTab(ttk.Frame):
         self.canvas.bind("<Motion>", self._on_canvas_motion)
         self.canvas.bind("<Return>", lambda e: self._finish_zone())
         self.canvas.bind("<MouseWheel>", self._on_mouse_wheel)
-        self.canvas.bind("<Button-4>", lambda e: self._change_zoom(0.15))   # Linux scroll up
-        self.canvas.bind("<Button-5>", lambda e: self._change_zoom(-0.15))  # Linux scroll down
+        self.canvas.bind("<Button-4>", lambda e: self._zoom_at(e.x, e.y, 0.15))   # Linux scroll up
+        self.canvas.bind("<Button-5>", lambda e: self._zoom_at(e.x, e.y, -0.15))  # Linux scroll down
 
         # The side panel is wrapped in its own scrollable canvas so that on
         # a short window (or with several presets/zones) every section is
@@ -608,9 +608,35 @@ class ZoneEditorTab(ttk.Frame):
         self.zoom_level = max(0.25, min(8.0, self.zoom_level + delta))
         self.render()
 
+    def _zoom_at(self, screen_x, screen_y, delta):
+        """Zoom in/out while keeping the image point under the cursor fixed
+        on screen, instead of always zooming toward the canvas center."""
+        if self.cv_frame is None:
+            self._change_zoom(delta)
+            return
+
+        ox, oy = self.canvas_to_orig(screen_x, screen_y)
+        new_zoom = max(0.25, min(8.0, self.zoom_level + delta))
+        if new_zoom == self.zoom_level:
+            return
+        self.zoom_level = new_zoom
+
+        cw = self.canvas.winfo_width() or 800
+        ch = self.canvas.winfo_height() or 600
+        scale_base = min(cw / self.orig_w, ch / self.orig_h)
+        new_render_scale = scale_base * new_zoom
+        new_w = int(self.orig_w * new_render_scale)
+        new_h = int(self.orig_h * new_render_scale)
+
+        # Solve for the pan that keeps (ox, oy) under (screen_x, screen_y).
+        self.pan_x = int(screen_x - ox * new_render_scale - (cw - new_w) // 2)
+        self.pan_y = int(screen_y - oy * new_render_scale - (ch - new_h) // 2)
+
+        self.render()
+
     def _on_mouse_wheel(self, event):
         delta = 0.15 if event.delta > 0 else -0.15
-        self._change_zoom(delta)
+        self._zoom_at(event.x, event.y, delta)
 
     def canvas_to_orig(self, cx, cy):
         ox = int((cx - self.offset_x) / self.render_scale)
