@@ -10,7 +10,7 @@ on each frame (e.g. for PET / Gap Acceptance analysis at access points).
 Workflow:
   1. Open a video.
   2. Scrub to a clear reference frame (scrubber + frame step buttons).
-  3. Set a zone name + type first (optional but handy), then left-click on
+  3. Set a zone name first (optional but handy), then left-click on
      the canvas to place polygon vertices (>= 3 points).
   4. Right-click removes the last placed vertex while drawing.
   5. Click back near the first point (it grows a white ring) to snap-close
@@ -40,8 +40,6 @@ VIDEO_FILETYPES = [
     ("Video files", "*.mp4 *.avi *.mov *.mkv *.MP4 *.AVI *.MOV *.MKV"),
     ("All files", "*.*"),
 ]
-
-ZONE_TYPE_PRESETS = ["entry", "exit", "conflict", "detection", "other"]
 
 SNAP_RADIUS_PX = 12    # canvas-space distance (screen px) that snaps/closes the polygon
 VERTEX_HIT_PX = 10     # canvas-space distance (screen px) that counts as "clicked this vertex"
@@ -107,9 +105,9 @@ class ZoneEditorTab(ttk.Frame):
         self.mouse_orig_pos = None       # last known mouse position, orig pixel coords
         self.zones_file = ""
 
-        # Zone name/type presets — set up before drawing, then recall with
+        # Zone name presets — set up before drawing, then recall with
         # number keys 1-9 + Enter instead of retyping every time.
-        self.zone_presets = []     # list of {"name":..., "type":...}
+        self.zone_presets = []     # list of {"name": ...}
 
         # Canvas render state
         self.zoom_level = 1.0
@@ -187,29 +185,49 @@ class ZoneEditorTab(ttk.Frame):
         self.canvas.bind("<Button-4>", lambda e: self._change_zoom(0.15))   # Linux scroll up
         self.canvas.bind("<Button-5>", lambda e: self._change_zoom(-0.15))  # Linux scroll down
 
-        side = ttk.Frame(body, padding=(6, 0, 6, 10))
+        # The side panel is wrapped in its own scrollable canvas so that on
+        # a short window (or with several presets/zones) every section is
+        # still reachable by scrolling — nothing gets silently clipped off.
+        side_container = ttk.Frame(body)
+        side_canvas = tk.Canvas(side_container, highlightthickness=0, bg=COLORS["main_bg"])
+        side_scroll = ttk.Scrollbar(side_container, orient="vertical", command=side_canvas.yview)
+        side_canvas.configure(yscrollcommand=side_scroll.set)
+        side_canvas.pack(side="left", fill="both", expand=True)
+        side_scroll.pack(side="right", fill="y")
+
+        side = ttk.Frame(side_canvas, padding=(6, 0, 6, 10))
+        side_window = side_canvas.create_window((0, 0), window=side, anchor="nw")
+
+        def _sync_scrollregion(_event=None):
+            side_canvas.configure(scrollregion=side_canvas.bbox("all"))
+
+        def _sync_side_width(event):
+            side_canvas.itemconfig(side_window, width=event.width)
+
+        side.bind("<Configure>", _sync_scrollregion)
+        side_canvas.bind("<Configure>", _sync_side_width)
+
+        def _on_side_wheel(event):
+            side_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        def _bind_wheel(_e):
+            side_canvas.bind_all("<MouseWheel>", _on_side_wheel)
+
+        def _unbind_wheel(_e):
+            side_canvas.unbind_all("<MouseWheel>")
+
+        side_canvas.bind("<Enter>", _bind_wheel)
+        side_canvas.bind("<Leave>", _unbind_wheel)
 
         body.add(canvas_frame, weight=3)
-        body.add(side, weight=1)
+        body.add(side_container, weight=1)
 
-        instr = ttk.LabelFrame(side, text="How to draw / edit a zone")
-        instr.pack(fill="x", pady=(0, 8))
-        ttk.Label(
-            instr,
-            wraplength=290,
-            justify="left",
-            text=(
-                "1) Left-click to place polygon points (need 3+)\n"
-                "2) Right-click to undo the last point\n"
-                "3) Set a name + type below (before or after drawing)\n"
-                "4) Click back near the first point, press Enter, double-click, "
-                "or press \"Finish Zone\" to close it\n"
-                "5) Select a zone in the list below to drag its points; "
-                "right-click a point to delete it"
-            ),
-        ).pack(padx=8, pady=8, anchor="w")
+        ttk.Button(
+            side, text="❓ How to draw / edit a zone", style="Secondary.TButton",
+            command=self._show_help_popup,
+        ).pack(fill="x", pady=(0, 8))
 
-        preset_box = ttk.LabelFrame(side, text="Zone presets (set up first, recall with 1-9 + Enter)")
+        preset_box = ttk.LabelFrame(side, text="Zone name presets (set up first, recall with 1-9 + Enter)")
         preset_box.pack(fill="x", pady=(0, 8))
 
         preset_add_row = ttk.Frame(preset_box)
@@ -217,9 +235,6 @@ class ZoneEditorTab(ttk.Frame):
         self.entry_preset_name = ttk.Entry(preset_add_row)
         self.entry_preset_name.pack(side="left", fill="x", expand=True, padx=(0, 4))
         self.entry_preset_name.bind("<Return>", lambda e: self._add_preset())
-        self.cb_preset_type = ttk.Combobox(preset_add_row, values=ZONE_TYPE_PRESETS, width=10, state="normal")
-        self.cb_preset_type.set(ZONE_TYPE_PRESETS[0])
-        self.cb_preset_type.pack(side="left", padx=(0, 4))
         ttk.Button(preset_add_row, text="+ Add", width=6, command=self._add_preset).pack(side="left")
 
         self.list_presets = tk.Listbox(preset_box, height=4, exportselection=False)
@@ -231,7 +246,7 @@ class ZoneEditorTab(ttk.Frame):
             wraplength=290,
             justify="left",
             foreground=COLORS["text_muted"],
-            text="While drawing (or before), press 1-9 to load a preset's name+type into the fields below, then Enter to finish the zone.",
+            text="While drawing (or before), press 1-9 to load a preset's name into the field below, then Enter to finish the zone.",
         ).pack(padx=8, pady=(0, 8), anchor="w")
 
         new_zone_box = ttk.LabelFrame(side, text="New zone")
@@ -241,12 +256,6 @@ class ZoneEditorTab(ttk.Frame):
         self.entry_zone_name = ttk.Entry(new_zone_box)
         self.entry_zone_name.pack(fill="x", padx=8, pady=(2, 6))
         self.entry_zone_name.bind("<Return>", lambda e: self._finish_zone())
-
-        ttk.Label(new_zone_box, text="Zone type:").pack(anchor="w", padx=8)
-        self.cb_zone_type = ttk.Combobox(new_zone_box, values=ZONE_TYPE_PRESETS, state="normal")
-        self.cb_zone_type.set(ZONE_TYPE_PRESETS[0])
-        self.cb_zone_type.pack(fill="x", padx=8, pady=(2, 8))
-        self.cb_zone_type.bind("<Return>", lambda e: self._finish_zone())
 
         btn_row = ttk.Frame(new_zone_box)
         btn_row.pack(fill="x", padx=8, pady=(0, 8))
@@ -265,18 +274,16 @@ class ZoneEditorTab(ttk.Frame):
         ).pack(anchor="w", padx=8, pady=(8, 2))
 
         self.tree_zones = ttk.Treeview(
-            list_box, columns=("type", "pts", "area", "lbl"), show="tree headings", height=8, selectmode="browse"
+            list_box, columns=("pts", "area", "lbl"), show="tree headings", height=8, selectmode="browse"
         )
         self.tree_zones.heading("#0", text="Name")
-        self.tree_zones.heading("type", text="Type")
         self.tree_zones.heading("pts", text="Pts")
         self.tree_zones.heading("area", text="Area px\u00b2")
         self.tree_zones.heading("lbl", text="Label")
-        self.tree_zones.column("#0", width=90, minwidth=60)
-        self.tree_zones.column("type", width=60, minwidth=40)
-        self.tree_zones.column("pts", width=26, minwidth=22, anchor="center")
-        self.tree_zones.column("area", width=56, minwidth=44, anchor="e")
-        self.tree_zones.column("lbl", width=40, minwidth=36, anchor="center")
+        self.tree_zones.column("#0", width=120, minwidth=60)
+        self.tree_zones.column("pts", width=30, minwidth=24, anchor="center")
+        self.tree_zones.column("area", width=64, minwidth=44, anchor="e")
+        self.tree_zones.column("lbl", width=44, minwidth=36, anchor="center")
         self.tree_zones.pack(fill="both", expand=True, padx=8, pady=(0, 8))
         self.tree_zones.bind("<<TreeviewSelect>>", self._on_zone_select)
         self.tree_zones.bind("<Delete>", lambda e: self._delete_selected_zone())
@@ -446,7 +453,7 @@ class ZoneEditorTab(ttk.Frame):
     def _refresh_preset_list(self):
         self.list_presets.delete(0, tk.END)
         for i, p in enumerate(self.zone_presets, start=1):
-            self.list_presets.insert(tk.END, f"{i}. {p['name']} ({p['type']})")
+            self.list_presets.insert(tk.END, f"{i}. {p['name']}")
 
     def _add_preset(self):
         name = self.entry_preset_name.get().strip()
@@ -456,8 +463,7 @@ class ZoneEditorTab(ttk.Frame):
         if len(self.zone_presets) >= MAX_PRESETS:
             messagebox.showwarning("Preset limit", f"Only {MAX_PRESETS} presets are supported (keys 1-{MAX_PRESETS}).")
             return
-        ztype = self.cb_preset_type.get().strip() or "other"
-        self.zone_presets.append({"name": name, "type": ztype})
+        self.zone_presets.append({"name": name})
         self.entry_preset_name.delete(0, tk.END)
         self._refresh_preset_list()
 
@@ -471,14 +477,27 @@ class ZoneEditorTab(ttk.Frame):
 
     def _apply_preset(self, idx):
         if idx < 0 or idx >= len(self.zone_presets):
-            self.status_label.config(text=f"No preset #{idx + 1} — add one in \u201cZone presets\u201d first.")
+            self.status_label.config(text=f"No preset #{idx + 1} — add one in \u201cZone name presets\u201d first.")
             return
         preset = self.zone_presets[idx]
         self.entry_zone_name.delete(0, tk.END)
         self.entry_zone_name.insert(0, preset["name"])
-        self.cb_zone_type.set(preset["type"])
         self.status_label.config(
-            text=f"Preset {idx + 1} selected: '{preset['name']}' ({preset['type']}) \u2014 press Enter to finish the zone."
+            text=f"Preset {idx + 1} selected: '{preset['name']}' \u2014 press Enter to finish the zone."
+        )
+
+    def _show_help_popup(self):
+        messagebox.showinfo(
+            "How to draw / edit a zone",
+            "1) Left-click to place polygon points (need 3+)\n"
+            "2) Right-click to undo the last point\n"
+            "3) Set a name below (before or after drawing) \u2014 or press 1-9 "
+            "to recall a preset name\n"
+            "4) Click back near the first point, press Enter, double-click, "
+            "or press \"Finish Zone\" to close it\n"
+            "5) Select a zone in the list below to drag its points; "
+            "right-click a point to delete it",
+            parent=self,
         )
 
 
@@ -622,14 +641,12 @@ class ZoneEditorTab(ttk.Frame):
             messagebox.showwarning("Missing name", "Please name the zone before finishing it.")
             return
 
-        ztype = self.cb_zone_type.get().strip() or "other"
         color = ZONE_PALETTE_BGR[len(self.zones) % len(ZONE_PALETTE_BGR)]
         area_px = self._polygon_area(self.current_points)
 
         zone = {
             "id": f"zone_{uuid.uuid4().hex[:8]}",
             "name": name,
-            "type": ztype,
             "points": [[int(x), int(y)] for x, y in self.current_points],
             "area_px": round(area_px, 2),
             "color_bgr": list(color),
@@ -644,7 +661,7 @@ class ZoneEditorTab(ttk.Frame):
         self._refresh_zone_list()
         self.render()
         self.status_label.config(
-            text=f"Added zone '{name}' ({ztype}) — {len(zone['points'])} points, area \u2248 {area_px:,.0f} px\u00b2."
+            text=f"Added zone '{name}' — {len(zone['points'])} points, area \u2248 {area_px:,.0f} px\u00b2."
         )
 
     # =====================================================================
@@ -660,7 +677,7 @@ class ZoneEditorTab(ttk.Frame):
                 z["area_px"] = round(area, 2)
             self.tree_zones.insert(
                 "", "end", iid=str(i), text=z["name"],
-                values=(z["type"], len(z["points"]), _format_area(z["area_px"]), "on" if z.get("show_label", True) else "off"),
+                values=(len(z["points"]), _format_area(z["area_px"]), "on" if z.get("show_label", True) else "off"),
             )
         if keep_selection and selected:
             try:
@@ -752,7 +769,6 @@ class ZoneEditorTab(ttk.Frame):
             zones_out.append({
                 "id": z["id"],
                 "name": z["name"],
-                "type": z["type"],
                 "points": pts,
                 "points_norm": pts_norm,
                 "area_px": z.get("area_px", self._polygon_area(pts)),
@@ -806,7 +822,6 @@ class ZoneEditorTab(ttk.Frame):
         for i, z in enumerate(loaded_zones):
             z.setdefault("id", f"zone_{uuid.uuid4().hex[:8]}")
             z.setdefault("color_bgr", list(ZONE_PALETTE_BGR[i % len(ZONE_PALETTE_BGR)]))
-            z.setdefault("type", "other")
             z.setdefault("show_label", True)
 
         self.zones = loaded_zones
@@ -838,7 +853,6 @@ class ZoneEditorTab(ttk.Frame):
             lines.append("    {")
             lines.append(f'        "id": {z["id"]!r},')
             lines.append(f'        "name": {z["name"]!r},')
-            lines.append(f'        "type": {z["type"]!r},')
             lines.append(f'        "points": [{pts_tuple}],')
             lines.append(f'        "area_px": {area:.2f},')
             lines.append("    },")
@@ -1004,7 +1018,7 @@ class ZoneEditorTab(ttk.Frame):
                 cx = int(sum(p[0] for p in pts) / len(pts) * self.render_scale)
                 cy = int(sum(p[1] for p in pts) / len(pts) * self.render_scale)
 
-                label = f" {zone['name']} ({zone['type']}) "
+                label = f" {zone['name']} "
                 l, t, r, b = draw.textbbox((0, 0), label, font=font)
                 tw, th = r - l, b - t
                 rect = (cx - tw // 2 - 3, cy - th - 6, cx + tw // 2 + 3, cy + 6)
