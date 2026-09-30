@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.3.8
+- Auto-Label and Batch work without a YOLO model: choose "No" at the prompt and PK Studio labels from boxes you already drew (multi-scale template matching, `core/reference_labeler.py`).
+- Reference mode skips images that already have labels in Batch, never modifies existing labels, and asks for a match threshold (default 0.70).
+- Worker threads no longer touch Tk directly; all UI updates from jobs go through `UiQueue`.
+
 ## 1.3.7
 - Fixed `build_yolo_dataset` overwriting images that share a file name in different sub-folders.
 - Fixed `copy_background=False` copying unlabeled images anyway.
