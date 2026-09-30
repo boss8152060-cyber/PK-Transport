@@ -581,8 +581,28 @@ def extract_frames(
     return saved_count
 
 
+def _video_output_dir(video_path, output_dir, source_root=None, preserve_structure=True):
+    """Return the output folder for one video.
+
+    When source_root is provided, preserve the source folder hierarchy below
+    that root, then create one folder named after the video stem.  When no
+    source_root is provided, keep the original behavior: output_dir/video_stem.
+    """
+    video_path = Path(video_path)
+    output_dir = Path(output_dir)
+    if preserve_structure and source_root:
+        source_root = Path(source_root)
+        try:
+            relative_parent = video_path.resolve().parent.relative_to(source_root.resolve())
+            return output_dir / relative_parent / video_path.stem
+        except ValueError:
+            # If the video is not below source_root, fall back safely.
+            pass
+    return output_dir / video_path.stem
+
+
 def _process_videos_parallel(
-    videos, output_dir, log, cancel_event, video_progress_callback, progress_callback, max_workers, **kwargs
+    videos, output_dir, log, cancel_event, video_progress_callback, progress_callback, max_workers, source_root=None, **kwargs
 ):
     """ thread pool (OpenCV  GIL /
      thread  process) """
@@ -624,7 +644,7 @@ def _process_videos_parallel(
         return cb
 
     def worker(v):
-        sub_out = Path(output_dir) / v.stem
+        sub_out = _video_output_dir(v, output_dir, source_root=source_root)
         prefixed_log = lambda msg, _name=v.name: log(f"[{_name}] {msg}")
         n = extract_frames(
             v, sub_out, log=prefixed_log, cancel_event=cancel_event,
@@ -661,7 +681,11 @@ def process_input(
     total = 0
 
     if input_path.is_dir():
-        videos = sorted(p for p in input_path.iterdir() if p.suffix.lower() in VIDEO_EXTENSIONS)
+        videos = sorted(
+            (p for p in input_path.rglob("*")
+             if p.is_file() and p.suffix.lower() in VIDEO_EXTENSIONS),
+            key=lambda p: str(p).lower(),
+        )
         if not videos:
             log(f"[WARN] : {input_path}")
             return 0
@@ -670,7 +694,7 @@ def process_input(
             total = _process_videos_parallel(
                 videos, output_dir, log=log, cancel_event=cancel_event,
                 video_progress_callback=video_progress_callback, progress_callback=progress_callback,
-                max_workers=max_workers, **kwargs
+                max_workers=max_workers, source_root=input_path, **kwargs
             )
         else:
             for i, v in enumerate(videos, start=1):
@@ -679,7 +703,7 @@ def process_input(
                     break
                 if video_progress_callback is not None:
                     video_progress_callback(i, len(videos), v.name)
-                sub_out = Path(output_dir) / v.stem
+                sub_out = _video_output_dir(v, output_dir, source_root=input_path)
                 total += extract_frames(
                     v, sub_out, log=log, cancel_event=cancel_event,
                     progress_callback=progress_callback, **kwargs
@@ -1290,6 +1314,7 @@ def launch_gui(parent=None, visible_tools=None):
 
     extract_queue = []  # queued videos; each item stores path and metadata
     output_var = tk.StringVar(value=str(Path.cwd() / "output_frames"))
+    output_structure_var = tk.StringVar(value="preserve")
     mode_var = tk.StringVar(value="fps")
     rate_var = tk.StringVar(value="1")
     format_var = tk.StringVar(value="jpg")
@@ -1349,11 +1374,20 @@ def launch_gui(parent=None, visible_tools=None):
         folder = filedialog.askdirectory(title="Select a folder containing videos")
         if not folder:
             return
-        found = sorted(p for p in Path(folder).iterdir() if p.suffix.lower() in VIDEO_EXTENSIONS)
+        # Recursive scan: search for videos in the selected folder
+        # and every subfolder, at any depth.
+        found = sorted(
+            (p for p in Path(folder).rglob("*")
+             if p.is_file() and p.suffix.lower() in VIDEO_EXTENSIONS),
+            key=lambda p: str(p).lower(),
+        )
         if not found:
-            messagebox.showinfo("No videos found", "No video files found in the selected folder.")
+            messagebox.showinfo(
+                "No videos found",
+                "No video files were found in the selected folder or any subfolder.",
+            )
             return
-        new_items = [{"path": str(p), "info": None} for p in found]
+        new_items = [{"path": str(p), "info": None, "source_root": str(Path(folder))} for p in found]
         extract_queue.extend(new_items)
         queue_refresh_listbox()
         probe_queue_items(new_items)
@@ -1391,7 +1425,7 @@ def launch_gui(parent=None, visible_tools=None):
     queue_btn_row = ttk.Frame(frm_in)
     queue_btn_row.pack(fill="x", padx=6, pady=(0, 6))
     ttk.Button(queue_btn_row, text="+ Add Videos...", command=queue_add_files).pack(side="left", padx=(0, 4))
-    ttk.Button(queue_btn_row, text="+ Add Folder...", command=queue_add_folder).pack(side="left", padx=4)
+    ttk.Button(queue_btn_row, text="+ Add Folder (All Subfolders)...", command=queue_add_folder).pack(side="left", padx=4)
     ttk.Button(queue_btn_row, text="- Remove Selected", command=queue_remove_selected).pack(side="left", padx=4)
     ttk.Button(queue_btn_row, text="▲ Move Up", command=queue_move_up).pack(side="left", padx=4)
     ttk.Button(queue_btn_row, text="▼ Move Down", command=queue_move_down).pack(side="left", padx=4)
@@ -1427,6 +1461,22 @@ def launch_gui(parent=None, visible_tools=None):
 
     ttk.Button(frm_out, text="Browse...", command=pick_output).pack(side="left", padx=2)
     ttk.Button(frm_out, text="+ New Folder...", command=create_named_folder).pack(side="left", padx=2)
+
+    frm_structure = ttk.Frame(content)
+    frm_structure.pack(fill="x", padx=10, pady=(0, 8))
+    ttk.Label(frm_structure, text="Output Structure:").pack(side="left", padx=(0, 10))
+    ttk.Radiobutton(
+        frm_structure,
+        text="Preserve original folder structure",
+        variable=output_structure_var,
+        value="preserve",
+    ).pack(side="left", padx=(0, 12))
+    ttk.Radiobutton(
+        frm_structure,
+        text="Do not preserve structure (use Output folder only)",
+        variable=output_structure_var,
+        value="flat",
+    ).pack(side="left")
 
     # ---  ---
     frm_rate = ttk.LabelFrame(content, text="3) Frame Sampling")
@@ -1639,7 +1689,7 @@ def launch_gui(parent=None, visible_tools=None):
             messagebox.showerror("Invalid Input", str(e))
             return
 
-        parsed_items = [(item["path"], None, None) for item in extract_queue]
+        parsed_items = [(item["path"], None, None, item.get("source_root")) for item in extract_queue]
 
         fps = rate if mode_var.get() == "fps" and rate else None
         interval_frames = int(rate) if mode_var.get() == "interval" and rate else None
@@ -1664,10 +1714,13 @@ def launch_gui(parent=None, visible_tools=None):
             completed_holder = {"n": 0}
             progress_lock = threading.Lock()
 
-            def do_one(idx, path, start_sec, end_sec, progress_cb):
+            def do_one(idx, path, start_sec, end_sec, source_root, progress_cb):
                 name = Path(path).name
                 prefixed_log = (lambda msg, _n=name: log(f"[{_n}] {msg}")) if n_items > 1 else log
-                sub_out = Path(output_var.get()) / Path(path).stem
+                preserve_structure = output_structure_var.get() == "preserve"
+                sub_out = _video_output_dir(
+                    path, output_var.get(), source_root=source_root, preserve_structure=preserve_structure
+                )
                 n = extract_frames(
                     path,
                     sub_out,
@@ -1717,8 +1770,8 @@ def launch_gui(parent=None, visible_tools=None):
 
                     with ThreadPoolExecutor(max_workers=max_workers) as executor:
                         futures = {
-                            executor.submit(do_one, i, path, s, e, make_progress_cb(i)): i
-                            for i, (path, s, e) in enumerate(parsed_items)
+                            executor.submit(do_one, i, path, s, e, source_root, make_progress_cb(i)): i
+                            for i, (path, s, e, source_root) in enumerate(parsed_items)
                         }
                         for future in as_completed(futures):
                             try:
@@ -1726,9 +1779,9 @@ def launch_gui(parent=None, visible_tools=None):
                             except Exception as ex:
                                 log(f"[ERROR] {ex}")
                 else:
-                    path, start_sec, end_sec = parsed_items[0]
+                    path, start_sec, end_sec, source_root = parsed_items[0]
                     update_current_video(1, 1, Path(path).name)
-                    do_one(0, path, start_sec, end_sec, update_progress)
+                    do_one(0, path, start_sec, end_sec, source_root, update_progress)
 
                 total_saved = saved_holder["n"]
                 log(f"\n[SUMMARY]  {total_saved}   {n_items} ")

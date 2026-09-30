@@ -101,7 +101,7 @@ class ZoneEditorTab(ttk.Frame):
         # Zone state
         self.zones = []            # list of dicts (see _finish_zone)
         self.current_points = []   # in-progress polygon, orig pixel coords
-        self.selected_zone_idx = None
+        self.selected_zone_indices = set()   # supports multi-select (Ctrl/Shift-click in the list)
         self.dragging_vertex_idx = None  # index into the selected zone's points, while dragging
         self.mouse_orig_pos = None       # last known mouse position, orig pixel coords
         self._pan_drag_start = None      # (event.x, event.y) while right-button is held
@@ -286,7 +286,7 @@ class ZoneEditorTab(ttk.Frame):
         ).pack(anchor="w", padx=8, pady=(8, 2))
 
         self.tree_zones = ttk.Treeview(
-            list_box, columns=("pts", "area", "lbl"), show="tree headings", height=8, selectmode="browse"
+            list_box, columns=("pts", "area", "lbl"), show="tree headings", height=8, selectmode="extended"
         )
         self.tree_zones.heading("#0", text="Name")
         self.tree_zones.heading("pts", text="Pts")
@@ -348,7 +348,7 @@ class ZoneEditorTab(ttk.Frame):
 
         self.zones = []
         self.current_points = []
-        self.selected_zone_idx = None
+        self.selected_zone_indices = set()
         self.dragging_vertex_idx = None
         self.undo_stack = []
         self.redo_stack = []
@@ -553,9 +553,10 @@ class ZoneEditorTab(ttk.Frame):
             "name's number + Enter to recall it\n"
             "4) Click back near the first point, press Enter, double-click, "
             "or press \"Finish Zone\" to close it\n"
-            "5) Select a zone in the list to drag its points; right-click a "
-            "point to delete it\n"
-            "6) Scroll wheel zooms; Undo/Redo (or Ctrl+Z / Ctrl+Y) step through zone changes",
+            "5) Select ONE zone in the list to drag its points; right-click a "
+            "point to delete it. Ctrl/Shift-click to select several zones at "
+            "once — color, label toggle, and delete apply to all of them\n"
+            "6) Scroll wheel zooms toward the cursor; Undo/Redo (or Ctrl+Z / Ctrl+Y) step through zone changes",
             parent=self,
         )
 
@@ -577,7 +578,7 @@ class ZoneEditorTab(ttk.Frame):
             return
         self.redo_stack.append(self._snapshot())
         self.zones = self.undo_stack.pop()
-        self.selected_zone_idx = None
+        self.selected_zone_indices = set()
         self.dragging_vertex_idx = None
         self._refresh_zone_list()
         self.render()
@@ -589,7 +590,7 @@ class ZoneEditorTab(ttk.Frame):
             return
         self.undo_stack.append(self._snapshot())
         self.zones = self.redo_stack.pop()
-        self.selected_zone_idx = None
+        self.selected_zone_indices = set()
         self.dragging_vertex_idx = None
         self._refresh_zone_list()
         self.render()
@@ -659,6 +660,13 @@ class ZoneEditorTab(ttk.Frame):
     # =====================================================================
     # Drawing / editing interactions
     # =====================================================================
+    def _single_selected_idx(self):
+        """The one selected zone's index, for vertex-dragging — dragging
+        only makes sense when exactly one zone is selected at a time."""
+        if len(self.selected_zone_indices) == 1:
+            return next(iter(self.selected_zone_indices))
+        return None
+
     def _find_vertex_at(self, zone_idx, x, y):
         """Return the index of the closest vertex of zones[zone_idx] within
         hit-test tolerance of (x, y) in original pixel coords, or None."""
@@ -678,10 +686,13 @@ class ZoneEditorTab(ttk.Frame):
         self.canvas.focus_set()
         x, y = self.canvas_to_orig(event.x, event.y)
 
-        # If a zone is selected and we're not mid-draw, a click on one of its
-        # vertices starts dragging that vertex instead of starting a new shape.
-        if not self.current_points and self.selected_zone_idx is not None:
-            vidx = self._find_vertex_at(self.selected_zone_idx, x, y)
+        # If exactly one zone is selected and we're not mid-draw, a click on
+        # one of its vertices starts dragging that vertex instead of
+        # starting a new shape. (With several zones selected at once there's
+        # no single "the" zone to drag, so this is skipped.)
+        single_idx = self._single_selected_idx()
+        if not self.current_points and single_idx is not None:
+            vidx = self._find_vertex_at(single_idx, x, y)
             if vidx is not None:
                 self._push_undo()
                 self.dragging_vertex_idx = vidx
@@ -701,17 +712,19 @@ class ZoneEditorTab(ttk.Frame):
         self.render()
 
     def _on_canvas_drag(self, event):
-        if self.dragging_vertex_idx is None or self.selected_zone_idx is None:
+        single_idx = self._single_selected_idx()
+        if self.dragging_vertex_idx is None or single_idx is None:
             return
         x, y = self.canvas_to_orig(event.x, event.y)
-        zone = self.zones[self.selected_zone_idx]
+        zone = self.zones[single_idx]
         zone["points"][self.dragging_vertex_idx] = [x, y]
         self.render()
 
     def _on_canvas_release(self, _event):
-        if self.dragging_vertex_idx is None or self.selected_zone_idx is None:
+        single_idx = self._single_selected_idx()
+        if self.dragging_vertex_idx is None or single_idx is None:
             return
-        zone = self.zones[self.selected_zone_idx]
+        zone = self.zones[single_idx]
         zone["area_px"] = round(self._polygon_area(zone["points"]), 2)
         self._refresh_zone_list(keep_selection=True)
         self.dragging_vertex_idx = None
@@ -745,11 +758,13 @@ class ZoneEditorTab(ttk.Frame):
 
         x, y = self.canvas_to_orig(event.x, event.y)
 
-        # If a zone is selected and we're not mid-draw, right-click on one of
-        # its vertices deletes that point instead of undoing a drawn point.
-        if not self.current_points and self.selected_zone_idx is not None:
-            zone = self.zones[self.selected_zone_idx]
-            vidx = self._find_vertex_at(self.selected_zone_idx, x, y)
+        # If exactly one zone is selected and we're not mid-draw, right-click
+        # on one of its vertices deletes that point instead of undoing a
+        # drawn point.
+        single_idx = self._single_selected_idx()
+        if not self.current_points and single_idx is not None:
+            zone = self.zones[single_idx]
+            vidx = self._find_vertex_at(single_idx, x, y)
             if vidx is not None:
                 if len(zone["points"]) <= 3:
                     messagebox.showwarning("Cannot delete", "A zone needs at least 3 points.")
@@ -839,55 +854,64 @@ class ZoneEditorTab(ttk.Frame):
 
     def _on_zone_select(self, _event):
         sel = self.tree_zones.selection()
-        self.selected_zone_idx = int(sel[0]) if sel else None
+        self.selected_zone_indices = {int(s) for s in sel}
         self.render()
 
     def _rename_selected_zone(self):
-        if self.selected_zone_idx is None:
-            messagebox.showinfo("No selection", "Select a zone from the list first.")
+        if len(self.selected_zone_indices) != 1:
+            messagebox.showinfo("Select one zone", "Rename needs exactly one zone selected.")
             return
-        zone = self.zones[self.selected_zone_idx]
+        idx = next(iter(self.selected_zone_indices))
+        zone = self.zones[idx]
         new_name = simpledialog.askstring("Rename zone", "New name:", initialvalue=zone["name"])
         if new_name and new_name.strip():
             self._push_undo()
             zone["name"] = new_name.strip()
-            self._refresh_zone_list()
+            self._refresh_zone_list(keep_selection=True)
             self.render()
 
     def _change_selected_zone_color(self):
-        if self.selected_zone_idx is None:
-            messagebox.showinfo("No selection", "Select a zone from the list first.")
+        if not self.selected_zone_indices:
+            messagebox.showinfo("No selection", "Select one or more zones from the list first.")
             return
-        zone = self.zones[self.selected_zone_idx]
-        b, g, r = zone.get("color_bgr", [0, 200, 0])
+        first_zone = self.zones[min(self.selected_zone_indices)]
+        b, g, r = first_zone.get("color_bgr", [0, 200, 0])
         initial_hex = f"#{r:02x}{g:02x}{b:02x}"
-        rgb, _hexstr = colorchooser.askcolor(color=initial_hex, title=f"Color for '{zone['name']}'", parent=self)
+        title = f"Color for {len(self.selected_zone_indices)} zone(s)" if len(self.selected_zone_indices) > 1 else f"Color for '{first_zone['name']}'"
+        rgb, _hexstr = colorchooser.askcolor(color=initial_hex, title=title, parent=self)
         if rgb is None:
             return
         r, g, b = (int(round(v)) for v in rgb)
         self._push_undo()
-        zone["color_bgr"] = [b, g, r]
+        for idx in self.selected_zone_indices:
+            self.zones[idx]["color_bgr"] = [b, g, r]
         self.render()
 
     def _toggle_selected_zone_label(self):
-        if self.selected_zone_idx is None:
-            messagebox.showinfo("No selection", "Select a zone from the list first.")
+        if not self.selected_zone_indices:
+            messagebox.showinfo("No selection", "Select one or more zones from the list first.")
             return
-        zone = self.zones[self.selected_zone_idx]
         self._push_undo()
-        zone["show_label"] = not zone.get("show_label", True)
+        for idx in self.selected_zone_indices:
+            zone = self.zones[idx]
+            zone["show_label"] = not zone.get("show_label", True)
         self._refresh_zone_list(keep_selection=True)
         self.render()
 
     def _delete_selected_zone(self):
-        if self.selected_zone_idx is None:
-            messagebox.showinfo("No selection", "Select a zone from the list first.")
+        if not self.selected_zone_indices:
+            messagebox.showinfo("No selection", "Select one or more zones from the list first.")
             return
-        zone = self.zones[self.selected_zone_idx]
-        if messagebox.askyesno("Delete zone", f"Delete zone '{zone['name']}'?"):
+        if len(self.selected_zone_indices) == 1:
+            idx = next(iter(self.selected_zone_indices))
+            prompt = f"Delete zone '{self.zones[idx]['name']}'?"
+        else:
+            prompt = f"Delete {len(self.selected_zone_indices)} selected zones?"
+        if messagebox.askyesno("Delete zone", prompt):
             self._push_undo()
-            del self.zones[self.selected_zone_idx]
-            self.selected_zone_idx = None
+            for idx in sorted(self.selected_zone_indices, reverse=True):
+                del self.zones[idx]
+            self.selected_zone_indices = set()
             self._refresh_zone_list()
             self.render()
 
@@ -897,7 +921,7 @@ class ZoneEditorTab(ttk.Frame):
         if messagebox.askyesno("Clear all zones", "Delete every zone? You can Undo this afterward."):
             self._push_undo()
             self.zones = []
-            self.selected_zone_idx = None
+            self.selected_zone_indices = set()
             self._refresh_zone_list()
             self.render()
 
@@ -984,7 +1008,7 @@ class ZoneEditorTab(ttk.Frame):
         self._push_undo()
         self.zones = loaded_zones
         self.zones_file = path
-        self.selected_zone_idx = None
+        self.selected_zone_indices = set()
         self._refresh_zone_list()
         self.render()
         self.status_label.config(text=f"Loaded {len(self.zones)} zone(s) from: {path}")
@@ -1119,7 +1143,7 @@ class ZoneEditorTab(ttk.Frame):
         for idx, zone in enumerate(self.zones):
             pts = np.array(zone["points"], dtype=np.int32)
             color = tuple(zone.get("color_bgr") or ZONE_PALETTE_BGR[idx % len(ZONE_PALETTE_BGR)])
-            is_sel = (idx == self.selected_zone_idx)
+            is_sel = (idx in self.selected_zone_indices)
 
             if is_sel:
                 overlay = disp.copy()
