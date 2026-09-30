@@ -755,9 +755,13 @@ class AutoLabelerTab(ttk.Frame):
         #  winfo_toplevel() ()  self ( Frame )
         #  Frame  keyboard focus   self
         #    ()
-        self.winfo_toplevel().bind("<KeyPress>", self._on_global_keypress)
+        # add="+" so this coexists with other tabs' own root-level keypress
+        # bindings instead of silently replacing them.
+        self.winfo_toplevel().bind("<KeyPress>", self._on_global_keypress, add="+")
 
     def _on_global_keypress(self, event):
+        if not self.winfo_ismapped():
+            return  # the Label tab isn't the one currently showing
         if isinstance(self.focus_get(), (ttk.Entry, tk.Entry, tk.Text)):
             return
 
