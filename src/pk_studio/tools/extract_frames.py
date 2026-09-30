@@ -1,31 +1,31 @@
 #!/usr/bin/env python3
 """
-extract_frames.py — เครื่องมือแตกเฟรมภาพจากวิดีโอ (Multi Video Tool)
+extract_frames.py —  (Multi Video Tool)
 
-ใช้ดึงเฟรมภาพจากวิดีโอ (เช่น ฟุตเทจ CCTV) ออกมาเป็นไฟล์ภาพ .jpg/.png
-เหมาะสำหรับเตรียมข้อมูลสำหรับ label ภาพ / เทรนโมเดล YOLO ฯลฯ
+ (  CCTV)  .jpg/.png
+ label  /  YOLO 
 
-วิธีใช้แบบ CLI (บรรทัดคำสั่ง):
-    # ดึงทุกเฟรม
+ CLI ():
+    # 
     python extract_frames.py -i video.mp4 -o out_frames
 
-    # ดึง 2 เฟรมต่อวินาที
+    #  2 
     python extract_frames.py -i video.mp4 -o out_frames --fps 2
 
-    # ดึงทุกๆ 30 เฟรม (เช่น วิดีโอ 30fps จะได้ 1 ภาพ/วินาที)
+    #  30  (  30fps  1 /)
     python extract_frames.py -i video.mp4 -o out_frames --interval 30
 
-    # ดึงเฉพาะช่วงเวลา 00:07:00 ถึง 00:09:00 ของวิดีโอ
+    #  00:07:00  00:09:00 
     python extract_frames.py -i video.mp4 -o out_frames --fps 1 --start 00:07:00 --end 00:09:00
 
-    # ประมวลผลทั้งโฟลเดอร์ (ทุกวิดีโอในโฟลเดอร์) พร้อมย่อขนาดภาพ
+    #  () 
     python extract_frames.py -i videos_folder -o out_frames --fps 1 --resize 1280x720
 
-วิธีใช้แบบ GUI (หน้าต่างโปรแกรม):
+ GUI ():
     python extract_frames.py
-    (รันโดยไม่ใส่ argument ใดๆ จะเปิดหน้าต่าง GUI ให้เลือกไฟล์ผ่านปุ่มกด)
+    ( argument   GUI )
 
-ติดตั้ง dependency ที่ต้องใช้ (ครั้งเดียว):
+ dependency  ():
     pip install opencv-python
 """
 
@@ -37,8 +37,8 @@ VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".wmv", ".flv", ".m4v", ".ts
 
 
 def _open_video_capture(path):
-    """เปิดวิดีโอด้วย cv2.VideoCapture พร้อม fallback สำหรับ path ที่มีอักษรไทย/ยูนิโค้ดบน Windows
-    (บางครั้ง path ที่ไม่ใช่ ASCII เปิดไม่ได้ตรงๆ จึงลองใช้ Windows short path เป็นทางเลือกสำรอง)"""
+    """ cv2.VideoCapture  fallback  path / Windows
+    ( path  ASCII   Windows short path )"""
     import cv2
 
     path_str = str(path)
@@ -59,12 +59,12 @@ def _open_video_capture(path):
         except Exception:
             pass
 
-    return cap  # คืนตัวเดิม (isOpened() จะเป็น False ถ้าเปิดไม่ได้จริงๆ)
+    return cap  # Original (isOpened()  False Actual)
 
 
 def _open_video_writer(path, fourcc, fps, size):
-    """เปิด cv2.VideoWriter พร้อม fallback สำหรับ path ที่มีอักษรไทย/ยูนิโค้ดบน Windows
-    (เขียนวิดีโอไป path ที่ไม่ใช่ ASCII บางเครื่องอาจเขียนไม่ได้ตรงๆ เหมือนปัญหาที่เจอกับ imwrite)"""
+    """ cv2.VideoWriter  fallback  path / Windows
+    ( path  ASCII   imwrite)"""
     import cv2
 
     path_str = str(path)
@@ -77,8 +77,8 @@ def _open_video_writer(path, fourcc, fps, size):
         try:
             import ctypes
 
-            # short path ใช้ได้เฉพาะไฟล์/โฟลเดอร์ที่มีอยู่จริงแล้ว จึงต้องหา short path ของโฟลเดอร์ปลายทาง
-            # แล้วค่อยต่อชื่อไฟล์ (ที่ควรเป็น ASCII อยู่แล้ว) เข้าไปเอง
+            # short path /  short path 
+            #  ( ASCII ) 
             parent = Path(path_str).parent
             buf = ctypes.create_unicode_buffer(260)
             n = ctypes.windll.kernel32.GetShortPathNameW(str(parent), buf, 260)
@@ -91,12 +91,12 @@ def _open_video_writer(path, fourcc, fps, size):
         except Exception:
             pass
 
-    return writer, path_str  # คืนตัวเดิม (isOpened() จะเป็น False ถ้าเปิดไม่ได้จริงๆ)
+    return writer, path_str  # Original (isOpened()  False Actual)
 
 
 def _write_image(fpath, frame, img_format, quality):
-    """บันทึกภาพแบบรองรับ path ที่มีอักษรไทย/ยูนิโค้ด (ไม่ใช้ cv2.imwrite ตรงๆ
-    เพราะบน Windows มันเขียนไฟล์ไป path ที่ไม่ใช่ ASCII ไม่ได้)"""
+    """ path / ( cv2.imwrite 
+     Windows  path  ASCII )"""
     import cv2
 
     ext = f".{img_format.lower()}"
@@ -112,7 +112,7 @@ def _write_image(fpath, frame, img_format, quality):
 
 
 def parse_timestamp(ts):
-    """แปลงสตริงเวลา 'HH:MM:SS' / 'MM:SS' / วินาที เป็นจำนวนวินาที (float)"""
+    """ 'HH:MM:SS' / 'MM:SS' /   (float)"""
     if ts is None:
         return None
     if isinstance(ts, (int, float)):
@@ -130,11 +130,11 @@ def parse_timestamp(ts):
         return m * 60 + s
     elif len(parts) == 1:
         return parts[0]
-    raise ValueError(f"รูปแบบเวลาไม่ถูกต้อง: {ts}")
+    raise ValueError(f"Invalid time format: {ts}")
 
 
 def parse_resize(spec):
-    """แปลง 'WIDTHxHEIGHT' เป็น (width, height)"""
+    """ 'WIDTHxHEIGHT'  (width, height)"""
     if not spec:
         return None
     spec = spec.lower().replace(" ", "")
@@ -143,7 +143,7 @@ def parse_resize(spec):
 
 
 def _find_ffprobe():
-    """หา ffprobe ในเครื่อง (ปกติติดมากับ ffmpeg ในแพ็กเดียวกัน) คืนค่า path หรือ None"""
+    """ ffprobe  ( ffmpeg )  path  None"""
     import shutil as _shutil
 
     exe_name = "ffprobe.exe" if sys.platform == "win32" else "ffprobe"
@@ -157,12 +157,12 @@ def _find_ffprobe():
 
 
 def probe_video_info(video_path):
-    """เปิดวิดีโอแค่เพื่ออ่านข้อมูล (fps, จำนวนเฟรม, ความยาว) แบบเร็วๆ ไม่ถอดรหัสภาพ
-    คืนค่า dict {fps, total_frames, duration_sec} หรือ None ถ้าเปิดไม่ได้
+    """ (fps, , )  
+     dict {fps, total_frames, duration_sec}  None 
 
-    หมายเหตุ: ค่า frame count จาก OpenCV บางครั้งไม่แม่นยำสำหรับไฟล์ที่ผ่านการตัดต่อแบบ
-    stream copy มาก่อน (เช่นไฟล์ที่ได้จากโหมดตัดคลิปแบบเร็วของโปรแกรมนี้เอง) จึงใช้ ffprobe
-    (ถ้ามีในเครื่อง) ช่วยตรวจสอบความยาวให้แม่นยำขึ้น"""
+    :  frame count  OpenCV 
+    stream copy  ()  ffprobe
+    () """
     import cv2
 
     cap = _open_video_capture(video_path)
@@ -185,7 +185,7 @@ def probe_video_info(video_path):
             )
             probed_duration = float(result.stdout.strip())
             if probed_duration > 0 and fps > 0:
-                # ถ้าค่าจาก OpenCV กับ ffprobe ต่างกันมาก (>5%) ให้เชื่อ ffprobe แทน (แม่นยำกว่า)
+                #  OpenCV  ffprobe  (>5%)  ffprobe  ()
                 if duration <= 0 or abs(probed_duration - duration) / max(duration, 0.01) > 0.05:
                     duration = probed_duration
                     total_frames = round(duration * fps)
@@ -196,7 +196,7 @@ def probe_video_info(video_path):
 
 
 def format_hms(seconds):
-    """แปลงวินาที (float) เป็นสตริง HH:MM:SS"""
+    """ (float)  HH:MM:SS"""
     seconds = max(0, int(round(seconds)))
     h, rem = divmod(seconds, 3600)
     m, s = divmod(rem, 60)
@@ -204,8 +204,8 @@ def format_hms(seconds):
 
 
 def compute_frame_step(video_fps, fps=None, interval_frames=None):
-    """คำนวณว่าจะบันทึกภาพทุกๆ กี่เฟรม จาก fps เป้าหมายหรือค่า interval ที่กำหนด
-    ใช้ร่วมกันทั้งตอนแตกเฟรมจริงและตอนประมาณการในหน้า GUI เพื่อให้ตัวเลขตรงกันเป๊ะ"""
+    """   fps Target interval 
+     GUI """
     if fps is not None and fps > 0:
         return max(1, round(video_fps / fps))
     elif interval_frames is not None:
@@ -214,7 +214,7 @@ def compute_frame_step(video_fps, fps=None, interval_frames=None):
 
 
 def estimate_extraction(video_fps, total_frames, start_sec, end_sec, fps=None, interval_frames=None):
-    """คำนวณจำนวนภาพที่จะได้ ณ ช่วงเวลา/อัตราที่กำหนด โดยไม่ต้องเปิดวิดีโอจริง (คำนวณล่วงหน้าก่อนกดเริ่ม)"""
+    """  /  ()"""
     start_frame = int(start_sec * video_fps) if start_sec is not None else 0
     end_frame = int(end_sec * video_fps) if end_sec is not None else total_frames
     end_frame = min(end_frame, total_frames)
@@ -222,11 +222,11 @@ def estimate_extraction(video_fps, total_frames, start_sec, end_sec, fps=None, i
     if span <= 0:
         return 0
     frame_step = compute_frame_step(video_fps, fps=fps, interval_frames=interval_frames)
-    return (span + frame_step - 1) // frame_step  # ceil division — ตรงกับจำนวนจริงที่ extract_frames จะบันทึก
+    return (span + frame_step - 1) // frame_step  # ceil division —  extract_frames 
 
 
 def format_size(num_bytes):
-    """แปลงจำนวนไบต์เป็นข้อความอ่านง่าย เช่น '12.3 MB'"""
+    """  '12.3 MB'"""
     if num_bytes is None:
         return "-"
     size = float(num_bytes)
@@ -237,29 +237,29 @@ def format_size(num_bytes):
     return f"{size:.1f} TB"
 
 
-# ระดับความเข้มของการกรองภาพซ้ำ — ยิ่งค่ามาก ยิ่งกรองภาพที่คล้ายกันออกเยอะขึ้น (เก็บภาพน้อยลง)
-# ค่านี้ปรับเทียบจากวิดีโอทดสอบที่มี sensor noise สมจริง (ไม่ใช่แค่ภาพนิ่งสนิทแบบไม่มี noise เลย)
+#  —   ()
+#  sensor noise  ( noise )
 DEDUP_LEVELS = {"low": 0.5, "medium": 1.5, "high": 3.0}
 
-# ถ้า sampling ห่างกว่านี้ (ข้าม >= N เฟรมต่อภาพที่เก็บ) จะ seek กระโดดตรงไปตำแหน่งเป้าหมายแทนการเดินผ่านทีละเฟรม
-# ค่านี้ได้จากการวัดจริงเทียบกับวิดีโอ H.264 ที่ keyframe ทุก 1 และ 2 วินาที — ต่ำกว่านี้ seek มักช้ากว่าเดิม
-# (โอเวอร์เฮดของการ seek เอง สูงกว่าที่ประหยัดได้จากการข้ามเฟรม) สูงกว่านี้ seek เร็วกว่าชัดเจน (1.7x - 3x+)
+#  sampling  ( >= N )  seek Target
+#  H.264  keyframe  1  2  —  seek Original
+# ( seek  )  seek  (1.7x - 3x+)
 SEEK_MODE_MIN_STEP = 80
 
-# ถ้าวิดีโอไฟล์เดียวมีจำนวนเฟรมที่ต้องเดินผ่าน (แบบ grab/read ทีละเฟรม ไม่ใช่ seek-mode)
-# มากกว่าค่านี้ จะแบ่งเป็นหลายช่วงประมวลผลพร้อมกันด้วยหลาย thread แทนการเดินทีละเฟรมตัวเดียว
-# (แต่ละ thread เปิดไฟล์เดียวกันคนละ VideoCapture คนละตำแหน่ง — OpenCV/FFmpeg ปล่อย GIL
-# ระหว่างถอดรหัสจึงเร็วขึ้นจริงบนเครื่องหลาย core) ต่ำกว่านี้ overhead การเปิดหลาย VideoCapture
-# ไม่คุ้มกับที่ประหยัดได้ ค่านี้เป็นค่าประมาณ ยังไม่ได้วัดละเอียดเท่า SEEK_MODE_MIN_STEP ด้านบน
+#  ( grab/read   seek-mode)
+#   thread 
+# ( thread  VideoCapture  — OpenCV/FFmpeg  GIL
+#  core)  overhead  VideoCapture
+#    SEEK_MODE_MIN_STEP 
 #
-# หมายเหตุสำคัญ: ถ้าเปิด dedup (กรองภาพซ้ำ) พร้อมกับโหมดนี้ แต่ละช่วงจะเทียบภาพซ้ำแยกกัน
-# ไม่ต่อเนื่องข้ามรอยต่อระหว่างช่วง — อาจพลาดคู่ภาพซ้ำที่อยู่คนละฝั่งรอยต่อพอดีไปบ้าง
-# (ผลกระทบเล็กน้อยในทางปฏิบัติ เพราะรอยต่อมีจำนวนน้อยเทียบกับภาพทั้งหมด)
+# :  dedup ()  
+#  — 
+# ( )
 PARALLEL_SINGLE_VIDEO_MIN_FRAMES = 4000
 
 
 def _make_dedup_thumb(frame):
-    """ย่อภาพให้เล็กและเป็นขาวดำ สำหรับเทียบความเหมือนระหว่างเฟรม (เร็ว ไม่กินแรงประมวลผลมาก)"""
+    """  ( )"""
     import cv2
 
     small = cv2.resize(frame, (64, 64), interpolation=cv2.INTER_AREA)
@@ -267,7 +267,7 @@ def _make_dedup_thumb(frame):
 
 
 def _frame_diff_percent(thumb_a, thumb_b):
-    """คืนค่าความต่างเฉลี่ยระหว่างภาพย่อสองภาพ เป็นเปอร์เซ็นต์ (0 = เหมือนกันทุกพิกเซล, 100 = ต่างสุดขั้ว)"""
+    """  (0 = , 100 = )"""
     import cv2
 
     diff = cv2.absdiff(thumb_a, thumb_b)
@@ -291,22 +291,22 @@ def _extract_frame_range(
     dedup_enabled,
     dedup_threshold,
 ):
-    """แตกเฟรมเฉพาะช่วง [chunk_start, chunk_end) ของวิดีโอไฟล์เดียว โดยเปิด VideoCapture
-    ของตัวเอง แยกอิสระจาก instance อื่น — เรียกได้ทั้งแบบรันช่วงเดียว (ทั้งไฟล์ = 1 ช่วง
-    เหมือนพฤติกรรมเดิม) หรือรันพร้อมกันหลาย thread คนละช่วงพร้อมกันก็ได้ (ดู
-    _extract_frames_single_parallel ด้านล่าง)
+    """ [chunk_start, chunk_end)   VideoCapture
+      instance  —  ( = 1 
+    Original)  thread  (
+    _extract_frames_single_parallel )
 
-    chunk_start ต้องอยู่บน "ตาราง" การสุ่มตัวอย่างเดียวกันทั้งไฟล์เสมอ (คือ
-    (chunk_start - จุดเริ่มต้นจริงของทั้งวิดีโอ) หารด้วย frame_step ลงตัว) ไม่งั้นเฟรมที่
-    เลือกเก็บของแต่ละช่วงจะเหลื่อมกันไม่ตรงตาราง
+    chunk_start  ""  (
+    (chunk_start - )  frame_step ) 
+    
 
-    คืนค่า tuple: (saved_count, cancelled, skipped_dedup, diff_stats)
+     tuple: (saved_count, cancelled, skipped_dedup, diff_stats)
     """
     import cv2
 
     cap = _open_video_capture(video_path)
     if not cap.isOpened():
-        log(f"[ERROR] เปิดวิดีโอไม่ได้ (ช่วงเฟรม {chunk_start}-{chunk_end}): {video_path}")
+        log(f"[ERROR]  ( {chunk_start}-{chunk_end}): {video_path}")
         return 0, False, 0, []
 
     saved_count = 0
@@ -340,7 +340,7 @@ def _extract_frame_range(
             if _write_image(fpath, f, img_format, quality):
                 saved_count += 1
             else:
-                log(f"[WARN] บันทึกภาพไม่สำเร็จ: {fname}")
+                log(f"[WARN] : {fname}")
 
     use_seek_mode = frame_step >= SEEK_MODE_MIN_STEP
     frame_idx = chunk_start
@@ -408,10 +408,10 @@ def _extract_frames_single_parallel(
     dedup_threshold,
     max_workers,
 ):
-    """แบ่งวิดีโอไฟล์เดียวออกเป็นหลายช่วง (chunk) ให้แต่ละ thread เปิดไฟล์เดียวกันคนละ
-    VideoCapture คนละตำแหน่ง ประมวลผลพร้อมกัน — ใช้เมื่อวิดีโอยาว/ใหญ่พอ (ดู
-    PARALLEL_SINGLE_VIDEO_MIN_FRAMES) และไม่ได้อยู่ในโหมด seek (ซึ่งเร็วพอแล้วในตัวเอง)
-    คืนค่า tuple: (saved_count, cancelled, skipped_dedup, diff_stats) รวมจากทุกช่วง
+    """ (chunk)  thread 
+    VideoCapture   — / (
+    PARALLEL_SINGLE_VIDEO_MIN_FRAMES)  seek ()
+     tuple: (saved_count, cancelled, skipped_dedup, diff_stats) 
     """
     import threading as _threading
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -420,8 +420,8 @@ def _extract_frames_single_parallel(
     max_workers = max(1, min(max_workers, total_targets))
     chunk_target_size = max(1, (total_targets + max_workers - 1) // max_workers)
 
-    # แบ่งช่วงเฟรมตาม "จำนวนเป้าหมายที่จะเก็บ" ไม่ใช่แบ่งตามเวลาเฉย ๆ เพื่อให้แต่ละช่วง
-    # มีปริมาณงานใกล้เคียงกัน และยังคงอยู่บนตารางการสุ่มตัวอย่างเดียวกันทั้งไฟล์
+    #  "Target"   
+    #  
     chunks = []
     cursor = start_frame
     chunk_idx = 0
@@ -434,10 +434,10 @@ def _extract_frames_single_parallel(
         cursor = chunk_end
         chunk_idx += 1
 
-    log(f"[INFO] แตกเฟรมวิดีโอนี้แบบขนาน {len(chunks)} ช่วงพร้อมกัน (เร็วขึ้นสำหรับไฟล์ยาว/ใหญ่)")
+    log(f"[INFO]  {len(chunks)}  (/)")
     if dedup_enabled:
-        log("[หมายเหตุ] เปิด dedup พร้อมโหมดขนาน — แต่ละช่วงกรองภาพซ้ำแยกกัน อาจพลาดคู่ภาพซ้ำ")
-        log("           ที่อยู่คนละฝั่งรอยต่อระหว่างช่วงไปบ้างเล็กน้อย (ผลกระทบน้อยในทางปฏิบัติ)")
+        log("[]  dedup  —  ")
+        log("            ()")
 
     total_frames_all = max(1, end_frame - start_frame)
     progress_lock = _threading.Lock()
@@ -497,15 +497,15 @@ def extract_frames(
     dedup_threshold=3.0,
     max_workers=None,
 ):
-    """แตกเฟรมจากวิดีโอไฟล์เดียว คืนค่าจำนวนภาพที่บันทึกได้
+    """ 
 
-    cancel_event: threading.Event ที่ถ้าถูก set() จะหยุดทำงานกลางคันอย่างปลอดภัย
-    progress_callback: ฟังก์ชัน callback(frames_done, frames_total) เรียกเป็นระยะระหว่างทำงาน
-    dedup_enabled: ถ้า True จะข้ามภาพที่คล้ายกับภาพล่าสุดที่บันทึกไปมากเกินไป (ไม่บันทึกซ้ำ)
-    dedup_threshold: ภาพที่ต่างจากภาพล่าสุดน้อยกว่าค่านี้ (% ความต่างเฉลี่ย) จะถูกข้าม — ยิ่งค่าน้อยยิ่งกรองน้อย
-    max_workers: จำนวน thread สูงสุดที่จะใช้ประมวลผลวิดีโอไฟล์นี้พร้อมกัน (ดู
-        PARALLEL_SINGLE_VIDEO_MIN_FRAMES) ถ้าไม่ระบุจะใช้ตาม os.cpu_count() อัตโนมัติ
-        ใส่ 1 เพื่อบังคับให้เดินทีละเฟรมแบบเดิม (ปิดโหมดขนานสำหรับไฟล์นี้)
+    cancel_event: threading.Event  set() 
+    progress_callback:  callback(frames_done, frames_total) 
+    dedup_enabled:  True  ()
+    dedup_threshold:  (% )  — 
+    max_workers:  thread  (
+        PARALLEL_SINGLE_VIDEO_MIN_FRAMES)  os.cpu_count() 
+         1 Original ()
     """
     import os as _os
 
@@ -515,7 +515,7 @@ def extract_frames(
 
     info = probe_video_info(video_path)
     if info is None:
-        log(f"[ERROR] เปิดวิดีโอไม่ได้: {video_path}")
+        log(f"[ERROR] : {video_path}")
         return 0
 
     video_fps = info["fps"]
@@ -528,8 +528,8 @@ def extract_frames(
     end_frame = min(end_frame, total_frames)
     prefix = prefix or video_path.stem
 
-    log(f"[INFO] {video_path.name}: {video_fps:.2f} FPS, {total_frames} เฟรม, {duration:.1f} วินาที")
-    log(f"[INFO] บันทึกทุกๆ {frame_step} เฟรม (ช่วงเฟรม {start_frame}-{end_frame})")
+    log(f"[INFO] {video_path.name}: {video_fps:.2f} FPS, {total_frames} , {duration:.1f} ")
+    log(f"[INFO]  {frame_step}  ( {start_frame}-{end_frame})")
 
     frames_to_process = max(1, end_frame - start_frame)
     use_seek_mode = frame_step >= SEEK_MODE_MIN_STEP
@@ -537,9 +537,9 @@ def extract_frames(
     if max_workers is None:
         max_workers = max(1, _os.cpu_count() or 2)
 
-    # ใช้โหมดขนาน (หลาย thread เปิดไฟล์เดียวกันคนละตำแหน่ง) เฉพาะตอนที่คุ้มค่าจริง ๆ:
-    # ต้องไม่ใช่ seek-mode อยู่แล้ว (นั่นเร็วพอในตัวเองอยู่แล้ว), ไฟล์ต้องยาว/ใหญ่พอ,
-    # และเครื่องต้องมีมากกว่า 1 core ถึงจะได้ประโยชน์จริง
+    #  ( thread )  :
+    #  seek-mode  (), /,
+    #  1 core 
     should_parallelize = (
         not use_seek_mode and frames_to_process >= PARALLEL_SINGLE_VIDEO_MIN_FRAMES and max_workers > 1
     )
@@ -558,34 +558,34 @@ def extract_frames(
         )
 
     if cancelled:
-        log(f"[ยกเลิก] หยุดกลางคัน — บันทึกไปแล้ว {saved_count} เฟรม -> {output_dir}")
+        log(f"[]  —  {saved_count}  -> {output_dir}")
     else:
         if dedup_enabled:
             if diff_stats:
                 log(
-                    f"[INFO] dedup: ข้ามไป {skipped_dedup}/{len(diff_stats)} ภาพ "
-                    f"(ค่าความต่างที่วัดได้ ต่ำสุด {min(diff_stats):.2f}% สูงสุด {max(diff_stats):.2f}% "
-                    f"เฉลี่ย {sum(diff_stats)/len(diff_stats):.2f}% | เกณฑ์ที่ตั้งไว้ {dedup_threshold:.1f}%)"
+                    f"[INFO] dedup:  {skipped_dedup}/{len(diff_stats)}  "
+                    f"(  {min(diff_stats):.2f}%  {max(diff_stats):.2f}% "
+                    f" {sum(diff_stats)/len(diff_stats):.2f}% |  {dedup_threshold:.1f}%)"
                 )
                 if skipped_dedup == 0 and min(diff_stats) > dedup_threshold:
                     log(
-                        f"[หมายเหตุ] ไม่มีภาพไหนถูกกรองเลย เพราะค่าต่ำสุดที่วัดได้ ({min(diff_stats):.2f}%) "
-                        f"ยังสูงกว่าเกณฑ์ ({dedup_threshold:.1f}%) — วิดีโอนี้อาจมี noise/แสงกระพริบเยอะกว่าปกติ "
-                        f"ลองเพิ่มความเข้มการกรอง หรือปรับเป็น \"มาก\" ดู"
+                        f"[]   ({min(diff_stats):.2f}%) "
+                        f" ({dedup_threshold:.1f}%) —  noise/ "
+                        f"  \"\" "
                     )
             else:
-                log("[INFO] dedup: เปิดใช้งานแต่มีภาพให้เทียบไม่ถึง 2 ภาพ จึงยังไม่มีผลกรอง")
+                log("[INFO] dedup:  2  ")
         if progress_callback is not None:
             progress_callback(frames_to_process, frames_to_process)
-        log(f"[DONE] บันทึก {saved_count} เฟรม -> {output_dir}")
+        log(f"[DONE]  {saved_count}  -> {output_dir}")
     return saved_count
 
 
 def _process_videos_parallel(
     videos, output_dir, log, cancel_event, video_progress_callback, progress_callback, max_workers, **kwargs
 ):
-    """ประมวลผลหลายวิดีโอพร้อมกันด้วย thread pool (OpenCV ปล่อย GIL ระหว่างถอดรหัส/เข้ารหัสภาพ
-    จึงได้ความเร็วเพิ่มขึ้นจริงแม้เป็น thread ไม่ใช่ process) คืนค่าจำนวนภาพรวมที่บันทึกได้"""
+    """ thread pool (OpenCV  GIL /
+     thread  process) """
     import os
     import threading as _threading
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -593,11 +593,11 @@ def _process_videos_parallel(
     if max_workers is None:
         max_workers = min(4, max(1, os.cpu_count() or 2))
 
-    log(f"[INFO] ประมวลผลแบบขนาน {max_workers} ไฟล์พร้อมกัน (ทั้งหมด {len(videos)} วิดีโอ)")
+    log(f"[INFO]  {max_workers}  ( {len(videos)} )")
     if video_progress_callback is not None:
-        video_progress_callback(0, len(videos), f"กำลังประมวลผล {len(videos)} วิดีโอพร้อมกัน...")
+        video_progress_callback(0, len(videos), f" {len(videos)} ...")
 
-    # คำนวณจำนวนเฟรมรวมทั้งหมดล่วงหน้า เพื่อใช้คำนวณ % ความคืบหน้ารวมของทั้งแบทช์
+    #   % 
     frame_counts = {}
     total_frames_all = 0
     for v in videos:
@@ -619,7 +619,7 @@ def _process_videos_parallel(
             if progress_callback is not None and total_frames_all > 0:
                 progress_callback(current, total_frames_all)
             if video_progress_callback is not None:
-                video_progress_callback(completed, len(videos), f"กำลังประมวลผล {len(videos)} วิดีโอพร้อมกัน...")
+                video_progress_callback(completed, len(videos), f" {len(videos)} ...")
 
         return cb
 
@@ -652,10 +652,10 @@ def process_input(
     video_progress_callback=None, progress_callback=None,
     parallel=True, max_workers=None, **kwargs
 ):
-    """รับได้ทั้งไฟล์วิดีโอเดี่ยวหรือโฟลเดอร์ที่มีหลายวิดีโอ
+    """
 
-    video_progress_callback: ฟังก์ชัน callback(index, total_videos, video_name) เรียกตอนเริ่มแต่ละวิดีโอ
-    parallel: ถ้า True และมีวิดีโอมากกว่า 1 ไฟล์ในโฟลเดอร์ จะประมวลผลพร้อมกันหลายไฟล์ (เร็วขึ้น)
+    video_progress_callback:  callback(index, total_videos, video_name) 
+    parallel:  True  1   ()
     """
     input_path = Path(input_path)
     total = 0
@@ -663,7 +663,7 @@ def process_input(
     if input_path.is_dir():
         videos = sorted(p for p in input_path.iterdir() if p.suffix.lower() in VIDEO_EXTENSIONS)
         if not videos:
-            log(f"[WARN] ไม่พบไฟล์วิดีโอในโฟลเดอร์: {input_path}")
+            log(f"[WARN] : {input_path}")
             return 0
 
         if parallel and len(videos) > 1:
@@ -675,7 +675,7 @@ def process_input(
         else:
             for i, v in enumerate(videos, start=1):
                 if cancel_event is not None and cancel_event.is_set():
-                    log("[ยกเลิก] หยุดก่อนเริ่มไฟล์ถัดไป")
+                    log("[] ")
                     break
                 if video_progress_callback is not None:
                     video_progress_callback(i, len(videos), v.name)
@@ -684,7 +684,7 @@ def process_input(
                     v, sub_out, log=log, cancel_event=cancel_event,
                     progress_callback=progress_callback, **kwargs
                 )
-        log(f"\n[SUMMARY] รวมทั้งหมด {total} เฟรม จาก {len(videos)} วิดีโอ")
+        log(f"\n[SUMMARY]  {total}   {len(videos)} ")
     elif input_path.is_file():
         if video_progress_callback is not None:
             video_progress_callback(1, 1, input_path.name)
@@ -693,14 +693,14 @@ def process_input(
             progress_callback=progress_callback, **kwargs
         )
     else:
-        log(f"[ERROR] ไม่พบไฟล์หรือโฟลเดอร์: {input_path}")
+        log(f"[ERROR] : {input_path}")
 
     return total
 
 
 def _find_ffmpeg():
-    """หา ffmpeg ในเครื่อง คืนค่า path ของ ffmpeg หรือ None ถ้าไม่พบ
-    เช็คทั้ง PATH ของระบบ และโฟลเดอร์ ffmpeg/ ที่อาจวางไว้ข้างๆ สคริปต์นี้"""
+    """ ffmpeg   path  ffmpeg  None 
+     PATH   ffmpeg/  """
     import shutil as _shutil
 
     exe_name = "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"
@@ -714,7 +714,7 @@ def _find_ffmpeg():
 
 
 def _run_ffmpeg(cmd, log, timeout=1800):
-    """เรียก ffmpeg แบบไม่ให้มีหน้าต่าง console โผล่ขึ้นมา คืนค่า True ถ้าสำเร็จ (returncode 0)"""
+    """ ffmpeg  console   True  (returncode 0)"""
     import subprocess
 
     try:
@@ -723,19 +723,19 @@ def _run_ffmpeg(cmd, log, timeout=1800):
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except Exception as e:
-        log(f"[หมายเหตุ] เรียก ffmpeg ไม่สำเร็จ: {e}")
+        log(f"[]  ffmpeg : {e}")
         return False
 
     if result.returncode != 0:
         tail = (result.stderr or "").strip().splitlines()[-1:] or [""]
-        log(f"[หมายเหตุ] ffmpeg คืนค่า error: {tail[0][:200]}")
+        log(f"[] ffmpeg  error: {tail[0][:200]}")
         return False
     return True
 
 
 def _ffmpeg_trim(ffmpeg_path, video_path, output_path, start_sec, end_sec, log):
-    """ตัดวิดีโอด้วย ffmpeg แบบ stream copy (เร็วมาก ไม่เข้ารหัสใหม่ แต่จุดตัดจะปัดไปที่ keyframe
-    ที่ใกล้ที่สุด อาจคลาดเคลื่อนได้เล็กน้อย) คืนค่า True/False ว่าสำเร็จหรือไม่"""
+    """ ffmpeg  stream copy (   keyframe
+     )  True/False """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -749,14 +749,14 @@ def _ffmpeg_trim(ffmpeg_path, video_path, output_path, start_sec, end_sec, log):
         cmd += ["-t", f"{end_sec:.3f}"]
     cmd += ["-c", "copy", str(output_path)]
 
-    log("[INFO] กำลังตัดคลิปด้วย ffmpeg (โหมดเร็ว ไม่เข้ารหัสใหม่)...")
+    log("[INFO]  ffmpeg ( )...")
     if not _run_ffmpeg(cmd, log):
         return False
     if not output_path.exists() or output_path.stat().st_size == 0:
-        log("[หมายเหตุ] ffmpeg สร้างไฟล์ผลลัพธ์ไม่สำเร็จ")
+        log("[] ffmpeg ")
         return False
 
-    log(f"[DONE] ตัดคลิปสำเร็จด้วย ffmpeg -> {output_path}")
+    log(f"[DONE]  ffmpeg -> {output_path}")
     return True
 
 
@@ -770,11 +770,11 @@ def trim_video(
     progress_callback=None,
     fast_mode=True,
 ):
-    """ตัดวิดีโอตามช่วงเวลาที่กำหนด บันทึกเป็นไฟล์วิดีโอใหม่ คืนค่า True/False ว่าสำเร็จหรือไม่
+    """   True/False 
 
-    fast_mode: ถ้า True และเครื่องมี ffmpeg จะตัดแบบ stream copy (เร็วมาก แต่จุดตัดปัดไปที่
-    keyframe ใกล้เคียง อาจคลาดเคลื่อน ≤ ~2 วินาที) ถ้า False หรือไม่มี ffmpeg จะเข้ารหัสใหม่ทีละเฟรม
-    ด้วย OpenCV แทน (แม่นยำระดับเฟรม แต่ช้ากว่า)
+    fast_mode:  True  ffmpeg  stream copy ( 
+    keyframe   ≤ ~2 )  False  ffmpeg 
+     OpenCV  ( )
     """
     video_path = Path(video_path)
 
@@ -785,22 +785,22 @@ def trim_video(
                 if progress_callback is not None:
                     progress_callback(1, 1)
                 return True
-            log("[INFO] จะใช้วิธีเข้ารหัสใหม่ทีละเฟรมแทน (ช้ากว่าแต่แม่นยำและทำงานได้แน่นอน)")
+            log("[INFO]  ()")
         else:
-            log("[หมายเหตุ] ไม่พบ ffmpeg ในเครื่อง จะใช้วิธีเข้ารหัสใหม่ทีละเฟรมแทน (ช้ากว่าเล็กน้อยแต่แม่นยำ)")
+            log("[]  ffmpeg   ()")
 
     return _trim_video_opencv(video_path, output_path, start_sec, end_sec, log, cancel_event, progress_callback)
 
 
 def _trim_video_opencv(video_path, output_path, start_sec, end_sec, log, cancel_event, progress_callback):
-    """ตัดวิดีโอแบบเข้ารหัสใหม่ทีละเฟรมด้วย OpenCV (แม่นยำระดับเฟรม, ใช้เมื่อไม่มี ffmpeg
-    หรือเมื่อผู้ใช้เลือกโหมดแม่นยำ) คืนค่า True/False ว่าสำเร็จหรือไม่"""
+    """ OpenCV (,  ffmpeg
+    )  True/False """
     import cv2
 
     video_path = Path(video_path)
     cap = _open_video_capture(video_path)
     if not cap.isOpened():
-        log(f"[ERROR] เปิดวิดีโอไม่ได้: {video_path}")
+        log(f"[ERROR] : {video_path}")
         return False
 
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
@@ -814,14 +814,14 @@ def _trim_video_opencv(video_path, output_path, start_sec, end_sec, log, cancel_
     span = max(0, end_frame - start_frame)
 
     if span <= 0:
-        log("[ERROR] ช่วงเวลาที่เลือกไม่มีความยาว (เริ่ม >= สิ้นสุด หรือเกินความยาววิดีโอ)")
+        log("[ERROR]  ( >=  )")
         cap.release()
         return False
 
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     writer, actual_path = _open_video_writer(output_path, fourcc, fps, (width, height))
     if not writer.isOpened():
-        log(f"[ERROR] สร้างไฟล์วิดีโอปลายทางไม่ได้: {output_path}")
+        log(f"[ERROR] : {output_path}")
         cap.release()
         return False
 
@@ -829,12 +829,12 @@ def _trim_video_opencv(video_path, output_path, start_sec, end_sec, log, cancel_
     frame_idx = start_frame
     written = 0
     cancelled = False
-    log(f"[INFO] ตัดวิดีโอ {video_path.name}: {format_hms(start_frame / fps)} - {format_hms(end_frame / fps)} ({span} เฟรม)")
+    log(f"[INFO]  {video_path.name}: {format_hms(start_frame / fps)} - {format_hms(end_frame / fps)} ({span} )")
 
     while frame_idx < end_frame:
         if cancel_event is not None and cancel_event.is_set():
             cancelled = True
-            log(f"[ยกเลิก] หยุดกลางคัน — ตัดไปแล้ว {written} เฟรม")
+            log(f"[]  —  {written} ")
             break
         ret, frame = cap.read()
         if not ret:
@@ -852,16 +852,16 @@ def _trim_video_opencv(video_path, output_path, start_sec, end_sec, log, cancel_
         return False
 
     if written <= 0:
-        log("[ERROR] ไม่ได้เฟรมเลย ไฟล์ผลลัพธ์อาจไม่สมบูรณ์")
+        log("[ERROR]  ")
         return False
 
-    log(f"[DONE] ตัดวิดีโอสำเร็จ {written} เฟรม -> {actual_path}")
+    log(f"[DONE]  {written}  -> {actual_path}")
     return True
 
 
 def _probe_video_params(video_path):
-    """อ่านพารามิเตอร์วิดีโอ (ขนาด/fps/fourcc) สำหรับเช็คว่าจะต่อแบบ ffmpeg stream copy ได้ไหม
-    (ต้องมีพารามิเตอร์เหล่านี้ตรงกันทุกไฟล์ ไม่งั้น stream copy จะทำให้ไฟล์เสีย)"""
+    """ (/fps/fourcc)  ffmpeg stream copy 
+    (  stream copy )"""
     import cv2
 
     cap = _open_video_capture(video_path)
@@ -876,8 +876,8 @@ def _probe_video_params(video_path):
 
 
 def _ffmpeg_concat(ffmpeg_path, video_paths, output_path, log):
-    """ต่อวิดีโอด้วย ffmpeg concat demuxer แบบ stream copy (เร็วมาก ไม่เข้ารหัสใหม่)
-    ใช้ได้เฉพาะกรณีวิดีโอทุกไฟล์มีขนาด/fps/codec ตรงกันเท่านั้น คืนค่า True/False"""
+    """ ffmpeg concat demuxer  stream copy ( )
+    /fps/codec   True/False"""
     import tempfile
 
     output_path = Path(output_path)
@@ -894,7 +894,7 @@ def _ffmpeg_concat(ffmpeg_path, video_paths, output_path, log):
             list_path = f.name
 
         cmd = [ffmpeg_path, "-y", "-f", "concat", "-safe", "0", "-i", list_path, "-c", "copy", str(output_path)]
-        log("[INFO] กำลังต่อคลิปด้วย ffmpeg (โหมดเร็ว ไม่เข้ารหัสใหม่)...")
+        log("[INFO]  ffmpeg ( )...")
         if not _run_ffmpeg(cmd, log):
             return False
     finally:
@@ -905,10 +905,10 @@ def _ffmpeg_concat(ffmpeg_path, video_paths, output_path, log):
                 pass
 
     if not output_path.exists() or output_path.stat().st_size == 0:
-        log("[หมายเหตุ] ffmpeg สร้างไฟล์ผลลัพธ์ไม่สำเร็จ")
+        log("[] ffmpeg ")
         return False
 
-    log(f"[DONE] ต่อคลิปสำเร็จด้วย ffmpeg -> {output_path}")
+    log(f"[DONE]  ffmpeg -> {output_path}")
     return True
 
 
@@ -920,15 +920,15 @@ def merge_videos(
     progress_callback=None,
     fast_mode=True,
 ):
-    """ต่อวิดีโอหลายไฟล์เข้าด้วยกันตามลำดับที่ระบุ บันทึกเป็นไฟล์วิดีโอใหม่ คืนค่า True/False
+    """   True/False
 
-    fast_mode: ถ้า True, มี ffmpeg, และวิดีโอทุกไฟล์มีขนาด/fps/codec ตรงกันหมด จะต่อแบบ
-    stream copy (เร็วมาก ไม่เสียคุณภาพ) ถ้าพารามิเตอร์ไม่ตรงกันหรือไม่มี ffmpeg จะต่อแบบเข้ารหัสใหม่
-    ด้วย OpenCV แทน (ปรับขนาดให้ตรงกับไฟล์แรกอัตโนมัติ ใช้ได้กับวิดีโอที่ขนาดไม่เท่ากัน)
+    fast_mode:  True,  ffmpeg, /fps/codec  
+    stream copy ( )  ffmpeg 
+     OpenCV  ( )
     """
     video_paths = [Path(p) for p in video_paths]
     if len(video_paths) < 2:
-        log("[ERROR] ต้องเลือกวิดีโออย่างน้อย 2 ไฟล์ถึงจะต่อได้")
+        log("[ERROR]  2 ")
         return False
 
     if fast_mode:
@@ -940,27 +940,27 @@ def merge_videos(
                     if progress_callback is not None:
                         progress_callback(1, 1)
                     return True
-                log("[INFO] จะใช้วิธีเข้ารหัสใหม่ทีละเฟรมแทน (ช้ากว่าแต่ทำงานได้แน่นอน)")
+                log("[INFO]  ()")
             else:
                 log(
-                    "[หมายเหตุ] วิดีโอแต่ละไฟล์มีขนาด/fps/รูปแบบไม่ตรงกัน "
-                    "จึงต้องเข้ารหัสใหม่ (โหมดเร็วของ ffmpeg ใช้ได้เฉพาะไฟล์ที่พารามิเตอร์ตรงกันทั้งหมด)"
+                    "[] /fps/ "
+                    " ( ffmpeg )"
                 )
         else:
-            log("[หมายเหตุ] ไม่พบ ffmpeg ในเครื่อง จะใช้วิธีเข้ารหัสใหม่ทีละเฟรมแทน")
+            log("[]  ffmpeg  ")
 
     return _merge_videos_opencv(video_paths, output_path, log, cancel_event, progress_callback)
 
 
 def _merge_videos_opencv(video_paths, output_path, log, cancel_event, progress_callback):
-    """ต่อวิดีโอแบบเข้ารหัสใหม่ทีละเฟรมด้วย OpenCV ใช้ fps/ขนาดของวิดีโอไฟล์แรกเป็นมาตรฐาน
-    วิดีโอไฟล์อื่นที่ขนาดไม่ตรงจะถูกย่อ/ขยายให้พอดี คืนค่า True/False ว่าสำเร็จหรือไม่"""
+    """ OpenCV  fps/
+    /  True/False """
     import cv2
 
-    # เปิดไฟล์แรกเพื่อดึง fps/ขนาดมาตรฐาน
+    #  fps/
     first_info = probe_video_info(video_paths[0])
     if first_info is None:
-        log(f"[ERROR] เปิดวิดีโอไม่ได้: {video_paths[0]}")
+        log(f"[ERROR] : {video_paths[0]}")
         return False
 
     cap0 = _open_video_capture(video_paths[0])
@@ -970,12 +970,12 @@ def _merge_videos_opencv(video_paths, output_path, log, cancel_event, progress_c
     fps = first_info["fps"]
     target_size = (width, height)
 
-    # รวมจำนวนเฟรมทั้งหมดของทุกไฟล์ ไว้คำนวณ % ความคืบหน้ารวม
+    #   % 
     infos = [first_info]
     for p in video_paths[1:]:
         info = probe_video_info(p)
         if info is None:
-            log(f"[ERROR] เปิดวิดีโอไม่ได้: {p}")
+            log(f"[ERROR] : {p}")
             return False
         infos.append(info)
     total_frames_all = sum(i["total_frames"] for i in infos)
@@ -983,7 +983,7 @@ def _merge_videos_opencv(video_paths, output_path, log, cancel_event, progress_c
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     writer, actual_path = _open_video_writer(output_path, fourcc, fps, target_size)
     if not writer.isOpened():
-        log(f"[ERROR] สร้างไฟล์วิดีโอปลายทางไม่ได้: {output_path}")
+        log(f"[ERROR] : {output_path}")
         return False
 
     written_total = 0
@@ -992,17 +992,17 @@ def _merge_videos_opencv(video_paths, output_path, log, cancel_event, progress_c
         if cancel_event is not None and cancel_event.is_set():
             cancelled = True
             break
-        log(f"[INFO] ({idx}/{len(video_paths)}) กำลังต่อ: {path.name}")
+        log(f"[INFO] ({idx}/{len(video_paths)}) : {path.name}")
         cap = _open_video_capture(path)
         if not cap.isOpened():
-            log(f"[WARN] ข้ามไฟล์ที่เปิดไม่ได้: {path.name}")
+            log(f"[WARN] : {path.name}")
             continue
 
         this_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         this_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         needs_resize = (this_w, this_h) != target_size
         if needs_resize:
-            log(f"[หมายเหตุ] {path.name} ขนาด {this_w}x{this_h} ไม่ตรงกับไฟล์แรก ({width}x{height}) — จะปรับขนาดให้อัตโนมัติ")
+            log(f"[] {path.name}  {this_w}x{this_h}  ({width}x{height}) — ")
 
         while True:
             if cancel_event is not None and cancel_event.is_set():
@@ -1026,14 +1026,14 @@ def _merge_videos_opencv(video_paths, output_path, log, cancel_event, progress_c
     writer.release()
 
     if cancelled:
-        log(f"[ยกเลิก] หยุดกลางคัน — ต่อไปแล้ว {written_total} เฟรม")
+        log(f"[]  —  {written_total} ")
         return False
 
     if written_total <= 0:
-        log("[ERROR] ไม่ได้เฟรมเลย ไฟล์ผลลัพธ์อาจไม่สมบูรณ์")
+        log("[ERROR]  ")
         return False
 
-    log(f"[DONE] ต่อวิดีโอสำเร็จ {len(video_paths)} ไฟล์ รวม {written_total} เฟรม -> {actual_path}")
+    log(f"[DONE]  {len(video_paths)}   {written_total}  -> {actual_path}")
     return True
 
 
@@ -1041,8 +1041,8 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 
 
 def _read_image_safe(path):
-    """อ่านภาพแบบรองรับ path ภาษาไทย/ยูนิโค้ด (ไม่ใช้ cv2.imread ตรงๆ เพราะมีปัญหากับ
-    path ที่ไม่ใช่ ASCII บน Windows เหมือนกับที่เจอตอนเขียนไฟล์) คืนค่า numpy array หรือ None"""
+    """ path / ( cv2.imread  
+    path  ASCII  Windows )  numpy array  None"""
     import cv2
     import numpy as np
 
@@ -1056,21 +1056,21 @@ def _read_image_safe(path):
 
 
 def images_to_video(image_paths, output_path, fps=25.0, log=print, cancel_event=None, progress_callback=None):
-    """รวมภาพหลายไฟล์เป็นวิดีโอไฟล์เดียว เรียงตามลำดับที่ให้มา
-    ใช้ขนาดของภาพแรกเป็นมาตรฐาน ภาพอื่นที่ขนาดไม่ตรงจะถูกย่อ/ขยายให้พอดี คืนค่า True/False"""
+    """ 
+     /  True/False"""
     import cv2
 
     image_paths = [Path(p) for p in image_paths]
     if len(image_paths) < 1:
-        log("[ERROR] ต้องเลือกภาพอย่างน้อย 1 ภาพ")
+        log("[ERROR]  1 ")
         return False
     if fps is None or fps <= 0:
-        log("[ERROR] FPS ต้องมากกว่า 0")
+        log("[ERROR] FPS  0")
         return False
 
     first_img = _read_image_safe(image_paths[0])
     if first_img is None:
-        log(f"[ERROR] เปิดภาพไม่ได้: {image_paths[0]}")
+        log(f"[ERROR] : {image_paths[0]}")
         return False
 
     h, w = first_img.shape[:2]
@@ -1079,23 +1079,23 @@ def images_to_video(image_paths, output_path, fps=25.0, log=print, cancel_event=
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     writer, actual_path = _open_video_writer(output_path, fourcc, fps, target_size)
     if not writer.isOpened():
-        log(f"[ERROR] สร้างไฟล์วิดีโอปลายทางไม่ได้: {output_path}")
+        log(f"[ERROR] : {output_path}")
         return False
 
     total = len(image_paths)
     written = 0
     cancelled = False
-    log(f"[INFO] กำลังรวม {total} ภาพเป็นวิดีโอ ที่ {fps} FPS (ขนาด {w}x{h})...")
+    log(f"[INFO]  {total}   {fps} FPS ( {w}x{h})...")
 
     for idx, img_path in enumerate(image_paths):
         if cancel_event is not None and cancel_event.is_set():
             cancelled = True
-            log(f"[ยกเลิก] หยุดกลางคัน — รวมไปแล้ว {written} ภาพ")
+            log(f"[]  —  {written} ")
             break
 
         img = _read_image_safe(img_path)
         if img is None:
-            log(f"[WARN] ข้ามภาพที่เปิดไม่ได้: {img_path.name}")
+            log(f"[WARN] : {img_path.name}")
             continue
         if img.shape[1] != w or img.shape[0] != h:
             img = cv2.resize(img, target_size, interpolation=cv2.INTER_AREA)
@@ -1113,10 +1113,10 @@ def images_to_video(image_paths, output_path, fps=25.0, log=print, cancel_event=
         return False
 
     if written <= 0:
-        log("[ERROR] ไม่ได้ภาพเลย ไฟล์ผลลัพธ์อาจไม่สมบูรณ์")
+        log("[ERROR]  ")
         return False
 
-    log(f"[DONE] รวมภาพเป็นวิดีโอสำเร็จ {written} ภาพ (~{written / fps:.1f} วินาที) -> {actual_path}")
+    log(f"[DONE]  {written}  (~{written / fps:.1f} ) -> {actual_path}")
     return True
 
 
@@ -1126,37 +1126,37 @@ def images_to_video(image_paths, output_path, fps=25.0, log=print, cancel_event=
 
 def build_arg_parser():
     p = argparse.ArgumentParser(
-        description="แตกเฟรมภาพจากวิดีโอ",
+        description="",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    p.add_argument("-i", "--input", help="ไฟล์วิดีโอ หรือ โฟลเดอร์ที่มีวิดีโอหลายไฟล์")
-    p.add_argument("-o", "--output", default="output_frames", help="โฟลเดอร์ปลายทางสำหรับเก็บภาพ (ค่าเริ่มต้น: output_frames)")
+    p.add_argument("-i", "--input", help="  ")
+    p.add_argument("-o", "--output", default="output_frames", help=" (: output_frames)")
     rate = p.add_mutually_exclusive_group()
-    rate.add_argument("--fps", type=float, help="จำนวนภาพที่ต้องการต่อวินาที เช่น 1, 2, 0.5")
-    rate.add_argument("--interval", type=int, help="ดึงภาพทุกๆ N เฟรม (แทนการใช้ --fps)")
-    p.add_argument("--start", help="เวลาเริ่มต้นในวิดีโอ รูปแบบ HH:MM:SS หรือวินาที")
-    p.add_argument("--end", help="เวลาสิ้นสุดในวิดีโอ รูปแบบ HH:MM:SS หรือวินาที")
-    p.add_argument("--format", default="jpg", choices=["jpg", "jpeg", "png"], help="นามสกุลไฟล์ภาพ (ค่าเริ่มต้น: jpg)")
-    p.add_argument("--quality", type=int, default=95, help="คุณภาพ JPEG 1-100 (ค่าเริ่มต้น: 95)")
-    p.add_argument("--resize", help="ย่อขนาดภาพ เช่น 1280x720")
-    p.add_argument("--prefix", help="คำนำหน้าชื่อไฟล์ภาพ (ค่าเริ่มต้น: ใช้ชื่อไฟล์วิดีโอ)")
+    rate.add_argument("--fps", type=float, help="  1, 2, 0.5")
+    rate.add_argument("--interval", type=int, help=" N  ( --fps)")
+    p.add_argument("--start", help="  HH:MM:SS ")
+    p.add_argument("--end", help="  HH:MM:SS ")
+    p.add_argument("--format", default="jpg", choices=["jpg", "jpeg", "png"], help=" (: jpg)")
+    p.add_argument("--quality", type=int, default=95, help=" JPEG 1-100 (: 95)")
+    p.add_argument("--resize", help="  1280x720")
+    p.add_argument("--prefix", help=" (: )")
     p.add_argument(
         "--no-parallel", action="store_true",
-        help="ปิดการประมวลผลหลายวิดีโอพร้อมกัน (ปกติจะเปิดอัตโนมัติเมื่อเลือกทั้งโฟลเดอร์)",
+        help=" ()",
     )
-    p.add_argument("--dedup", action="store_true", help="ข้ามภาพที่ซ้ำ/คล้ายกับภาพล่าสุดที่บันทึกไปมากเกินไป")
+    p.add_argument("--dedup", action="store_true", help="/")
     p.add_argument(
         "--dedup-level", default="medium", choices=["low", "medium", "high"],
-        help="ความเข้มการกรองภาพซ้ำเมื่อเปิด --dedup (ค่าเริ่มต้น: medium)",
+        help=" --dedup (: medium)",
     )
-    p.add_argument("--gui", action="store_true", help="เปิดหน้าต่างโปรแกรม (GUI)")
+    p.add_argument("--gui", action="store_true", help=" (GUI)")
     return p
 
 
 def run_cli(args):
     if not args.input:
-        print("[ERROR] ต้องระบุ -i/--input (ไฟล์วิดีโอหรือโฟลเดอร์)")
+        print("[ERROR] Input is required: -i/--input (video file or folder)")
         sys.exit(1)
 
     try:
@@ -1172,7 +1172,7 @@ def run_cli(args):
     def cli_progress(done, total):
         pct = int(done / total * 100) if total else 0
         if pct - last_printed["pct"] >= 10 or pct >= 100:
-            print(f"[ความคืบหน้า] {pct}%")
+            print(f"[Progress] {pct}%")
             last_printed["pct"] = pct
 
     process_input(
@@ -1194,16 +1194,20 @@ def run_cli(args):
 
 
 # --------------------------------------------------------------------------
-# GUI (tkinter — มากับ Python อยู่แล้ว ไม่ต้องติดตั้งเพิ่ม)
+# GUI (tkinter —  Python  )
 # --------------------------------------------------------------------------
 
-def launch_gui(parent=None):
-    """เปิด Multi Video Tool — ถ้าไม่ส่ง parent มา จะสร้างหน้าต่างของตัวเอง (พฤติกรรม
-    เดิมตอนรันเป็นสคริปต์เดี่ยว) ถ้าส่ง parent มา (เช่น จาก PK Studio) จะสร้างเป็น
-    ttk.Frame ฝังอยู่ใน parent นั้นแทน แล้ว return ตัว Frame กลับไปให้ผู้เรียก pack()
-    เอง — โค้ดภายในฟังก์ชันทั้งหมด (2500+ บรรทัด) ใช้ตัวแปร root แค่ในลักษณะ
-    .pack()/.after() ซึ่งทำงานเหมือนกันทั้งบน tk.Tk() และ ttk.Frame จึงไม่ต้องแก้
-    โค้ดส่วนกลางของฟังก์ชันเลยแม้แต่บรรทัดเดียว"""
+def launch_gui(parent=None, visible_tools=None):
+    """ Multi Video Tool —  parent   (
+    Original)  parent  (  PK Studio) 
+    ttk.Frame  parent   return  Frame  pack()
+     —  (2500+ )  root 
+    .pack()/.after()  tk.Tk()  ttk.Frame 
+    
+
+    visible_tools  PK Studio:
+    extract, trim, merge, images_to_video. Original
+    """
     import threading
     import tkinter as tk
     from tkinter import filedialog, messagebox, ttk, simpledialog
@@ -1221,8 +1225,8 @@ def launch_gui(parent=None):
     pad = {"padx": 10, "pady": 4}
 
     def make_scrollable_tab(parent):
-        """สร้างพื้นที่เลื่อนได้ (scrollable) + ที่ว่างสำหรับปุ่มด้านล่างสุด ไว้ในแท็บใดๆ ก็ได้
-        คืนค่า (content_frame, button_holder_frame) — ใส่เนื้อหาลง content_frame และปุ่มลง button_holder_frame"""
+        """ (scrollable) +   
+         (content_frame, button_holder_frame) —  content_frame  button_holder_frame"""
         button_holder = ttk.Frame(parent)
         button_holder.pack(side="bottom", fill="x", pady=8)
 
@@ -1252,22 +1256,39 @@ def launch_gui(parent=None):
             else:
                 canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
-        # bind เฉพาะตอนเมาส์อยู่เหนือ canvas นี้เท่านั้น (ไม่ให้แย่งการเลื่อนของแท็บอื่น)
+        # bind  canvas  ()
         canvas.bind("<Enter>", lambda e: (canvas.bind_all("<MouseWheel>", _on_wheel), canvas.bind_all("<Button-4>", _on_wheel), canvas.bind_all("<Button-5>", _on_wheel)))
         canvas.bind("<Leave>", lambda e: (canvas.unbind_all("<MouseWheel>"), canvas.unbind_all("<Button-4>"), canvas.unbind_all("<Button-5>")))
 
         return content_frame, button_holder
 
-    # --- แท็บสำหรับแต่ละฟังก์ชัน ---
-    notebook = ttk.Notebook(root)
-    notebook.pack(side="top", fill="both", expand=True)
+    # ---  ---
+    if visible_tools is None:
+        visible_tools = {"extract", "trim", "merge", "images_to_video"}
+    else:
+        visible_tools = set(visible_tools)
 
-    tab_extract = ttk.Frame(notebook)
-    notebook.add(tab_extract, text="1. แตกเฟรม")
+    #  PK Studio   Notebook 
+    visible_count = len(visible_tools)
+    notebook = None
+    if visible_count > 1:
+        notebook = ttk.Notebook(root)
+        notebook.pack(side="top", fill="both", expand=True)
+
+    def _make_tool_tab(text):
+        parent_frame = notebook if notebook is not None else root
+        frame = ttk.Frame(parent_frame)
+        if notebook is not None:
+            notebook.add(frame, text=text)
+        else:
+            frame.pack(fill="both", expand=True)
+        return frame
+
+    tab_extract = _make_tool_tab("1. Extract Frames") if "extract" in visible_tools else ttk.Frame(root)
 
     content, run_btn_holder = make_scrollable_tab(tab_extract)
 
-    extract_queue = []  # รายการวิดีโอที่จะแตกเฟรม แต่ละตัวเป็น dict {"path", "start", "end", "info", "preview_frame"}
+    extract_queue = []  # queued videos; each item stores path and metadata
     output_var = tk.StringVar(value=str(Path.cwd() / "output_frames"))
     mode_var = tk.StringVar(value="fps")
     rate_var = tk.StringVar(value="1")
@@ -1276,15 +1297,10 @@ def launch_gui(parent=None):
     prefix_var = tk.StringVar()
     dedup_var = tk.BooleanVar(value=False)
     dedup_level_var = tk.StringVar(value="medium")
-    clip_start_var = tk.StringVar()
-    clip_end_var = tk.StringVar()
-    clip_info_var = tk.StringVar(value="(เลือกคลิปในรายการด้านบนเพื่อตั้งค่าช่วงเวลาเฉพาะคลิปนั้น)")
     estimate_total_var = tk.StringVar(value="-")
 
-    selected_clip_holder = {"idx": None}
-
-    # --- 1) รายการวิดีโอ ---
-    frm_in = ttk.LabelFrame(content, text="1) รายการวิดีโอ (จะแตกเฟรมทีละคลิปตามลำดับบนลงล่าง)")
+    # --- 1)  ---
+    frm_in = ttk.LabelFrame(content, text="1) Video Queue")
     frm_in.pack(fill="x", **pad)
 
     queue_listbox_frame = ttk.Frame(frm_in)
@@ -1299,68 +1315,45 @@ def launch_gui(parent=None):
         queue_listbox.delete(0, "end")
         for i, item in enumerate(extract_queue, start=1):
             info = item.get("info")
-            dur_txt = format_hms(info["duration_sec"]) if info else "กำลังอ่าน..."
+            dur_txt = format_hms(info["duration_sec"]) if info else "Reading..."
             trim_txt = ""
             if item.get("start") or item.get("end"):
-                trim_txt = f"  [ตัด {item.get('start') or '0:00'}–{item.get('end') or 'จบคลิป'}]"
+                trim_txt = ""
             queue_listbox.insert("end", f"{i}. {Path(item['path']).name}  ({dur_txt}){trim_txt}")
-        queue_count_var.set(f"ทั้งหมด {len(extract_queue)} วิดีโอ")
+        queue_count_var.set(f"{len(extract_queue)} videos")
         schedule_estimate_update()
 
     def probe_queue_items(items):
-        """อ่านข้อมูล (fps/ความยาว) + เฟรมตัวอย่าง ของวิดีโอที่เพิ่งเพิ่มเข้ามา ทำงานเบื้องหลัง"""
+        """Read video metadata in the background without decoding preview frames."""
         def worker():
             for item in items:
-                if item.get("info") is not None:
-                    continue
-                info = probe_video_info(item["path"])
-                item["info"] = info
-                frame = None
-                if info and info["total_frames"] > 0:
-                    try:
-                        import cv2
-
-                        cap = _open_video_capture(item["path"])
-                        if cap.isOpened():
-                            mid_frame = int(info["total_frames"] * 0.3)
-                            cap.set(cv2.CAP_PROP_POS_FRAMES, mid_frame)
-                            ret, f = cap.read()
-                            if ret:
-                                frame = f
-                            cap.release()
-                    except Exception:
-                        frame = None
-                item["preview_frame"] = frame
-
-            def apply():
-                queue_refresh_listbox()
-                on_queue_select()
-
-            root.after(0, apply)
+                if item.get("info") is None:
+                    item["info"] = probe_video_info(item["path"])
+            root.after(0, queue_refresh_listbox)
 
         threading.Thread(target=worker, daemon=True).start()
 
     def queue_add_files():
         paths = filedialog.askopenfilenames(
-            title="เลือกไฟล์วิดีโอ (เลือกได้หลายไฟล์)",
+            title="Select video files",
             filetypes=[("Video files", "*.mp4 *.avi *.mov *.mkv *.wmv *.flv *.m4v *.ts"), ("All files", "*.*")],
         )
         if not paths:
             return
-        new_items = [{"path": p, "start": "", "end": "", "info": None, "preview_frame": None} for p in paths]
+        new_items = [{"path": p, "info": None} for p in paths]
         extract_queue.extend(new_items)
         queue_refresh_listbox()
         probe_queue_items(new_items)
 
     def queue_add_folder():
-        folder = filedialog.askdirectory(title="เลือกโฟลเดอร์ที่มีวิดีโอหลายไฟล์")
+        folder = filedialog.askdirectory(title="Select a folder containing videos")
         if not folder:
             return
         found = sorted(p for p in Path(folder).iterdir() if p.suffix.lower() in VIDEO_EXTENSIONS)
         if not found:
-            messagebox.showinfo("ไม่พบวิดีโอ", "ไม่พบไฟล์วิดีโอในโฟลเดอร์ที่เลือก")
+            messagebox.showinfo("No videos found", "No video files found in the selected folder.")
             return
-        new_items = [{"path": str(p), "start": "", "end": "", "info": None, "preview_frame": None} for p in found]
+        new_items = [{"path": str(p), "info": None} for p in found]
         extract_queue.extend(new_items)
         queue_refresh_listbox()
         probe_queue_items(new_items)
@@ -1369,9 +1362,7 @@ def launch_gui(parent=None):
         sel = list(queue_listbox.curselection())
         for idx in reversed(sel):
             del extract_queue[idx]
-        selected_clip_holder["idx"] = None
         queue_refresh_listbox()
-        on_queue_select()
 
     def queue_move_up():
         sel = list(queue_listbox.curselection())
@@ -1382,7 +1373,6 @@ def launch_gui(parent=None):
         queue_refresh_listbox()
         for idx in sel:
             queue_listbox.selection_set(idx - 1)
-        on_queue_select()
 
     def queue_move_down():
         sel = list(queue_listbox.curselection())
@@ -1393,121 +1383,37 @@ def launch_gui(parent=None):
         queue_refresh_listbox()
         for idx in sel:
             queue_listbox.selection_set(idx + 1)
-        on_queue_select()
 
     def queue_clear_all():
         extract_queue.clear()
-        selected_clip_holder["idx"] = None
         queue_refresh_listbox()
-        on_queue_select()
 
     queue_btn_row = ttk.Frame(frm_in)
     queue_btn_row.pack(fill="x", padx=6, pady=(0, 6))
-    ttk.Button(queue_btn_row, text="+ เพิ่มวิดีโอ...", command=queue_add_files).pack(side="left", padx=(0, 4))
-    ttk.Button(queue_btn_row, text="+ เพิ่มทั้งโฟลเดอร์...", command=queue_add_folder).pack(side="left", padx=4)
-    ttk.Button(queue_btn_row, text="- ลบที่เลือก", command=queue_remove_selected).pack(side="left", padx=4)
-    ttk.Button(queue_btn_row, text="▲ เลื่อนขึ้น", command=queue_move_up).pack(side="left", padx=4)
-    ttk.Button(queue_btn_row, text="▼ เลื่อนลง", command=queue_move_down).pack(side="left", padx=4)
-    ttk.Button(queue_btn_row, text="ล้างทั้งหมด", command=queue_clear_all).pack(side="left", padx=4)
+    ttk.Button(queue_btn_row, text="+ Add Videos...", command=queue_add_files).pack(side="left", padx=(0, 4))
+    ttk.Button(queue_btn_row, text="+ Add Folder...", command=queue_add_folder).pack(side="left", padx=4)
+    ttk.Button(queue_btn_row, text="- Remove Selected", command=queue_remove_selected).pack(side="left", padx=4)
+    ttk.Button(queue_btn_row, text="▲ Move Up", command=queue_move_up).pack(side="left", padx=4)
+    ttk.Button(queue_btn_row, text="▼ Move Down", command=queue_move_down).pack(side="left", padx=4)
+    ttk.Button(queue_btn_row, text="Clear All", command=queue_clear_all).pack(side="left", padx=4)
 
-    queue_count_var = tk.StringVar(value="ทั้งหมด 0 วิดีโอ")
+    queue_count_var = tk.StringVar(value="0 videos")
     ttk.Label(frm_in, textvariable=queue_count_var).pack(anchor="w", padx=6, pady=(0, 6))
 
-    # --- 2) ตัดช่วงเวลาเฉพาะคลิปที่เลือก ---
-    frm_trim = ttk.LabelFrame(content, text="2) ตัดช่วงเวลาเฉพาะคลิปที่เลือกในรายการ (ไม่บังคับ, รูปแบบ HH:MM:SS)")
-    frm_trim.pack(fill="x", **pad)
-
-    def on_queue_select(event=None):
-        sel = queue_listbox.curselection()
-        if len(sel) != 1:
-            selected_clip_holder["idx"] = None
-            clip_info_var.set("(เลือกคลิปเดียวในรายการด้านบนเพื่อตั้งค่าช่วงเวลาเฉพาะคลิปนั้น)")
-            clip_start_var.set("")
-            clip_end_var.set("")
-            return
-        idx = sel[0]
-        selected_clip_holder["idx"] = idx
-        item = extract_queue[idx]
-        clip_start_var.set(item.get("start", ""))
-        clip_end_var.set(item.get("end", ""))
-        info = item.get("info")
-        if info:
-            clip_info_var.set(
-                f"{Path(item['path']).name}  —  ความยาว: {format_hms(info['duration_sec'])}  |  "
-                f"{info['fps']:.1f} FPS  |  {info['total_frames']} เฟรม"
-            )
-        else:
-            clip_info_var.set(f"{Path(item['path']).name}  —  กำลังอ่านข้อมูล...")
-
-    queue_listbox.bind("<<ListboxSelect>>", on_queue_select)
-
-    clip_trim_debounce_holder = {"id": None}
-
-    def save_clip_trim(*_args):
-        idx = selected_clip_holder["idx"]
-        if idx is None or idx >= len(extract_queue):
-            return
-        extract_queue[idx]["start"] = clip_start_var.get()
-        extract_queue[idx]["end"] = clip_end_var.get()
-
-        def _apply():
-            queue_refresh_listbox()
-            if idx < len(extract_queue):
-                queue_listbox.selection_set(idx)
-
-        if clip_trim_debounce_holder["id"] is not None:
-            try:
-                root.after_cancel(clip_trim_debounce_holder["id"])
-            except Exception:
-                pass
-        clip_trim_debounce_holder["id"] = root.after(300, _apply)
-
-    def clip_set_start_beginning():
-        clip_start_var.set("00:00:00")
-
-    def clip_set_end_finish():
-        idx = selected_clip_holder["idx"]
-        if idx is None:
-            messagebox.showinfo("ท้ายคลิป", "กรุณาเลือกคลิปในรายการด้านบนก่อน")
-            return
-        info = extract_queue[idx].get("info")
-        if info is not None:
-            clip_end_var.set(format_hms(info["duration_sec"]))
-        else:
-            messagebox.showinfo("ท้ายคลิป", "ยังไม่ทราบความยาววิดีโอ (กำลังอ่านข้อมูลอยู่ ลองอีกครั้งสักครู่)")
-
-    def clip_select_whole():
-        clip_set_start_beginning()
-        clip_set_end_finish()
-
-    ttk.Label(frm_trim, text="เริ่ม:").grid(row=0, column=0, padx=(6, 2), pady=4)
-    ttk.Entry(frm_trim, textvariable=clip_start_var, width=10).grid(row=0, column=1)
-    ttk.Button(frm_trim, text="⏮ ต้นคลิป", width=10, command=clip_set_start_beginning).grid(row=0, column=2, padx=4)
-
-    ttk.Label(frm_trim, text="สิ้นสุด:").grid(row=0, column=3, padx=(12, 2))
-    ttk.Entry(frm_trim, textvariable=clip_end_var, width=10).grid(row=0, column=4)
-    ttk.Button(frm_trim, text="ท้ายคลิป ⏭", width=10, command=clip_set_end_finish).grid(row=0, column=5, padx=4)
-
-    ttk.Button(frm_trim, text="ทั้งคลิป (ต้น-จบ)", command=clip_select_whole).grid(row=0, column=6, padx=(12, 6))
-    ttk.Label(frm_trim, textvariable=clip_info_var).grid(row=1, column=0, columnspan=7, padx=6, pady=(4, 6), sticky="w")
-
-    clip_start_var.trace_add("write", save_clip_trim)
-    clip_end_var.trace_add("write", save_clip_trim)
-
-    # --- 3) โฟลเดอร์ปลายทาง ---
-    frm_out = ttk.LabelFrame(content, text="3) โฟลเดอร์ปลายทาง")
+    # --- Output folder ---
+    frm_out = ttk.LabelFrame(content, text="2) Output Folder")
     frm_out.pack(fill="x", **pad)
     ttk.Entry(frm_out, textvariable=output_var, width=45).pack(side="left", fill="x", expand=True, padx=6, pady=6)
 
     def pick_output():
-        path = filedialog.askdirectory(title="เลือกโฟลเดอร์ปลายทาง")
+        path = filedialog.askdirectory(title="Select output folder")
         if path:
             output_var.set(path)
 
     def create_named_folder():
         name = simpledialog.askstring(
-            "สร้างโฟลเดอร์ใหม่",
-            "ตั้งชื่อโฟลเดอร์ใหม่ (จะสร้างไว้ใต้โฟลเดอร์ปลายทางปัจจุบัน):",
+            "Create New Folder",
+            "Enter a folder name:",
             parent=root,
         )
         if not name or not name.strip():
@@ -1517,27 +1423,27 @@ def launch_gui(parent=None):
             new_path.mkdir(parents=True, exist_ok=True)
             output_var.set(str(new_path))
         except Exception as e:
-            messagebox.showerror("ผิดพลาด", f"สร้างโฟลเดอร์ไม่สำเร็จ: {e}")
+            messagebox.showerror("Error", f"Could not create folder: {e}")
 
-    ttk.Button(frm_out, text="เลือกโฟลเดอร์...", command=pick_output).pack(side="left", padx=2)
-    ttk.Button(frm_out, text="+ สร้างโฟลเดอร์ใหม่...", command=create_named_folder).pack(side="left", padx=2)
+    ttk.Button(frm_out, text="Browse...", command=pick_output).pack(side="left", padx=2)
+    ttk.Button(frm_out, text="+ New Folder...", command=create_named_folder).pack(side="left", padx=2)
 
-    # --- แถวตั้งค่าอัตราการดึงเฟรม ---
-    frm_rate = ttk.LabelFrame(content, text="4) อัตราการดึงเฟรม (ใช้ร่วมกันทุกคลิปในรายการ)")
+    # ---  ---
+    frm_rate = ttk.LabelFrame(content, text="3) Frame Sampling")
     frm_rate.pack(fill="x", **pad)
-    ttk.Radiobutton(frm_rate, text="ภาพต่อวินาที (FPS)", variable=mode_var, value="fps").grid(row=0, column=0, sticky="w", padx=6, pady=4)
-    ttk.Radiobutton(frm_rate, text="ทุกๆ N เฟรม", variable=mode_var, value="interval").grid(row=1, column=0, sticky="w", padx=6, pady=4)
+    ttk.Radiobutton(frm_rate, text="Frames per second (FPS)", variable=mode_var, value="fps").grid(row=0, column=0, sticky="w", padx=6, pady=4)
+    ttk.Radiobutton(frm_rate, text="Every N frames", variable=mode_var, value="interval").grid(row=1, column=0, sticky="w", padx=6, pady=4)
     ttk.Entry(frm_rate, textvariable=rate_var, width=10).grid(row=0, column=1, rowspan=2, padx=6)
-    ttk.Label(frm_rate, text="(ปล่อยว่าง/ใส่ 0 = ดึงทุกเฟรม)").grid(row=0, column=2, rowspan=2, sticky="w")
+    ttk.Label(frm_rate, text="(Blank or 0 = every frame)").grid(row=0, column=2, rowspan=2, sticky="w")
 
-    # --- แถวอื่นๆ ---
-    frm_misc = ttk.LabelFrame(content, text="5) ตัวเลือกอื่นๆ (ใช้ร่วมกันทุกคลิปในรายการ)")
+    # ---  ---
+    frm_misc = ttk.LabelFrame(content, text="4) Output Options")
     frm_misc.pack(fill="x", **pad)
-    ttk.Label(frm_misc, text="นามสกุลภาพ:").grid(row=0, column=0, padx=6, pady=4, sticky="w")
+    ttk.Label(frm_misc, text="Image format:").grid(row=0, column=0, padx=6, pady=4, sticky="w")
     ttk.Combobox(frm_misc, textvariable=format_var, values=["jpg", "png"], width=8, state="readonly").grid(row=0, column=1)
-    ttk.Label(frm_misc, text="ย่อขนาด (WxH):").grid(row=0, column=2, padx=6, sticky="w")
+    ttk.Label(frm_misc, text="Resize (WxH):").grid(row=0, column=2, padx=6, sticky="w")
     ttk.Entry(frm_misc, textvariable=resize_var, width=12).grid(row=0, column=3)
-    ttk.Label(frm_misc, text="คำนำหน้าชื่อไฟล์:").grid(row=1, column=0, padx=6, pady=4, sticky="w")
+    ttk.Label(frm_misc, text="Filename prefix:").grid(row=1, column=0, padx=6, pady=4, sticky="w")
     ttk.Entry(frm_misc, textvariable=prefix_var, width=20).grid(row=1, column=1, columnspan=2, sticky="w")
 
     dedup_level_frame = ttk.Frame(frm_misc)
@@ -1550,7 +1456,7 @@ def launch_gui(parent=None):
         schedule_estimate_update()
 
     ttk.Checkbutton(
-        frm_misc, text="ข้ามภาพที่ซ้ำ/คล้ายกันเกินไป (ลดภาพซ้ำ เหมาะกับเตรียมข้อมูลไป label เช่น Roboflow)",
+        frm_misc, text="Skip near-duplicate frames",
         variable=dedup_var, command=_toggle_dedup_level_frame,
     ).grid(row=2, column=0, columnspan=3, padx=6, pady=(4, 4), sticky="w")
 
@@ -1564,27 +1470,27 @@ def launch_gui(parent=None):
                 return DEDUP_LEVELS["medium"]
         return DEDUP_LEVELS.get(dedup_level_var.get(), DEDUP_LEVELS["medium"])
 
-    ttk.Label(dedup_level_frame, text="ความเข้มการกรอง:").pack(side="left", padx=(0, 6))
+    ttk.Label(dedup_level_frame, text="Deduplication level:").pack(side="left", padx=(0, 6))
     ttk.Radiobutton(
-        dedup_level_frame, text="น้อย (เก็บภาพเยอะ)", variable=dedup_level_var, value="low",
+        dedup_level_frame, text="Low (keep more)", variable=dedup_level_var, value="low",
         command=lambda: schedule_estimate_update(),
     ).pack(side="left", padx=4)
     ttk.Radiobutton(
-        dedup_level_frame, text="ปานกลาง", variable=dedup_level_var, value="medium",
+        dedup_level_frame, text="Medium", variable=dedup_level_var, value="medium",
         command=lambda: schedule_estimate_update(),
     ).pack(side="left", padx=4)
     ttk.Radiobutton(
-        dedup_level_frame, text="มาก (เก็บภาพน้อยลงชัดเจน)", variable=dedup_level_var, value="high",
+        dedup_level_frame, text="High (keep fewer)", variable=dedup_level_var, value="high",
         command=lambda: schedule_estimate_update(),
     ).pack(side="left", padx=4)
     ttk.Radiobutton(
-        dedup_level_frame, text="กำหนดเอง (%):", variable=dedup_level_var, value="custom",
+        dedup_level_frame, text="Custom (%):", variable=dedup_level_var, value="custom",
         command=lambda: schedule_estimate_update(),
     ).pack(side="left", padx=(4, 2))
     ttk.Entry(dedup_level_frame, textvariable=dedup_custom_var, width=6).pack(side="left")
 
-    # --- ประมาณการ ---
-    frm_estimate = ttk.LabelFrame(content, text="6) ประมาณการ")
+    # ---  ---
+    frm_estimate = ttk.LabelFrame(content, text="5) Estimate")
     frm_estimate.pack(fill="x", **pad)
     estimate_label = ttk.Label(frm_estimate, textvariable=estimate_total_var, font=("Segoe UI", 12, "bold"), wraplength=700)
     estimate_label.pack(anchor="w", padx=10, pady=(10, 4))
@@ -1592,7 +1498,7 @@ def launch_gui(parent=None):
     estimate_detail_box.pack(fill="x", padx=10, pady=(0, 10))
 
     def update_preview_and_estimate():
-        """คำนวณจำนวนภาพ+ขนาดไฟล์โดยประมาณของทุกคลิปในรายการ แสดงทั้งรายคลิปและรวมทั้งหมด"""
+        """+ """
         if not extract_queue:
             estimate_total_var.set("-")
             estimate_detail_box.configure(state="normal")
@@ -1603,7 +1509,7 @@ def launch_gui(parent=None):
         try:
             rate = float(rate_var.get()) if rate_var.get().strip() else None
         except ValueError:
-            estimate_total_var.set("(ค่าอัตราดึงเฟรมไม่ถูกต้อง)")
+            estimate_total_var.set("(Invalid frame rate)")
             estimate_label.configure(foreground="red")
             return
         fps_val = rate if mode_var.get() == "fps" and rate else None
@@ -1612,7 +1518,7 @@ def launch_gui(parent=None):
         try:
             resize = parse_resize(resize_var.get()) if resize_var.get().strip() else None
         except ValueError:
-            estimate_total_var.set("(รูปแบบขนาดย่อไม่ถูกต้อง เช่น 1280x720)")
+            estimate_total_var.set("(Invalid resize format, e.g. 1280x720)")
             estimate_label.configure(foreground="red")
             return
 
@@ -1625,13 +1531,13 @@ def launch_gui(parent=None):
             name = Path(item["path"]).name
             info = item.get("info")
             if info is None:
-                lines.append(f"• {name}: กำลังคำนวณ...")
+                lines.append(f"• {name}: Calculating...")
                 continue
             try:
                 start_sec = parse_timestamp(item.get("start", ""))
                 end_sec = parse_timestamp(item.get("end", ""))
             except ValueError:
-                lines.append(f"• {name}: (ช่วงเวลาที่ตั้งไว้ไม่ถูกต้อง)")
+                lines.append(f"• {name}: (Invalid time range)")
                 continue
 
             count = estimate_extraction(
@@ -1639,34 +1545,12 @@ def launch_gui(parent=None):
             )
             total_count += count
 
-            per_frame_bytes = None
-            frame = item.get("preview_frame")
-            if frame is not None:
-                try:
-                    import cv2
-
-                    f = cv2.resize(frame, resize, interpolation=cv2.INTER_AREA) if resize else frame
-                    ext = f".{format_var.get()}"
-                    params = [cv2.IMWRITE_JPEG_QUALITY, 95] if format_var.get().lower() in ("jpg", "jpeg") else []
-                    ok, buf = cv2.imencode(ext, f, params)
-                    if ok:
-                        per_frame_bytes = len(buf.tobytes())
-                except Exception:
-                    per_frame_bytes = None
-
-            if per_frame_bytes is not None:
-                clip_bytes = count * per_frame_bytes
-                total_bytes += clip_bytes
-                lines.append(f"• {name}: ~{count:,} ภาพ (~{format_size(clip_bytes)})")
-            else:
-                any_bytes_unknown = True
-                lines.append(f"• {name}: ~{count:,} ภาพ")
-
-        dedup_note = "  (ค่าสูงสุด — ถ้าเปิดข้ามภาพซ้ำ จำนวนจริงจะน้อยกว่านี้)" if dedup_var.get() else ""
+            lines.append(f"- {name}: ~{count:,} frames")
+        dedup_note = "  (maximum estimate; deduplication may reduce the final count)" if dedup_var.get() else ""
         size_text = format_size(total_bytes) + ("+" if any_bytes_unknown else "")
-        total_text = f"รวมทั้งหมด ~{total_count:,} ภาพ (~{size_text}) จาก {len(extract_queue)} วิดีโอ{dedup_note}"
+        total_text = f"Estimated total: ~{total_count:,} frames from {len(extract_queue)} videos{dedup_note}"
         if total_count > 3000:
-            total_text += "  ⚠ ภาพเยอะมาก ลองลด FPS หรือเพิ่มค่า interval"
+            total_text += "  ⚠ Large output. Consider lowering FPS or increasing the frame interval."
             estimate_label.configure(foreground="dark orange")
         else:
             estimate_label.configure(foreground="dark green")
@@ -1692,8 +1576,8 @@ def launch_gui(parent=None):
     mode_var.trace_add("write", lambda *_: update_preview_and_estimate())
     format_var.trace_add("write", lambda *_: update_preview_and_estimate())
 
-    # --- แถบความคืบหน้า ---
-    frm_progress = ttk.LabelFrame(content, text="ความคืบหน้า")
+    # ---  ---
+    frm_progress = ttk.LabelFrame(content, text="Progress")
     frm_progress.pack(fill="x", **pad)
     current_video_var = tk.StringVar(value="")
     percent_var = tk.StringVar(value="0%")
@@ -1705,7 +1589,7 @@ def launch_gui(parent=None):
     ttk.Label(progress_row, textvariable=percent_var, width=5).pack(side="left", padx=(8, 0))
 
     # --- log box ---
-    frm_log = ttk.LabelFrame(content, text="สถานะการทำงาน")
+    frm_log = ttk.LabelFrame(content, text="Activity Log")
     frm_log.pack(fill="both", expand=True, **pad)
     log_box = tk.Text(frm_log, height=6, wrap="word", state="disabled")
     log_box.pack(fill="both", expand=True, padx=6, pady=6)
@@ -1730,7 +1614,7 @@ def launch_gui(parent=None):
 
     def update_current_video(index, total_videos, name):
         def _do():
-            current_video_var.set(f"วิดีโอที่ {index}/{total_videos}: {name}")
+            current_video_var.set(f"Video {index}/{total_videos}: {name}")
             progress_bar["value"] = 0
             percent_var.set("0%")
 
@@ -1746,24 +1630,16 @@ def launch_gui(parent=None):
 
     def run_extraction():
         if not extract_queue:
-            messagebox.showerror("ผิดพลาด", "กรุณาเพิ่มวิดีโออย่างน้อย 1 ไฟล์ก่อน")
+            messagebox.showerror("Error", "Add at least one video first.")
             return
         try:
             rate = float(rate_var.get()) if rate_var.get().strip() else None
             resize = parse_resize(resize_var.get()) if resize_var.get().strip() else None
         except ValueError as e:
-            messagebox.showerror("รูปแบบไม่ถูกต้อง", str(e))
+            messagebox.showerror("Invalid Input", str(e))
             return
 
-        parsed_items = []
-        for item in extract_queue:
-            try:
-                s = parse_timestamp(item.get("start", ""))
-                e = parse_timestamp(item.get("end", ""))
-            except ValueError as ex:
-                messagebox.showerror("รูปแบบเวลาไม่ถูกต้อง", f"{Path(item['path']).name}: {ex}")
-                return
-            parsed_items.append((item["path"], s, e))
+        parsed_items = [(item["path"], None, None) for item in extract_queue]
 
         fps = rate if mode_var.get() == "fps" and rate else None
         interval_frames = int(rate) if mode_var.get() == "interval" and rate else None
@@ -1814,16 +1690,16 @@ def launch_gui(parent=None):
                 return n
 
             try:
-                # ประมวลผลหลายวิดีโอพร้อมกันด้วย thread pool เหมือนที่ใช้อยู่แล้วฝั่ง CLI/โฟลเดอร์
-                # (OpenCV ปล่อย GIL ระหว่างถอดรหัส/เข้ารหัสภาพ จึงได้ความเร็วเพิ่มขึ้นจริง)
-                # ถ้ามีวิดีโอแค่ไฟล์เดียว ประมวลผลตรง ๆ ไม่ต้องผ่าน thread pool ให้ยุ่งยากเปล่า ๆ
+                #  thread pool  CLI/
+                # (OpenCV  GIL / )
+                #     thread pool  
                 if n_items > 1:
                     max_workers = min(4, max(1, _os.cpu_count() or 2), n_items)
-                    log(f"[INFO] ประมวลผลแบบขนาน {max_workers} ไฟล์พร้อมกัน (ทั้งหมด {n_items} วิดีโอ)")
-                    current_video_var.set(f"กำลังประมวลผล {n_items} วิดีโอพร้อมกัน...")
+                    log(f"[INFO]  {max_workers}  ( {n_items} )")
+                    current_video_var.set(f"Processing {n_items} videos in parallel...")
 
-                    # คำนวณจำนวนเฟรมรวมทั้งหมดล่วงหน้า (จากข้อมูลที่ probe ไว้แล้วตอนเพิ่มเข้ารายการ)
-                    # ไว้ใช้คำนวณ % ความคืบหน้ารวมของทั้งแบทช์ ให้แถบ progress ขยับต่อเนื่องสมูท
+                    #  ( probe )
+                    #  %   progress 
                     frame_counts = [
                         (item.get("info") or {}).get("total_frames", 0) for item in extract_queue
                     ]
@@ -1855,13 +1731,13 @@ def launch_gui(parent=None):
                     do_one(0, path, start_sec, end_sec, update_progress)
 
                 total_saved = saved_holder["n"]
-                log(f"\n[SUMMARY] รวมทั้งหมด {total_saved} เฟรม จาก {n_items} วิดีโอ")
+                log(f"\n[SUMMARY]  {total_saved}   {n_items} ")
                 if cancel_event.is_set():
-                    log("\n⏹ ยกเลิกการทำงานแล้ว")
+                    log("\n⏹ ")
                 else:
-                    log("\n✅ เสร็จสิ้น! เปิดโฟลเดอร์ปลายทางเพื่อดูภาพที่แตกออกมาได้เลย")
+                    log("\n✅ ! ")
             except Exception as e:
-                log(f"\n❌ เกิดข้อผิดพลาด: {e}")
+                log(f"\n❌ : {e}")
             finally:
                 root.after(0, lambda: set_running_state(False))
 
@@ -1872,18 +1748,17 @@ def launch_gui(parent=None):
         if ev is not None:
             ev.set()
             stop_btn.configure(state="disabled")
-            log("\n[กำลังหยุด...] รอให้เฟรมปัจจุบันเขียนเสร็จสักครู่")
+            log("\n[...] ")
 
-    run_btn = ttk.Button(run_btn_holder, text="▶  เริ่มแตกเฟรม", command=run_extraction)
+    run_btn = ttk.Button(run_btn_holder, text="▶  Extract Frames", command=run_extraction)
     run_btn.pack(side="left", expand=True, padx=(0, 4))
-    stop_btn = ttk.Button(run_btn_holder, text="■  หยุด", command=stop_extraction, state="disabled")
+    stop_btn = ttk.Button(run_btn_holder, text="■  Stop", command=stop_extraction, state="disabled")
     stop_btn.pack(side="left", expand=True, padx=(4, 0))
 
     # ============================================================
-    # แท็บ 2: ตัดคลิป (Trim)
+    #  2:  (Trim)
     # ============================================================
-    tab_trim = ttk.Frame(notebook)
-    notebook.add(tab_trim, text="2. ตัดคลิป")
+    tab_trim = _make_tool_tab("2. ") if "trim" in visible_tools else ttk.Frame(root)
     trim_content, trim_btn_holder = make_scrollable_tab(tab_trim)
 
     trim_input_var = tk.StringVar()
@@ -1893,14 +1768,14 @@ def launch_gui(parent=None):
     trim_duration_var = tk.StringVar(value="")
     trim_info_holder = {"info": None}
 
-    frm_trim_in = ttk.LabelFrame(trim_content, text="1) เลือกวิดีโอที่จะตัด")
+    frm_trim_in = ttk.LabelFrame(trim_content, text="1) Select Video to Trim")
     frm_trim_in.pack(fill="x", **pad)
     frm_trim_in.columnconfigure(0, weight=1)
     ttk.Entry(frm_trim_in, textvariable=trim_input_var, width=45).grid(row=0, column=0, padx=6, pady=6, sticky="ew")
 
     def trim_load_info(path):
         trim_info_holder["info"] = None
-        trim_duration_var.set("กำลังอ่านข้อมูลวิดีโอ...")
+        trim_duration_var.set("...")
 
         def worker():
             info = probe_video_info(path)
@@ -1909,10 +1784,10 @@ def launch_gui(parent=None):
                 trim_info_holder["info"] = info
                 if info:
                     trim_duration_var.set(
-                        f"ความยาว: {format_hms(info['duration_sec'])}  |  {info['fps']:.1f} FPS  |  {info['total_frames']} เฟรม"
+                        f": {format_hms(info['duration_sec'])}  |  {info['fps']:.1f} FPS  |  {info['total_frames']} "
                     )
                 else:
-                    trim_duration_var.set("(อ่านข้อมูลวิดีโอไม่ได้ — ไฟล์อาจเสียหายหรือไม่ใช่วิดีโอ)")
+                    trim_duration_var.set("( — )")
 
             root.after(0, apply)
 
@@ -1920,7 +1795,7 @@ def launch_gui(parent=None):
 
     def trim_pick_file():
         path = filedialog.askopenfilename(
-            title="เลือกไฟล์วิดีโอที่จะตัด",
+            title="Select Video to Trim",
             filetypes=[("Video files", "*.mp4 *.avi *.mov *.mkv *.wmv *.flv *.m4v *.ts"), ("All files", "*.*")],
         )
         if path:
@@ -1928,14 +1803,14 @@ def launch_gui(parent=None):
             trim_load_info(path)
             if not trim_output_var.get().strip():
                 p = Path(path)
-                trim_output_var.set(str(p.with_name(p.stem + "_ตัด.mp4")))
+                trim_output_var.set(str(p.with_name(p.stem + "_.mp4")))
 
-    ttk.Button(frm_trim_in, text="ไฟล์วิดีโอ...", command=trim_pick_file).grid(row=0, column=1, padx=6)
+    ttk.Button(frm_trim_in, text="Video File...", command=trim_pick_file).grid(row=0, column=1, padx=6)
     ttk.Label(frm_trim_in, textvariable=trim_duration_var).grid(
         row=1, column=0, columnspan=2, padx=6, pady=(0, 6), sticky="w"
     )
 
-    frm_trim_range = ttk.LabelFrame(trim_content, text="2) ช่วงเวลาที่จะตัด (รูปแบบ HH:MM:SS ปล่อยว่าง = ทั้งคลิป)")
+    frm_trim_range = ttk.LabelFrame(trim_content, text="2) Trim Range (HH:MM:SS, blank = entire clip)")
     frm_trim_range.pack(fill="x", **pad)
 
     def trim_set_start_beginning():
@@ -1946,54 +1821,54 @@ def launch_gui(parent=None):
         if info is not None:
             trim_end_var.set(format_hms(info["duration_sec"]))
         else:
-            messagebox.showinfo("ท้ายคลิป", "ยังไม่ทราบความยาววิดีโอ กรุณาเลือกไฟล์วิดีโอก่อน")
+            messagebox.showinfo("End of Video", "Video duration is unknown. Please select a video first.")
 
     def trim_select_whole():
         trim_set_start_beginning()
         trim_set_end_finish()
 
-    ttk.Label(frm_trim_range, text="เริ่ม:").grid(row=0, column=0, padx=(6, 2), pady=6)
+    ttk.Label(frm_trim_range, text="Start:").grid(row=0, column=0, padx=(6, 2), pady=6)
     ttk.Entry(frm_trim_range, textvariable=trim_start_var, width=10).grid(row=0, column=1)
-    ttk.Button(frm_trim_range, text="⏮ ต้นคลิป", width=10, command=trim_set_start_beginning).grid(row=0, column=2, padx=4)
-    ttk.Label(frm_trim_range, text="สิ้นสุด:").grid(row=0, column=3, padx=(12, 2))
+    ttk.Button(frm_trim_range, text="⏮ Start", width=10, command=trim_set_start_beginning).grid(row=0, column=2, padx=4)
+    ttk.Label(frm_trim_range, text="End:").grid(row=0, column=3, padx=(12, 2))
     ttk.Entry(frm_trim_range, textvariable=trim_end_var, width=10).grid(row=0, column=4)
-    ttk.Button(frm_trim_range, text="ท้ายคลิป ⏭", width=10, command=trim_set_end_finish).grid(row=0, column=5, padx=4)
-    ttk.Button(frm_trim_range, text="ทั้งคลิป", command=trim_select_whole).grid(row=0, column=6, padx=(12, 6))
+    ttk.Button(frm_trim_range, text="End ⏭", width=10, command=trim_set_end_finish).grid(row=0, column=5, padx=4)
+    ttk.Button(frm_trim_range, text="Entire Clip", command=trim_select_whole).grid(row=0, column=6, padx=(12, 6))
 
-    frm_trim_out = ttk.LabelFrame(trim_content, text="3) ไฟล์ผลลัพธ์ (.mp4)")
+    frm_trim_out = ttk.LabelFrame(trim_content, text="3) Output File (.mp4)")
     frm_trim_out.pack(fill="x", **pad)
     frm_trim_out.columnconfigure(0, weight=1)
     ttk.Entry(frm_trim_out, textvariable=trim_output_var, width=45).grid(row=0, column=0, padx=6, pady=6, sticky="ew")
 
     def trim_pick_output():
         path = filedialog.asksaveasfilename(
-            title="บันทึกวิดีโอที่ตัดแล้วเป็น...",
+            title="Save Trimmed Video As...",
             defaultextension=".mp4",
             filetypes=[("MP4 video", "*.mp4")],
-            initialfile=Path(trim_output_var.get()).name if trim_output_var.get().strip() else "clip_ตัด.mp4",
+            initialfile=Path(trim_output_var.get()).name if trim_output_var.get().strip() else "clip_.mp4",
         )
         if path:
             trim_output_var.set(path)
 
-    ttk.Button(frm_trim_out, text="เลือกตำแหน่งบันทึก...", command=trim_pick_output).grid(row=0, column=1, padx=6)
+    ttk.Button(frm_trim_out, text="Choose Output Location...", command=trim_pick_output).grid(row=0, column=1, padx=6)
 
     trim_mode_var = tk.StringVar(value="fast")
-    frm_trim_mode = ttk.LabelFrame(trim_content, text="4) โหมดการตัด")
+    frm_trim_mode = ttk.LabelFrame(trim_content, text="4) Trim Mode")
     frm_trim_mode.pack(fill="x", **pad)
     ttk.Radiobutton(
-        frm_trim_mode, text="เร็ว (ffmpeg, ไม่เข้ารหัสใหม่ — จุดตัดอาจคลาดเคลื่อน ≤2 วิ ที่ keyframe ใกล้เคียง)",
+        frm_trim_mode, text="Fast (FFmpeg, no re-encoding — cut may vary by up to ~2 sec near keyframes)",
         variable=trim_mode_var, value="fast",
     ).pack(anchor="w", padx=6, pady=(6, 2))
     ttk.Radiobutton(
-        frm_trim_mode, text="แม่นยำ (เข้ารหัสใหม่ทีละเฟรม — ตัดตรงเป๊ะ แต่ช้ากว่า)",
+        frm_trim_mode, text="Precise (frame-by-frame re-encoding — exact cuts, slower)",
         variable=trim_mode_var, value="accurate",
     ).pack(anchor="w", padx=6, pady=(0, 6))
     ttk.Label(
         frm_trim_mode,
-        text="หมายเหตุ: ถ้าไม่มี ffmpeg ในเครื่อง จะใช้โหมดแม่นยำให้อัตโนมัติไม่ว่าจะเลือกโหมดไหน",
+        text="Note: If FFmpeg is unavailable, precise mode will be used automatically.",
     ).pack(anchor="w", padx=6, pady=(0, 6))
 
-    frm_trim_progress = ttk.LabelFrame(trim_content, text="ความคืบหน้า")
+    frm_trim_progress = ttk.LabelFrame(trim_content, text="Progress")
     frm_trim_progress.pack(fill="x", **pad)
     trim_percent_var = tk.StringVar(value="0%")
     trim_progress_row = ttk.Frame(frm_trim_progress)
@@ -2002,7 +1877,7 @@ def launch_gui(parent=None):
     trim_progress_bar.pack(side="left", fill="x", expand=True)
     ttk.Label(trim_progress_row, textvariable=trim_percent_var, width=5).pack(side="left", padx=(8, 0))
 
-    frm_trim_log = ttk.LabelFrame(trim_content, text="สถานะการทำงาน")
+    frm_trim_log = ttk.LabelFrame(trim_content, text="Activity Log")
     frm_trim_log.pack(fill="both", expand=True, **pad)
     trim_log_box = tk.Text(frm_trim_log, height=6, wrap="word", state="disabled")
     trim_log_box.pack(fill="both", expand=True, padx=6, pady=6)
@@ -2035,20 +1910,20 @@ def launch_gui(parent=None):
 
     def trim_run():
         if not trim_input_var.get().strip() or not Path(trim_input_var.get()).is_file():
-            messagebox.showerror("ผิดพลาด", "กรุณาเลือกไฟล์วิดีโอที่จะตัดก่อน")
+            messagebox.showerror("Error", "Select Video to Trim")
             return
         if not trim_output_var.get().strip():
-            messagebox.showerror("ผิดพลาด", "กรุณาระบุตำแหน่งไฟล์ผลลัพธ์ก่อน")
+            messagebox.showerror("Error", "Please specify an output file first.")
             return
         try:
             start_sec = parse_timestamp(trim_start_var.get())
             end_sec = parse_timestamp(trim_end_var.get())
         except ValueError as e:
-            messagebox.showerror("รูปแบบเวลาไม่ถูกต้อง", str(e))
+            messagebox.showerror("Invalid Time", str(e))
             return
         if start_sec is None and end_sec is None:
             if not messagebox.askyesno(
-                "ยืนยัน", "ไม่ได้ระบุช่วงเวลา จะเป็นการคัดลอก/เข้ารหัสทั้งคลิปใหม่ทั้งไฟล์ ต้องการดำเนินการต่อหรือไม่?"
+                "", " /Entire Clip ?"
             ):
                 return
 
@@ -2074,13 +1949,13 @@ def launch_gui(parent=None):
                     fast_mode=(trim_mode_var.get() == "fast"),
                 )
                 if cancel_event.is_set():
-                    trim_log("\n⏹ ยกเลิกการทำงานแล้ว")
+                    trim_log("\n⏹ Cancelled.")
                 elif ok:
-                    trim_log("\n✅ เสร็จสิ้น! ตัดคลิปเรียบร้อยแล้ว")
+                    trim_log("\n✅ Trim completed.")
                 else:
-                    trim_log("\n❌ ตัดคลิปไม่สำเร็จ ดูรายละเอียดข้อผิดพลาดด้านบน")
+                    trim_log("\n❌ Trim failed.")
             except Exception as e:
-                trim_log(f"\n❌ เกิดข้อผิดพลาด: {e}")
+                trim_log(f"\n❌ Error: {e}")
             finally:
                 root.after(0, lambda: trim_set_running(False))
 
@@ -2091,24 +1966,23 @@ def launch_gui(parent=None):
         if ev is not None:
             ev.set()
             trim_stop_btn.configure(state="disabled")
-            trim_log("\n[กำลังหยุด...] รอให้เฟรมปัจจุบันเขียนเสร็จสักครู่")
+            trim_log("\n[...] Stopping...")
 
-    trim_run_btn = ttk.Button(trim_btn_holder, text="✂  ตัดคลิป", command=trim_run)
+    trim_run_btn = ttk.Button(trim_btn_holder, text="✂  Trim Video", command=trim_run)
     trim_run_btn.pack(side="left", expand=True, padx=(0, 4))
-    trim_stop_btn = ttk.Button(trim_btn_holder, text="■  หยุด", command=trim_stop, state="disabled")
+    trim_stop_btn = ttk.Button(trim_btn_holder, text="■  Stop", command=trim_stop, state="disabled")
     trim_stop_btn.pack(side="left", expand=True, padx=(4, 0))
 
     # ============================================================
-    # แท็บ 3: ต่อคลิป (Merge)
+    #  3:  (Merge)
     # ============================================================
-    tab_merge = ttk.Frame(notebook)
-    notebook.add(tab_merge, text="3. ต่อคลิป")
+    tab_merge = _make_tool_tab("3. ") if "merge" in visible_tools else ttk.Frame(root)
     merge_content, merge_btn_holder = make_scrollable_tab(tab_merge)
 
-    merge_files = []  # เก็บ path เต็มของไฟล์ตามลำดับที่จะต่อ
+    merge_files = []  #  path 
     merge_output_var = tk.StringVar()
 
-    frm_merge_list = ttk.LabelFrame(merge_content, text="1) รายการวิดีโอ (จะต่อตามลำดับบนลงล่าง)")
+    frm_merge_list = ttk.LabelFrame(merge_content, text="1) Video List (merged top to bottom)")
     frm_merge_list.pack(fill="x", **pad)
 
     merge_listbox_frame = ttk.Frame(frm_merge_list)
@@ -2126,7 +2000,7 @@ def launch_gui(parent=None):
 
     def merge_add_files():
         paths = filedialog.askopenfilenames(
-            title="เลือกวิดีโอที่จะต่อ (เลือกได้หลายไฟล์)",
+            title="Select Videos to Merge (multiple files allowed)",
             filetypes=[("Video files", "*.mp4 *.avi *.mov *.mkv *.wmv *.flv *.m4v *.ts"), ("All files", "*.*")],
         )
         for p in paths:
@@ -2165,35 +2039,35 @@ def launch_gui(parent=None):
 
     merge_btn_row = ttk.Frame(frm_merge_list)
     merge_btn_row.pack(fill="x", padx=6, pady=(0, 6))
-    ttk.Button(merge_btn_row, text="+ เพิ่มวิดีโอ...", command=merge_add_files).pack(side="left", padx=(0, 4))
-    ttk.Button(merge_btn_row, text="- ลบที่เลือก", command=merge_remove_selected).pack(side="left", padx=4)
-    ttk.Button(merge_btn_row, text="▲ เลื่อนขึ้น", command=merge_move_up).pack(side="left", padx=4)
-    ttk.Button(merge_btn_row, text="▼ เลื่อนลง", command=merge_move_down).pack(side="left", padx=4)
-    ttk.Button(merge_btn_row, text="ล้างทั้งหมด", command=merge_clear_all).pack(side="left", padx=4)
+    ttk.Button(merge_btn_row, text="+ Add Videos...", command=merge_add_files).pack(side="left", padx=(0, 4))
+    ttk.Button(merge_btn_row, text="- Remove Selected", command=merge_remove_selected).pack(side="left", padx=4)
+    ttk.Button(merge_btn_row, text="▲ Move Up", command=merge_move_up).pack(side="left", padx=4)
+    ttk.Button(merge_btn_row, text="▼ Move Down", command=merge_move_down).pack(side="left", padx=4)
+    ttk.Button(merge_btn_row, text="Clear All", command=merge_clear_all).pack(side="left", padx=4)
 
     ttk.Label(
         frm_merge_list,
-        text="หมายเหตุ: ถ้าวิดีโอมีขนาด/ความละเอียดไม่เท่ากัน โปรแกรมจะปรับให้เท่ากับไฟล์แรกในรายการอัตโนมัติ",
+        text="Note: Videos with different sizes/resolutions will be adjusted to match the first file.",
     ).pack(anchor="w", padx=6, pady=(0, 6))
 
-    frm_merge_out = ttk.LabelFrame(merge_content, text="2) ไฟล์ผลลัพธ์ (.mp4)")
+    frm_merge_out = ttk.LabelFrame(merge_content, text="2) Output File (.mp4)")
     frm_merge_out.pack(fill="x", **pad)
     frm_merge_out.columnconfigure(0, weight=1)
     ttk.Entry(frm_merge_out, textvariable=merge_output_var, width=45).grid(row=0, column=0, padx=6, pady=6, sticky="ew")
 
     def merge_pick_output():
         path = filedialog.asksaveasfilename(
-            title="บันทึกวิดีโอที่ต่อแล้วเป็น...",
+            title="Save Merged Video As...",
             defaultextension=".mp4",
             filetypes=[("MP4 video", "*.mp4")],
-            initialfile="clip_ต่อ.mp4",
+            initialfile="clip_.mp4",
         )
         if path:
             merge_output_var.set(path)
 
-    ttk.Button(frm_merge_out, text="เลือกตำแหน่งบันทึก...", command=merge_pick_output).grid(row=0, column=1, padx=6)
+    ttk.Button(frm_merge_out, text="Choose Output Location...", command=merge_pick_output).grid(row=0, column=1, padx=6)
 
-    frm_merge_progress = ttk.LabelFrame(merge_content, text="ความคืบหน้า")
+    frm_merge_progress = ttk.LabelFrame(merge_content, text="Progress")
     frm_merge_progress.pack(fill="x", **pad)
     merge_current_var = tk.StringVar(value="")
     ttk.Label(frm_merge_progress, textvariable=merge_current_var).pack(anchor="w", padx=6, pady=(4, 0))
@@ -2204,7 +2078,7 @@ def launch_gui(parent=None):
     merge_progress_bar.pack(side="left", fill="x", expand=True)
     ttk.Label(merge_progress_row, textvariable=merge_percent_var, width=5).pack(side="left", padx=(8, 0))
 
-    frm_merge_log = ttk.LabelFrame(merge_content, text="สถานะการทำงาน")
+    frm_merge_log = ttk.LabelFrame(merge_content, text="Activity Log")
     frm_merge_log.pack(fill="both", expand=True, **pad)
     merge_log_box = tk.Text(frm_merge_log, height=6, wrap="word", state="disabled")
     merge_log_box.pack(fill="both", expand=True, padx=6, pady=6)
@@ -2237,10 +2111,10 @@ def launch_gui(parent=None):
 
     def merge_run():
         if len(merge_files) < 2:
-            messagebox.showerror("ผิดพลาด", "กรุณาเลือกวิดีโออย่างน้อย 2 ไฟล์ถึงจะต่อได้")
+            messagebox.showerror("Error", "Please select at least 2 videos to merge.")
             return
         if not merge_output_var.get().strip():
-            messagebox.showerror("ผิดพลาด", "กรุณาระบุตำแหน่งไฟล์ผลลัพธ์ก่อน")
+            messagebox.showerror("Error", "Please specify an output file first.")
             return
 
         cancel_event = threading.Event()
@@ -2251,7 +2125,7 @@ def launch_gui(parent=None):
         merge_log_box.configure(state="disabled")
         merge_progress_bar["value"] = 0
         merge_percent_var.set("0%")
-        merge_current_var.set(f"กำลังต่อวิดีโอ {len(merge_files)} ไฟล์...")
+        merge_current_var.set(f" {len(merge_files)} ...")
 
         files_snapshot = list(merge_files)
 
@@ -2265,13 +2139,13 @@ def launch_gui(parent=None):
                     progress_callback=merge_update_progress,
                 )
                 if cancel_event.is_set():
-                    merge_log("\n⏹ ยกเลิกการทำงานแล้ว")
+                    merge_log("\n⏹ Cancelled.")
                 elif ok:
-                    merge_log("\n✅ เสร็จสิ้น! ต่อคลิปเรียบร้อยแล้ว")
+                    merge_log("\n✅ Merge completed.")
                 else:
-                    merge_log("\n❌ ต่อคลิปไม่สำเร็จ ดูรายละเอียดข้อผิดพลาดด้านบน")
+                    merge_log("\n❌ Merge failed.")
             except Exception as e:
-                merge_log(f"\n❌ เกิดข้อผิดพลาด: {e}")
+                merge_log(f"\n❌ Error: {e}")
             finally:
                 root.after(0, lambda: merge_set_running(False))
 
@@ -2282,25 +2156,24 @@ def launch_gui(parent=None):
         if ev is not None:
             ev.set()
             merge_stop_btn.configure(state="disabled")
-            merge_log("\n[กำลังหยุด...] รอให้เฟรมปัจจุบันเขียนเสร็จสักครู่")
+            merge_log("\n[...] Stopping...")
 
-    merge_run_btn = ttk.Button(merge_btn_holder, text="🔗  ต่อคลิป", command=merge_run)
+    merge_run_btn = ttk.Button(merge_btn_holder, text="🔗  Merge Videos", command=merge_run)
     merge_run_btn.pack(side="left", expand=True, padx=(0, 4))
-    merge_stop_btn = ttk.Button(merge_btn_holder, text="■  หยุด", command=merge_stop, state="disabled")
+    merge_stop_btn = ttk.Button(merge_btn_holder, text="■  Stop", command=merge_stop, state="disabled")
     merge_stop_btn.pack(side="left", expand=True, padx=(4, 0))
 
     # ============================================================
-    # แท็บ 4: ภาพเป็นวิดีโอ (Images to Video)
+    #  4:  (Images to Video)
     # ============================================================
-    tab_i2v = ttk.Frame(notebook)
-    notebook.add(tab_i2v, text="4. ภาพเป็นวิดีโอ")
+    tab_i2v = _make_tool_tab("4. ") if "images_to_video" in visible_tools else ttk.Frame(root)
     i2v_content, i2v_btn_holder = make_scrollable_tab(tab_i2v)
 
-    i2v_files = []  # เก็บ path เต็มของภาพตามลำดับที่จะรวม
+    i2v_files = []  #  path 
     i2v_output_var = tk.StringVar()
     i2v_fps_var = tk.StringVar(value="25")
 
-    frm_i2v_list = ttk.LabelFrame(i2v_content, text="1) รายการภาพ (จะรวมตามลำดับบนลงล่าง)")
+    frm_i2v_list = ttk.LabelFrame(i2v_content, text="1) Image List (combined top to bottom)")
     frm_i2v_list.pack(fill="x", **pad)
 
     i2v_listbox_frame = ttk.Frame(frm_i2v_list)
@@ -2315,11 +2188,11 @@ def launch_gui(parent=None):
         i2v_listbox.delete(0, "end")
         for i, p in enumerate(i2v_files, start=1):
             i2v_listbox.insert("end", f"{i}. {Path(p).name}")
-        i2v_count_var.set(f"ทั้งหมด {len(i2v_files)} ภาพ")
+        i2v_count_var.set(f" {len(i2v_files)} ")
 
     def i2v_add_files():
         paths = filedialog.askopenfilenames(
-            title="เลือกภาพที่จะรวม (เลือกได้หลายไฟล์)",
+            title="Select Images to Combine (multiple files allowed)",
             filetypes=[("Image files", "*.jpg *.jpeg *.png *.bmp *.tif *.tiff *.webp"), ("All files", "*.*")],
         )
         for p in paths:
@@ -2327,14 +2200,14 @@ def launch_gui(parent=None):
         i2v_refresh_listbox()
 
     def i2v_add_folder():
-        folder = filedialog.askdirectory(title="เลือกโฟลเดอร์ที่มีภาพ (จะเรียงตามชื่อไฟล์อัตโนมัติ)")
+        folder = filedialog.askdirectory(title="Select Image Folder (sorted by filename)")
         if not folder:
             return
         found = sorted(
             p for p in Path(folder).iterdir() if p.suffix.lower() in IMAGE_EXTENSIONS
         )
         if not found:
-            messagebox.showinfo("ไม่พบภาพ", "ไม่พบไฟล์ภาพในโฟลเดอร์ที่เลือก")
+            messagebox.showinfo("", "No image files found in the selected folder.")
             return
         for p in found:
             i2v_files.append(str(p))
@@ -2372,44 +2245,44 @@ def launch_gui(parent=None):
 
     i2v_btn_row = ttk.Frame(frm_i2v_list)
     i2v_btn_row.pack(fill="x", padx=6, pady=(0, 6))
-    ttk.Button(i2v_btn_row, text="+ เพิ่มทั้งโฟลเดอร์...", command=i2v_add_folder).pack(side="left", padx=(0, 4))
-    ttk.Button(i2v_btn_row, text="+ เพิ่มภาพ...", command=i2v_add_files).pack(side="left", padx=4)
-    ttk.Button(i2v_btn_row, text="- ลบที่เลือก", command=i2v_remove_selected).pack(side="left", padx=4)
-    ttk.Button(i2v_btn_row, text="▲ เลื่อนขึ้น", command=i2v_move_up).pack(side="left", padx=4)
-    ttk.Button(i2v_btn_row, text="▼ เลื่อนลง", command=i2v_move_down).pack(side="left", padx=4)
-    ttk.Button(i2v_btn_row, text="ล้างทั้งหมด", command=i2v_clear_all).pack(side="left", padx=4)
+    ttk.Button(i2v_btn_row, text="+ Add Folder...", command=i2v_add_folder).pack(side="left", padx=(0, 4))
+    ttk.Button(i2v_btn_row, text="+ Add Images...", command=i2v_add_files).pack(side="left", padx=4)
+    ttk.Button(i2v_btn_row, text="- Remove Selected", command=i2v_remove_selected).pack(side="left", padx=4)
+    ttk.Button(i2v_btn_row, text="▲ Move Up", command=i2v_move_up).pack(side="left", padx=4)
+    ttk.Button(i2v_btn_row, text="▼ Move Down", command=i2v_move_down).pack(side="left", padx=4)
+    ttk.Button(i2v_btn_row, text="Clear All", command=i2v_clear_all).pack(side="left", padx=4)
 
-    i2v_count_var = tk.StringVar(value="ทั้งหมด 0 ภาพ")
+    i2v_count_var = tk.StringVar(value="0 images")
     ttk.Label(frm_i2v_list, textvariable=i2v_count_var).pack(anchor="w", padx=6, pady=(0, 2))
     ttk.Label(
         frm_i2v_list,
-        text="หมายเหตุ: \"เพิ่มทั้งโฟลเดอร์\" จะเรียงภาพตามชื่อไฟล์ให้อัตโนมัติ (เหมาะกับภาพจากแท็บแตกเฟรม) "
-        "ถ้าภาพมีขนาดไม่เท่ากัน โปรแกรมจะปรับให้เท่ากับภาพแรกในรายการอัตโนมัติ",
+        text=": \"\"  () "
+        " ",
     ).pack(anchor="w", padx=6, pady=(0, 6))
 
-    frm_i2v_settings = ttk.LabelFrame(i2v_content, text="2) การตั้งค่าวิดีโอ")
+    frm_i2v_settings = ttk.LabelFrame(i2v_content, text="2) Video Settings")
     frm_i2v_settings.pack(fill="x", **pad)
-    ttk.Label(frm_i2v_settings, text="FPS (ภาพต่อวินาที):").grid(row=0, column=0, padx=6, pady=6, sticky="w")
+    ttk.Label(frm_i2v_settings, text="FPS (frames per second):").grid(row=0, column=0, padx=6, pady=6, sticky="w")
     ttk.Entry(frm_i2v_settings, textvariable=i2v_fps_var, width=10).grid(row=0, column=1, sticky="w")
 
-    frm_i2v_out = ttk.LabelFrame(i2v_content, text="3) ไฟล์ผลลัพธ์ (.mp4)")
+    frm_i2v_out = ttk.LabelFrame(i2v_content, text="3) Output File (.mp4)")
     frm_i2v_out.pack(fill="x", **pad)
     frm_i2v_out.columnconfigure(0, weight=1)
     ttk.Entry(frm_i2v_out, textvariable=i2v_output_var, width=45).grid(row=0, column=0, padx=6, pady=6, sticky="ew")
 
     def i2v_pick_output():
         path = filedialog.asksaveasfilename(
-            title="บันทึกวิดีโอเป็น...",
+            title="Save Video As...",
             defaultextension=".mp4",
             filetypes=[("MP4 video", "*.mp4")],
-            initialfile="ภาพเป็นวิดีโอ.mp4",
+            initialfile=".mp4",
         )
         if path:
             i2v_output_var.set(path)
 
-    ttk.Button(frm_i2v_out, text="เลือกตำแหน่งบันทึก...", command=i2v_pick_output).grid(row=0, column=1, padx=6)
+    ttk.Button(frm_i2v_out, text="Choose Output Location...", command=i2v_pick_output).grid(row=0, column=1, padx=6)
 
-    frm_i2v_progress = ttk.LabelFrame(i2v_content, text="ความคืบหน้า")
+    frm_i2v_progress = ttk.LabelFrame(i2v_content, text="Progress")
     frm_i2v_progress.pack(fill="x", **pad)
     i2v_percent_var = tk.StringVar(value="0%")
     i2v_progress_row = ttk.Frame(frm_i2v_progress)
@@ -2418,7 +2291,7 @@ def launch_gui(parent=None):
     i2v_progress_bar.pack(side="left", fill="x", expand=True)
     ttk.Label(i2v_progress_row, textvariable=i2v_percent_var, width=5).pack(side="left", padx=(8, 0))
 
-    frm_i2v_log = ttk.LabelFrame(i2v_content, text="สถานะการทำงาน")
+    frm_i2v_log = ttk.LabelFrame(i2v_content, text="Activity Log")
     frm_i2v_log.pack(fill="both", expand=True, **pad)
     i2v_log_box = tk.Text(frm_i2v_log, height=6, wrap="word", state="disabled")
     i2v_log_box.pack(fill="both", expand=True, padx=6, pady=6)
@@ -2451,17 +2324,17 @@ def launch_gui(parent=None):
 
     def i2v_run():
         if len(i2v_files) < 1:
-            messagebox.showerror("ผิดพลาด", "กรุณาเลือกภาพอย่างน้อย 1 ภาพก่อน")
+            messagebox.showerror("Error", "Please select at least 1 image first.")
             return
         if not i2v_output_var.get().strip():
-            messagebox.showerror("ผิดพลาด", "กรุณาระบุตำแหน่งไฟล์ผลลัพธ์ก่อน")
+            messagebox.showerror("Error", "Please specify an output file first.")
             return
         try:
             fps = float(i2v_fps_var.get())
             if fps <= 0:
                 raise ValueError
         except ValueError:
-            messagebox.showerror("ผิดพลาด", "กรุณาใส่ค่า FPS ให้ถูกต้อง (ตัวเลขมากกว่า 0)")
+            messagebox.showerror("Error", "Please enter a valid FPS value (greater than 0).")
             return
 
         cancel_event = threading.Event()
@@ -2486,13 +2359,13 @@ def launch_gui(parent=None):
                     progress_callback=i2v_update_progress,
                 )
                 if cancel_event.is_set():
-                    i2v_log("\n⏹ ยกเลิกการทำงานแล้ว")
+                    i2v_log("\n⏹ Cancelled.")
                 elif ok:
-                    i2v_log("\n✅ เสร็จสิ้น! รวมภาพเป็นวิดีโอเรียบร้อยแล้ว")
+                    i2v_log("\n✅ Video creation completed.")
                 else:
-                    i2v_log("\n❌ รวมภาพเป็นวิดีโอไม่สำเร็จ ดูรายละเอียดข้อผิดพลาดด้านบน")
+                    i2v_log("\n❌ Video creation failed.")
             except Exception as e:
-                i2v_log(f"\n❌ เกิดข้อผิดพลาด: {e}")
+                i2v_log(f"\n❌ Error: {e}")
             finally:
                 root.after(0, lambda: i2v_set_running(False))
 
@@ -2503,11 +2376,11 @@ def launch_gui(parent=None):
         if ev is not None:
             ev.set()
             i2v_stop_btn.configure(state="disabled")
-            i2v_log("\n[กำลังหยุด...] รอให้ภาพปัจจุบันเขียนเสร็จสักครู่")
+            i2v_log("\n[...] Stopping...")
 
-    i2v_run_btn = ttk.Button(i2v_btn_holder, text="🎬  สร้างวิดีโอ", command=i2v_run)
+    i2v_run_btn = ttk.Button(i2v_btn_holder, text="🎬  Create Video", command=i2v_run)
     i2v_run_btn.pack(side="left", expand=True, padx=(0, 4))
-    i2v_stop_btn = ttk.Button(i2v_btn_holder, text="■  หยุด", command=i2v_stop, state="disabled")
+    i2v_stop_btn = ttk.Button(i2v_btn_holder, text="■  Stop", command=i2v_stop, state="disabled")
     i2v_stop_btn.pack(side="left", expand=True, padx=(4, 0))
 
     if standalone:
@@ -2524,7 +2397,7 @@ def main():
         try:
             launch_gui()
         except ImportError:
-            print("[ERROR] tkinter ไม่พร้อมใช้งานในระบบนี้ กรุณาใช้งานผ่าน CLI แทน (ดู --help)")
+            print("[ERROR] Tkinter is unavailable on this system. Please use the CLI instead (see --help).")
             sys.exit(1)
     else:
         run_cli(args)

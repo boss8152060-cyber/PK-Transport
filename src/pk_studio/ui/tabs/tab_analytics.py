@@ -2,13 +2,13 @@
 =========================================================================
 PK Studio - Tab: Analytics & Insights
 
-ใช้ตรรกะการหารูป+label แบบเดียวกับ Dataset Curator/Splitter เพื่อความ
-สอดคล้องกัน (รองรับทั้งแบบ images/+labels/ แยกโฟลเดอร์ และรูป+.txt ปนกัน
-แบบเรียบ)
++label  Dataset Curator/Splitter 
+ ( images/+labels/  +.txt 
+)
 
-กราฟทั้ง 3 แบบ (Histogram, Heat Map, Dimension Insights) ใช้ matplotlib
-ซึ่งติดมากับ ultralytics อยู่แล้วโดยอัตโนมัติ (ตรวจสอบแล้วว่าเป็น dependency
-ของ ultralytics เอง) ไม่ต้องเพิ่มการติดตั้งอะไรเพิ่มใน setup.ps1
+ 3  (Histogram, Heat Map, Dimension Insights)  matplotlib
+ ultralytics  ( dependency
+ ultralytics )  setup.ps1
 =========================================================================
 """
 
@@ -18,20 +18,21 @@ from tkinter import filedialog, messagebox, ttk
 
 from PIL import Image
 
-from theme import COLORS
+from pk_studio.theme import COLORS
+from pk_studio.core.dataset import DatasetScanner
 
 import matplotlib
 matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
-# ธีมกราฟ: ขาว-ดำ-เทาล้วน ให้เข้ากับธีมของแอพ (ไม่ใช้สีสันอื่นเลย)
-# font.family: matplotlib มี font engine แยกต่างหากจาก tkinter เอง (ไม่ได้ใช้ font
-# ระบบปฏิบัติการแบบเดียวกับ UI หลักของแอพ) ฟอนต์ default ของ matplotlib (DejaVu Sans)
-# ไม่มีตัวอักษรไทย ทำให้ label ภาษาไทยในกราฟกลายเป็นกล่องขาดหาย (เจอปัญหานี้จริง
-# ตอนทดสอบ) จึงตั้งให้ลองใช้ Tahoma ก่อน (มีมากับ Windows ทุกเครื่องและรองรับไทย)
-# แต่ label ของกราฟเองก็ยังใช้ภาษาอังกฤษล้วนเพื่อความชัวร์ 100% ไม่ขึ้นกับว่าเครื่อง
-# ผู้ใช้จะมีฟอนต์ไทยที่ matplotlib มองเห็นหรือไม่
+# : --  ()
+# font.family: matplotlib  font engine  tkinter  ( font
+#  UI )  default  matplotlib (DejaVu Sans)
+#   label  (
+# )  Tahoma  ( Windows )
+#  label  100% 
+#  matplotlib 
 plt.rcParams.update({
     "font.family": ["Tahoma", "Leelawadee UI", "Angsana New", "DejaVu Sans"],
     "figure.facecolor": COLORS["card_bg"],
@@ -49,7 +50,7 @@ plt.rcParams.update({
 class AnalyticsTab(ttk.Frame):
     def __init__(self, parent):
         super().__init__(parent, padding=16)
-        self._scan_data = None  # เก็บผลสแกนล่าสุดไว้ใช้วาดกราฟซ้ำได้โดยไม่ต้องสแกนใหม่
+        self._scan_data = None  # 
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -60,17 +61,17 @@ class AnalyticsTab(ttk.Frame):
             top_bar, text="📊 Analytics & Dataset Insights", font=("Segoe UI", 14, "bold"),
             foreground=COLORS["text_dark"],
         ).pack(side="left")
-        ttk.Button(top_bar, text="📁 เลือกโฟลเดอร์แล้วสแกน", command=self._scan_dataset).pack(side="right")
+        ttk.Button(top_bar, text="📁 Scan Dataset", command=self._scan_dataset).pack(side="right")
 
         cards_frame = ttk.Frame(self)
         cards_frame.pack(fill="x", pady=(0, 14))
 
-        self.lbl_card_imgs = self._create_card(cards_frame, "จำนวนรูปทั้งหมด", "0", COLORS["accent"])
-        self.lbl_card_boxes = self._create_card(cards_frame, "จำนวนกรอบทั้งหมด", "0", COLORS["success"])
-        self.lbl_card_avg = self._create_card(cards_frame, "เฉลี่ยกรอบ/รูป", "0.0", COLORS["warning"])
-        self.lbl_card_bg = self._create_card(cards_frame, "รูปพื้นหลัง (ไม่มีวัตถุ)", "0", COLORS["text_muted"])
+        self.lbl_card_imgs = self._create_card(cards_frame, "Total Images", "0", COLORS["accent"])
+        self.lbl_card_boxes = self._create_card(cards_frame, "Total Objects", "0", COLORS["success"])
+        self.lbl_card_avg = self._create_card(cards_frame, "Avg Objects/Image", "0.0", COLORS["warning"])
+        self.lbl_card_bg = self._create_card(cards_frame, "Background Images", "0", COLORS["text_muted"])
 
-        # ----- Sub-notebook: ภาพรวม / กราฟ 3 แบบ -----
+        # ----- Sub-notebook:  /  3  -----
         self.sub_notebook = ttk.Notebook(self)
         self.sub_notebook.pack(fill="both", expand=True)
 
@@ -79,10 +80,10 @@ class AnalyticsTab(ttk.Frame):
         self.tab_heatmap = ttk.Frame(self.sub_notebook, padding=8)
         self.tab_dimensions = ttk.Frame(self.sub_notebook, padding=8)
 
-        self.sub_notebook.add(self.tab_overview, text="ภาพรวม")
-        self.sub_notebook.add(self.tab_histogram, text="จำนวน Object ต่อรูป")
-        self.sub_notebook.add(self.tab_heatmap, text="ตำแหน่งกรอบ (Heat Map)")
-        self.sub_notebook.add(self.tab_dimensions, text="ขนาดภาพ")
+        self.sub_notebook.add(self.tab_overview, text="Overview")
+        self.sub_notebook.add(self.tab_histogram, text="Objects per Image")
+        self.sub_notebook.add(self.tab_heatmap, text="BBox Heat Map")
+        self.sub_notebook.add(self.tab_dimensions, text="Image Dimensions")
 
         self._build_overview_tab()
         self._build_placeholder(self.tab_histogram, "histogram")
@@ -90,15 +91,15 @@ class AnalyticsTab(ttk.Frame):
         self._build_placeholder(self.tab_dimensions, "dimensions")
 
     def _build_overview_tab(self) -> None:
-        box_class = ttk.LabelFrame(self.tab_overview, text="📈 สัดส่วนแต่ละ Class", padding=12)
+        box_class = ttk.LabelFrame(self.tab_overview, text="📈 Class Distribution", padding=12)
         box_class.pack(fill="both", expand=True)
 
         columns = ("class_name", "images", "instances", "percentage")
         self.tree = ttk.Treeview(box_class, columns=columns, show="headings", height=12)
         self.tree.heading("class_name", text="Class")
-        self.tree.heading("images", text="จำนวนรูป")
-        self.tree.heading("instances", text="จำนวน Instance")
-        self.tree.heading("percentage", text="สัดส่วน (%)")
+        self.tree.heading("images", text="Images")
+        self.tree.heading("instances", text="Instances")
+        self.tree.heading("percentage", text="Share (%)")
         self.tree.column("class_name", width=160, anchor="w")
         self.tree.column("images", width=100, anchor="center")
         self.tree.column("instances", width=120, anchor="center")
@@ -111,7 +112,7 @@ class AnalyticsTab(ttk.Frame):
 
     def _build_placeholder(self, parent, tag) -> None:
         lbl = ttk.Label(
-            parent, text="สแกนโฟลเดอร์ก่อนเพื่อดูกราฟนี้", foreground=COLORS["text_muted"],
+            parent, text="Scan a dataset to view this chart.", foreground=COLORS["text_muted"],
             font=("Segoe UI", 10),
         )
         lbl.pack(expand=True)
@@ -135,42 +136,18 @@ class AnalyticsTab(ttk.Frame):
         return lbl_val
 
     # -----------------------------------------------------------------
-    # การสแกน — ใช้วิธีหาไฟล์แบบเดียวกับ Curator/Splitter เพื่อความสอดคล้อง
+    #  —  Curator/Splitter 
     # -----------------------------------------------------------------
     @staticmethod
     def _find_images_and_labels(source: Path):
-        image_extensions = {".jpg", ".jpeg", ".png", ".bmp"}
-        images_dir = source / "images"
-        labels_dir = source / "labels"
-
-        image_files = {}
-        if images_dir.is_dir() and labels_dir.is_dir():
-            for img_path in sorted(images_dir.iterdir()):
-                if img_path.suffix.lower() not in image_extensions:
-                    continue
-                label_path = labels_dir / f"{img_path.stem}.txt"
-                image_files[img_path.stem] = (img_path, label_path if label_path.exists() else None)
-        else:
-            for img_path in sorted(source.iterdir()):
-                if img_path.suffix.lower() not in image_extensions:
-                    continue
-                label_path = source / f"{img_path.stem}.txt"
-                image_files[img_path.stem] = (img_path, label_path if label_path.exists() else None)
-
-        return image_files
+        return DatasetScanner.find_images_and_labels(source)
 
     @staticmethod
     def _load_class_names(source: Path, max_class_idx: int):
-        classes_file = source / "classes.txt"
-        if classes_file.exists():
-            with open(classes_file, encoding="utf-8") as f:
-                names = [line.strip() for line in f if line.strip()]
-            if names:
-                return names
-        return [f"class{i}" for i in range(max_class_idx + 1)]
+        return DatasetScanner.load_class_names(source, max_class_idx)
 
     def _scan_dataset(self) -> None:
-        folder = filedialog.askdirectory(title="เลือกโฟลเดอร์ dataset ที่จะวิเคราะห์")
+        folder = filedialog.askdirectory(title="Select dataset folder")
         if not folder:
             return
 
@@ -179,15 +156,15 @@ class AnalyticsTab(ttk.Frame):
             image_files = self._find_images_and_labels(source)
             if not image_files:
                 messagebox.showerror(
-                    "ไม่พบไฟล์รูป",
-                    "ไม่พบไฟล์รูปในโฟลเดอร์ที่เลือก (เช็คว่ามีโฟลเดอร์ images/labels หรือรูป+.txt วางปนกันไหม)",
+                    "",
+                    "No image files found in the selected folder. Check the dataset layout.",
                 )
                 return
 
             image_class_ids = {}
-            bbox_centers = []  # [(cx, cy), ...] ค่า normalized 0-1 ของทุกกรอบทุกรูป (สำหรับ heat map)
-            object_counts_per_image = []  # จำนวนกรอบต่อรูป (สำหรับ histogram)
-            image_dimensions = []  # [(w, h), ...] ขนาดจริงของรูปเป็นพิกเซล (สำหรับ dimension insights)
+            bbox_centers = []  # [(cx, cy), ...]  normalized 0-1  ( heat map)
+            object_counts_per_image = []  #  ( histogram)
+            image_dimensions = []  # [(w, h), ...]  ( dimension insights)
             max_class_idx = -1
             n_background = 0
 
@@ -212,7 +189,7 @@ class AnalyticsTab(ttk.Frame):
                     with Image.open(img_path) as im:
                         image_dimensions.append(im.size)  # (width, height)
                 except Exception:
-                    pass  # ข้ามรูปที่เปิดไม่ได้ (เสีย/format แปลก) ไม่ให้การสแกนทั้งหมดล้ม
+                    pass  #  (/format ) 
 
             class_names = self._load_class_names(source, max_class_idx)
 
@@ -254,10 +231,10 @@ class AnalyticsTab(ttk.Frame):
             self._draw_dimensions(image_dimensions)
 
         except Exception as exc:
-            messagebox.showerror("เกิดข้อผิดพลาด", f"สแกนไม่สำเร็จ: {exc}")
+            messagebox.showerror("Error", f"Scan failed: {exc}")
 
     # -----------------------------------------------------------------
-    # กราฟที่ 1: Histogram จำนวน object ต่อรูป
+    #  1: Histogram  object 
     # -----------------------------------------------------------------
     def _draw_histogram(self, object_counts_per_image) -> None:
         self._placeholder_histogram.destroy()
@@ -279,8 +256,8 @@ class AnalyticsTab(ttk.Frame):
         plt.close(fig)
 
     # -----------------------------------------------------------------
-    # กราฟที่ 2: Heat Map ตำแหน่งกรอบ (ใช้พิกัด center ที่เป็น normalized 0-1
-    # อยู่แล้วจากไฟล์ label โดยตรง ไม่ต้องคำนวณเพิ่ม)
+    #  2: Heat Map  ( center  normalized 0-1
+    #  label  )
     # -----------------------------------------------------------------
     def _draw_heatmap(self, bbox_centers) -> None:
         self._placeholder_heatmap.destroy()
@@ -290,7 +267,7 @@ class AnalyticsTab(ttk.Frame):
         fig, ax = plt.subplots(figsize=(6, 5.5), dpi=100)
         if bbox_centers:
             xs = [c[0] for c in bbox_centers]
-            ys = [1 - c[1] for c in bbox_centers]  # กลับแกน y เพราะพิกัดภาพนับจากบนลงล่าง
+            ys = [1 - c[1] for c in bbox_centers]  #  y 
             ax.hist2d(xs, ys, bins=50, range=[[0, 1], [0, 1]], cmap="Greys")
         ax.set_xlabel("Horizontal position (0 = left, 1 = right)")
         ax.set_ylabel("Vertical position (0 = bottom, 1 = top)")
@@ -304,7 +281,7 @@ class AnalyticsTab(ttk.Frame):
         plt.close(fig)
 
     # -----------------------------------------------------------------
-    # กราฟที่ 3: Dimension Insights (ขนาดภาพ กว้าง x สูง เป็นพิกเซลจริง)
+    #  3: Dimension Insights (  x  )
     # -----------------------------------------------------------------
     def _draw_dimensions(self, image_dimensions) -> None:
         self._placeholder_dimensions.destroy()

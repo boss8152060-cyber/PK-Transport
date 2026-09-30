@@ -1,41 +1,62 @@
 """
 =========================================================================
-PK Studio - Tab: Auto-Labeler (Annotation + Auto-Label รวมกัน)
+PK Studio - Tab: Auto-Labeler (Annotation + Auto-Label )
 
-แปลงมาจาก annotation_tool_py.py (AnnotationStudio) — logic การวาดกรอบ,
-undo/redo, class manager, filter, keyboard shortcuts ทั้งหมดเหมือนเดิม
-ทุกประการ เพิ่มเข้ามาใหม่คือระบบ Auto-Label ด้วย YOLO (ปุ่ม Load Model,
-Auto-Label Current, Batch Auto-Label) ให้ตีกรอบอัตโนมัติแล้วมาแก้ไขต่อใน
-เครื่องมือเดียวกันได้เลย ไม่ต้องสลับไปมาระหว่างเครื่องมือ
+ annotation_tool_py.py (AnnotationStudio) — logic ,
+undo/redo, class manager, filter, keyboard shortcuts Original
+  Auto-Label  YOLO ( Load Model,
+Auto-Label Current, Batch Auto-Label) 
+ 
 
-Features เดิมจาก annotation_tool_py.py:
-  1. Updated App Title: เปลี่ยนชื่อโปรแกรมเป็น "PK Studio"
-  2. Color Format Correction: แปลงค่าสี RGB -> BGR ก่อนส่งให้ OpenCV วาดภาพ
-     ทำให้สีกล่องบน Canvas ตรงกับจานสีใน Manage Classes 100%
-  3. Jump to Specific Image: พิมพ์เลขลำดับรูปภาพ + Enter เพื่อกระโดดไปรูปนั้นทันที
-  4. BBox Status Filter: กรองภาพตาม Labeled / Unlabeled
-  5. Auto-Review Navigation: กด Next ► เพื่อ Review + ขยับไปรูปถัดไป
+Features Original annotation_tool_py.py:
+  1. Updated App Title:  "PK Studio"
+  2. Color Format Correction:  RGB -> BGR  OpenCV 
+      Canvas  Manage Classes 100%
+  3. Jump to Specific Image:  + Enter 
+  4. BBox Status Filter:  Labeled / Unlabeled
+  5. Auto-Review Navigation:  Next ►  Review + 
 
-Batch Auto-Label: ข้ามรูปที่มี label อยู่แล้วเสมอ (ไม่ทับ label ที่ตรวจแก้ไปแล้ว)
+Batch Auto-Label:  label  ( label )
 =========================================================================
 """
 
 import json
 import os
+import shutil
 import threading
 import time
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk, colorchooser
+from tkinter import filedialog, messagebox, ttk, colorchooser, simpledialog
 import cv2
 import numpy as np
 from PIL import Image, ImageTk
 
-from theme import COLORS
+from pk_studio.theme import COLORS
+from pk_studio.core.class_registry import ClassRegistry
+from pk_studio.core.job_manager import JobManager
 
 DEFAULT_COLORS = [
-    (255, 56, 56),   (255, 157, 151), (255, 112, 31), (255, 178, 29),
-    (207, 210, 49),  (72, 249, 10),   (14, 249, 148),  (200, 54, 249),
-    (56, 180, 255),  (130, 100, 255)
+    # High-saturation, easy-to-distinguish colors for Classes / Bounding Boxes.
+    (255, 0, 0),       # Red
+    (0, 180, 255),     # Sky blue
+    (0, 220, 120),     # Green
+    (255, 170, 0),     # Orange
+    (190, 0, 255),     # Purple
+    (255, 0, 170),     # Magenta
+    (0, 210, 210),     # Cyan
+    (255, 220, 0),     # Yellow
+    (80, 120, 255),    # Periwinkle
+    (120, 255, 0),     # Lime
+    (255, 90, 40),     # Coral
+    (0, 120, 255),     # Blue
+    (220, 0, 100),     # Raspberry
+    (0, 255, 180),     # Aqua
+    (160, 80, 255),    # Violet
+    (255, 120, 0),     # Tangerine
+    (40, 220, 70),     # Emerald
+    (255, 60, 190),    # Pink
+    (0, 200, 255),     # Bright cyan
+    (255, 210, 70),    # Gold
 ]
 
 CONFIG_FILE = ".pk_ui_config.json"
@@ -57,8 +78,12 @@ class AutoLabelerTab(ttk.Frame):
         self.conf_threshold = 0.35
         self.imgsz = 640
         self._batch_running = False
+        self.job_manager = JobManager()
+        self._auto_job = None
+        self._batch_errors = []
 
         self.classes = []
+        self.class_registry = ClassRegistry()
         self.class_colors = {}     # {cls_id: (r, g, b)}
         self.image_files = []
         self.filtered_images = []
@@ -111,6 +136,7 @@ class AutoLabelerTab(ttk.Frame):
         ttk.Button(top_bar, text="📁 Open", command=self.load_dataset).pack(side="left", padx=2)
         ttk.Button(top_bar, text="💾 Save", command=self.save_current).pack(side="left", padx=2)
         ttk.Button(top_bar, text="💾 Save All", command=self.save_all).pack(side="left", padx=2)
+        ttk.Button(top_bar, text="💾 Save As...", command=self.save_as_dataset).pack(side="left", padx=2)
 
         ttk.Separator(top_bar, orient="vertical").pack(side="left", fill="y", padx=6)
 
@@ -288,7 +314,7 @@ class AutoLabelerTab(ttk.Frame):
         
         val = self.entry_jump.get().strip()
         if not val.isdigit():
-            messagebox.showwarning("Warning", "กรุณากรอกตัวเลขอ้างอิงลำดับรูปภาพ!")
+            messagebox.showwarning("Warning", "Enter an image number.")
             return
 
         target_num = int(val)
@@ -298,7 +324,7 @@ class AutoLabelerTab(ttk.Frame):
             self.entry_jump.delete(0, tk.END)
             self.focus_set()
         else:
-            messagebox.showerror("Error", f"ลำดับรูปไม่อยู่ในช่วง! (มีภาพช่วง 1 ถึง {len(self.filtered_images)})")
+            messagebox.showerror("Error", f"Image index is out of range. Valid range: 1 to {len(self.filtered_images)}.")
 
     # =========================================================================
     # Cheat Sheet Window
@@ -309,7 +335,7 @@ class AutoLabelerTab(ttk.Frame):
         win.geometry("550x500")
         win.grab_set()
 
-        ttk.Label(win, text="⌨️ ตารางคีย์ลัดและคำสั่งทั้งหมด", font=("Segoe UI", 11, "bold")).pack(anchor="w", padx=15, pady=10)
+        ttk.Label(win, text="⌨️ Keyboard Shortcuts", font=("Segoe UI", 11, "bold")).pack(anchor="w", padx=15, pady=10)
 
         frame = ttk.Frame(win, padding=10)
         frame.pack(fill="both", expand=True)
@@ -317,27 +343,27 @@ class AutoLabelerTab(ttk.Frame):
         columns = ("key", "action")
         tree = ttk.Treeview(frame, columns=columns, show="headings", height=15)
         
-        tree.heading("key", text="คีย์ลัด / การกระทำ")
-        tree.heading("action", text="หน้าที่การทำงาน")
+        tree.heading("key", text="Shortcut / Action")
+        tree.heading("action", text="Description")
         
         tree.column("key", width=180, anchor="w")
         tree.column("action", width=320, anchor="w")
 
         shortcuts_data = [
-            ("A / ฟ", "ย้อนกลับไปรูปภาพก่อนหน้า"),
-            ("D / ก / Space", "ยืนยันตรวจ (Review) + ไปรูปถัดไป"),
-            ("ตัวเลข (0-9)", "พิมพ์รหัส Class ID (กด Enter ยืนยัน)"),
-            ("Backspace", "ลบตัวเลขที่พิมพ์ / ลบ Bbox ที่เลือก"),
-            ("Delete", "ลบ Bbox ที่เลือกอยู่"),
-            ("คลิกขวา ➔ คลิกซ้าย", "คลิกขวาที่ Bbox แล้วคลิกซ้ายซ้ำเพื่อลบ"),
-            ("Ctrl + S / ห", "บันทึกข้อมูลรูปภาพปัจจุบัน"),
-            ("Ctrl + Z / ผ", "เลิกทำ (Undo)"),
-            ("Ctrl + Y / บ", "ทำซ้ำ (Redo)"),
-            ("Escape", "ยกเลิกการพิมพ์ Class ID"),
-            ("Scroll Wheel", "ซูมเข้า / ซูมออก (Zoom In/Out)"),
-            ("คลิกขวา + ลาก", "เลื่อนมุมมองรูปภาพ (Pan)"),
-            ("ดับเบิลคลิกซ้าย (พื้นว่าง)", "ย้อนกลับไปรูปก่อนหน้า"),
-            ("ดับเบิลคลิกขวา (พื้นว่าง)", "ยืนยัน Review + ไปรูปถัดไป")
+            ("A", "Previous image"),
+            ("D / Space", "Review and go to next image"),
+            ("0-9", "Enter Class ID and press Enter"),
+            ("Backspace", "Delete typed digits / selected BBox"),
+            ("Delete", "Delete selected BBox"),
+            ("Right click → left click", "Right-click a BBox, then left-click again to delete"),
+            ("Ctrl + S", "Save current image"),
+            ("Ctrl + Z", "Undo"),
+            ("Ctrl + Y", "Redo"),
+            ("Escape", "Cancel Class ID entry"),
+            ("Scroll Wheel", "Zoom in / out"),
+            ("Right click + drag", "Pan image"),
+            ("Double left click (empty area)", "Previous image"),
+            ("Double right click (empty area)", "Review and go to next image")
         ]
 
         for item in shortcuts_data:
@@ -405,6 +431,31 @@ class AutoLabelerTab(ttk.Frame):
 
         refresh_manager_list()
 
+        move_frame = ttk.Frame(win, padding=(10, 2))
+        move_frame.pack(fill="x", padx=0, pady=2)
+
+        def move_selected(delta):
+            idx = selected_cls_idx[0]
+            if idx is None:
+                return
+            old_classes = list(self.classes)
+            new_idx = idx + delta
+            if not (0 <= new_idx < len(self.classes)):
+                return
+            if not messagebox.askyesno(
+                "Change Class Order",
+                "Changing class order changes YOLO class IDs and will update every label file in this dataset.\n\nContinue?",
+            ):
+                return
+            self.classes[idx], self.classes[new_idx] = self.classes[new_idx], self.classes[idx]
+            self._update_classes_after_change(old_classes)
+            selected_cls_idx[0] = new_idx
+            refresh_manager_list()
+
+        ttk.Button(move_frame, text="↑ Move Up", command=lambda: move_selected(-1)).pack(side="left", expand=True, fill="x", padx=2)
+        ttk.Button(move_frame, text="↓ Move Down", command=lambda: move_selected(1)).pack(side="left", expand=True, fill="x", padx=2)
+        ttk.Label(move_frame, text="Default = alphabetical; moving changes YOLO IDs", foreground=COLORS["text_muted"]).pack(side="left", padx=8)
+
         add_frame = ttk.LabelFrame(win, text="Add New Class", padding=5)
         add_frame.pack(fill="x", padx=10, pady=5)
 
@@ -415,8 +466,9 @@ class AutoLabelerTab(ttk.Frame):
             name = entry_name.get().strip()
             if name and name not in self.classes:
                 old_classes = list(self.classes)
-                self.classes.append(name)
-                self.classes = sorted(self.classes, key=lambda x: x.lower())
+                self.class_registry.load(self.classes, sort=False)
+                self.class_registry.add(name, sort=True)
+                self.classes = self.class_registry.names
                 self._update_classes_after_change(old_classes)
                 refresh_manager_list()
                 entry_name.delete(0, tk.END)
@@ -430,6 +482,7 @@ class AutoLabelerTab(ttk.Frame):
                 if messagebox.askyesno("Confirm", f"Delete class [{del_idx + 1}] {del_name}?"):
                     old_classes = list(self.classes)
                     self.classes.remove(del_name)
+                    self.class_registry.load(self.classes, sort=False)
                     self.bboxes = [b for b in self.bboxes if b[0] != del_idx]
                     self._update_classes_after_change(old_classes)
                     selected_cls_idx[0] = None
@@ -520,12 +573,61 @@ class AutoLabelerTab(ttk.Frame):
     # Unified Checklist Panel
     # =========================================================================
     def _update_classes_after_change(self, old_classes):
-        if self.cls_file:
-            with open(self.cls_file, "w", encoding="utf-8") as f:
-                f.write("\n".join(self.classes))
-
+        """Persist class order and remap YOLO ids across the whole dataset."""
         old_to_new = {old_idx: self.classes.index(name) for old_idx, name in enumerate(old_classes) if name in self.classes}
-        
+        removed_old_ids = {old_idx for old_idx, name in enumerate(old_classes) if name not in self.classes}
+
+        # Colors belong to the class name, not its numeric position. Preserve
+        # them when the user reorders classes.
+        old_colors = dict(self.class_colors)
+        self.class_colors = {
+            old_to_new[old_idx]: color
+            for old_idx, color in old_colors.items()
+            if old_idx in old_to_new
+        }
+
+        if self.lbl_dir and os.path.isdir(self.lbl_dir):
+            for filename in os.listdir(self.lbl_dir):
+                if not filename.lower().endswith('.txt') or filename.lower() == 'classes.txt':
+                    continue
+                path = os.path.join(self.lbl_dir, filename)
+                try:
+                    lines_out, changed = [], False
+                    with open(path, 'r', encoding='utf-8') as f:
+                        for line in f:
+                            parts = line.strip().split()
+                            if not parts:
+                                continue
+                            try:
+                                old_id = int(parts[0])
+                            except ValueError:
+                                lines_out.append(line.rstrip())
+                                continue
+                            if old_id not in old_to_new:
+                                # Only IDs belonging to an intentionally deleted class are removed.
+                                # Preserve unrelated invalid IDs so Dataset QA can report them.
+                                if old_id in removed_old_ids:
+                                    changed = True
+                                    continue
+                                lines_out.append(' '.join(parts))
+                                continue
+                            new_id = old_to_new[old_id]
+                            changed = changed or (new_id != old_id)
+                            parts[0] = str(new_id)
+                            lines_out.append(' '.join(parts))
+                    if changed:
+                        tmp = path + '.pk_tmp'
+                        with open(tmp, 'w', encoding='utf-8') as f:
+                            if lines_out:
+                                f.write('\n'.join(lines_out) + '\n')
+                        os.replace(tmp, path)
+                except (OSError, UnicodeError) as exc:
+                    messagebox.showwarning('Class update warning', f'Could not update {filename}: {exc}')
+
+        if self.cls_file:
+            with open(self.cls_file, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(self.classes))
+
         new_bboxes = []
         for bbox in self.bboxes:
             if bbox[0] in old_to_new:
@@ -533,11 +635,14 @@ class AutoLabelerTab(ttk.Frame):
                 new_bboxes.append(bbox)
         self.bboxes = new_bboxes
 
+        old_color_by_name = {name: self.class_colors.get(i, DEFAULT_COLORS[i % len(DEFAULT_COLORS)]) for i, name in enumerate(old_classes)}
+        self.class_colors = {i: old_color_by_name[name] for i, name in enumerate(self.classes) if name in old_color_by_name}
+        self.class_registry.load(self.classes, sort=False)
+
         display_classes = [f"[{i + 1}] {c}" for i, c in enumerate(self.classes)]
-        self.cb_classes["values"] = display_classes
+        self.cb_classes['values'] = display_classes
         if self.classes:
             self.cb_classes.current(0)
-
         self.update_box_list()
         self.render()
 
@@ -645,9 +750,9 @@ class AutoLabelerTab(ttk.Frame):
     # Shortcuts Engine
     # =========================================================================
     def _bind_shortcuts(self):
-        # ผูกกับ winfo_toplevel() (หน้าต่างหลักทั้งแอพ) ไม่ใช่ self (แท็บ Frame เอง)
-        # เพราะ Frame ไม่เคยได้รับ keyboard focus จริงในการใช้งานปกติ ถ้าผูกกับ self
-        # ตรง ๆ คีย์ลัดจะไม่ทำงานเลยไม่ว่าจะกดปุ่มไหนก็ตาม (เจอบั๊กนี้จริงตอนใช้งาน)
+        #  winfo_toplevel() ()  self ( Frame )
+        #  Frame  keyboard focus   self
+        #    ()
         self.winfo_toplevel().bind("<KeyPress>", self._on_global_keypress)
 
     def _on_global_keypress(self, event):
@@ -659,21 +764,21 @@ class AutoLabelerTab(ttk.Frame):
         char = event.char
         ctrl_pressed = (state & 0x0004) != 0 or (state & 0x0001) != 0
 
-        if ctrl_pressed and (code == 83 or char in ['s', 'S', 'ห']):
+        if ctrl_pressed and (code == 83 or char in ['s', 'S']):
             self.save_current()
             return "break"
-        if ctrl_pressed and (code == 90 or char in ['z', 'Z', 'ผ']):
+        if ctrl_pressed and (code == 90 or char in ['z', 'Z']):
             self.undo()
             return "break"
-        if ctrl_pressed and (code == 89 or char in ['y', 'Y', 'บ']):
+        if ctrl_pressed and (code == 89 or char in ['y', 'Y']):
             self.redo()
             return "break"
 
         if not ctrl_pressed:
-            if code == 65 or char in ['a', 'A', 'ฟ']:
+            if code == 65 or char in ['a', 'A']:
                 self.prev_image()
                 return "break"
-            if code == 68 or char in ['d', 'D', 'ก'] or code == 32 or char == ' ':
+            if code == 68 or char in ['d', 'D'] or code == 32 or char == ' ':
                 self.next_image()
                 return "break"
 
@@ -691,16 +796,14 @@ class AutoLabelerTab(ttk.Frame):
             digit_map = {
                 '0': '0', '1': '1', '2': '2', '3': '3', '4': '4',
                 '5': '5', '6': '6', '7': '7', '8': '8', '9': '9',
-                '_': '0', 'จ': '0',
-                '!:': '1', 'ๅ': '1',
-                '@': '2', '/': '2',
+                '_': '0',                 '!:': '1',                 '@': '2', '/': '2',
                 '#': '3', '-': '3',
-                '$': '4', 'ภ': '4',
-                '%': '5', 'ถ': '5',
-                '^': '6', 'ุ': '6',
-                '&': '7', 'ึ': '7',
-                '*': '8', 'ค': '8',
-                '(': '9', 'ต': '9'
+                '$': '4',
+                '%': '5',
+                '^': '6',
+                '&': '7',
+                '*': '8',
+                '(': '9'
             }
 
             if char in digit_map:
@@ -887,9 +990,10 @@ class AutoLabelerTab(ttk.Frame):
             label_y2 = label_y1 + text_h + 8
             label_x2 = x1 + text_w + 4
 
-            cv2.rectangle(disp_img, (x1, label_y1), (label_x2, label_y2), (0, 0, 0), -1)
-            cv2.rectangle(disp_img, (x1, label_y1), (label_x2, label_y2), bgr_color, 1)
-            cv2.putText(disp_img, lbl_str, (x1 + 2, label_y2 - 4), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), font_thickness, cv2.LINE_AA)
+            # Keep the UI monochrome, but make Class labels / boxes intentionally colorful.
+            cv2.rectangle(disp_img, (x1, label_y1), (label_x2, label_y2), bgr_color, -1)
+            text_color = (0, 0, 0) if sum(rgb_color) > 430 else (255, 255, 255)
+            cv2.putText(disp_img, lbl_str, (x1 + 2, label_y2 - 4), cv2.FONT_HERSHEY_SIMPLEX, font_scale, text_color, font_thickness, cv2.LINE_AA)
 
         cw = self.canvas.winfo_width() or 800
         ch = self.canvas.winfo_height() or 600
@@ -939,16 +1043,19 @@ class AutoLabelerTab(ttk.Frame):
             with open(self.cls_file, "r", encoding="utf-8") as f:
                 self.classes = [line.strip() for line in f if line.strip()]
         elif self.auto_model is not None:
-            # ยังไม่มี classes.txt แต่โหลดโมเดลไว้แล้ว -> ใช้ชื่อ class จริงจากโมเดล
-            # แทนชื่อปลอม "Class 1".."Class 10" (ไม่งั้น Auto-Label จะ map ชื่อไม่เจอ
-            # แล้วข้ามทุกกรอบไปหมด เพราะชื่อไม่ตรงกันเลยสักตัว)
+            #  classes.txt  ->  class 
+            #  "Class 1".."Class 10" ( Auto-Label  map 
+            #  )
             model_names = self.auto_model.names
-            self.classes = [model_names[i] for i in range(len(model_names))]
+            self.classes = sorted([model_names[i] for i in range(len(model_names))], key=lambda x: x.casefold())
             self._write_classes_file()
         else:
             self.classes = [f"Class {i + 1}" for i in range(10)]
 
-        self.classes = sorted(list(set(self.classes)), key=lambda x: x.lower())
+        # Roboflow-compatible default is alphabetical. Once a classes.txt exists,
+        # preserve its explicit order so user reordering survives reload.
+        self.class_registry.load(self.classes, sort=False)
+        self.classes = self.class_registry.names
         
         display_classes = [f"[{i + 1}] {c}" for i, c in enumerate(self.classes)]
         self.cb_classes["values"] = display_classes
@@ -966,20 +1073,25 @@ class AutoLabelerTab(ttk.Frame):
         self.calculate_global_statistics()
 
     # =========================================================================
-    # Auto-Label Engine (YOLO) — เพิ่มใหม่: ทำทีละรูปหรือทั้งโฟลเดอร์
+    # Auto-Label Engine (YOLO) — : 
     # =========================================================================
     def load_yolo_model(self) -> None:
-        path = filedialog.askopenfilename(title="เลือกไฟล์โมเดล YOLO (best.pt)", filetypes=[("PyTorch Model", "*.pt")])
+        path = filedialog.askopenfilename(title="Select YOLO model (best.pt)", filetypes=[("PyTorch Model", "*.pt")])
+        if path:
+            self.load_yolo_model_path(path, show_message=True)
+
+    def load_yolo_model_path(self, path: str, show_message: bool = True) -> bool:
+        """Load a model supplied by another PK Studio workflow, e.g. Training Studio."""
         if not path:
-            return
+            return False
         try:
             from ultralytics import YOLO
             self.model_path = path
             self.auto_model = YOLO(path)
 
-            # ถ้าเปิด dataset ไว้แล้วแต่ยังไม่มี classes.txt จริง (ใช้ชื่อปลอม
-            # "Class 1".."Class 10" อยู่) ให้ sync เป็นชื่อจริงจากโมเดลทันที ไม่งั้น
-            # Auto-Label จะ map ชื่อไม่เจอแล้วข้ามทุกกรอบไปหมด
+            #  dataset  classes.txt  (
+            # "Class 1".."Class 10" )  sync  
+            # Auto-Label  map 
             if self.src_dir and (not self.cls_file or not os.path.exists(self.cls_file)):
                 model_names = self.auto_model.names
                 self.classes = [model_names[i] for i in range(len(model_names))]
@@ -989,14 +1101,18 @@ class AutoLabelerTab(ttk.Frame):
                 if self.classes:
                     self.cb_classes.current(0)
 
-            messagebox.showinfo("โหลดโมเดลสำเร็จ", f"โหลดโมเดลสำเร็จ:\n{os.path.basename(path)}")
+            if show_message:
+                messagebox.showinfo("Model Loaded", f"Model loaded:\n{os.path.basename(path)}")
+            return True
         except Exception as e:
-            messagebox.showerror("โหลดโมเดลไม่สำเร็จ", f"เกิดข้อผิดพลาด: {e}")
+            if show_message:
+                messagebox.showerror("Model Load Failed", f"Unexpected error: {e}")
+            return False
 
     def _write_classes_file(self) -> None:
-        """เขียน classes.txt ลงในโฟลเดอร์ dataset จากชื่อ class ที่มีอยู่ตอนนี้ใน
-        self.classes (ไม่ว่าจะมาจากไฟล์เดิมหรือจากโมเดล) ให้ครั้งต่อไปเปิดโฟลเดอร์
-        เดิม จะอ่านชื่อจริงได้เลยไม่ต้องพึ่งโมเดลอีก"""
+        """ classes.txt  dataset  class 
+        self.classes (filesOriginal) 
+        Original """
         if not self.src_dir:
             return
         try:
@@ -1008,9 +1124,10 @@ class AutoLabelerTab(ttk.Frame):
             pass
 
     def _map_model_result_to_bboxes(self, result):
-        """แปลงผลลัพธ์จาก model.predict() เป็น self.bboxes (pixel x1,y1,x2,y2) โดย
-        map ชื่อ class จากโมเดล -> index ใน self.classes (เรียงตามตัวอักษร ไม่ใช่
-        index ดิบของโมเดล) ถ้าเจอ class ที่ไม่มีใน self.classes จะข้ามไป (แจ้งเตือน)"""
+        """ model.predict()  self.bboxes (pixel x1,y1,x2,y2) 
+        map  class  -> index  self.classes 
+         Roboflow  classes.txt
+         class  self.classes  ()"""
         model_names = self.auto_model.names
         new_bboxes = []
         skipped_classes = set()
@@ -1034,24 +1151,49 @@ class AutoLabelerTab(ttk.Frame):
             if self.auto_model is None:
                 return
         if not self.filtered_images:
-            messagebox.showwarning("ยังไม่ได้เปิด Dataset", "กรุณาเปิดโฟลเดอร์ dataset ก่อน")
+            messagebox.showwarning("Dataset Not Open", "Open a dataset folder first.")
+            return
+        if self._auto_job and self._auto_job.status in {"pending", "running", "cancelling"}:
             return
 
         img_name = self.filtered_images[self.current_idx]
         img_path = os.path.join(self.img_dir, img_name)
-        results = self.auto_model.predict(source=img_path, conf=self.conf_threshold, imgsz=self.imgsz, verbose=False)
-        new_bboxes, skipped = self._map_model_result_to_bboxes(results[0])
+        self.lbl_file_info.config(text=f"Auto-Label processing: {img_name}")
 
-        self.bboxes = new_bboxes
-        self.selected_box_idx = None
-        self.push_history()
-        self.render()
-        self.update_box_list()
+        def job(cancel_event):
+            if cancel_event.is_set():
+                return None
+            results = self.auto_model.predict(
+                source=img_path, conf=self.conf_threshold, imgsz=self.imgsz, verbose=False
+            )
+            if cancel_event.is_set():
+                return None
+            return self._map_model_result_to_bboxes(results[0])
 
-        msg = f"ตีกรอบอัตโนมัติสำเร็จ! พบวัตถุ {len(new_bboxes)} ชิ้น"
-        if skipped:
-            msg += f"\n\n(ข้าม class ที่โมเดลรู้จักแต่ไม่มีใน classes.txt: {', '.join(skipped)})"
-        messagebox.showinfo("Auto-Label สำเร็จ", msg)
+        def done(job_obj):
+            if job_obj.status == "cancelled" or job_obj.result is None:
+                self.lbl_file_info.config(text=f"Auto-Label cancelled: {img_name}")
+                return
+            new_bboxes, skipped = job_obj.result
+            self.bboxes = new_bboxes
+            self.selected_box_idx = None
+            self.push_history()
+            self.render()
+            self.update_box_list()
+            msg = f"Auto-label complete: {len(new_bboxes)} objects found"
+            if skipped:
+                msg += f"\n\n(Skipped classes not present in classes.txt: {', '.join(sorted(skipped))})"
+            messagebox.showinfo("Auto-Label Complete", msg)
+
+        def error(job_obj):
+            self.lbl_file_info.config(text=f"Auto-Label error: {img_name}")
+            messagebox.showerror("Auto-Label", f"Processing failed for {img_name}\n\n{job_obj.error}")
+
+        self._auto_job = self.job_manager.start(job, on_done=done, on_error=error, ui_call=self.after)
+
+    def cancel_auto_label(self) -> None:
+        if self._auto_job and self._auto_job.status in {"pending", "running"}:
+            self._auto_job.cancel()
 
     def run_batch_autolabel(self) -> None:
         if self.auto_model is None:
@@ -1059,10 +1201,12 @@ class AutoLabelerTab(ttk.Frame):
             if self.auto_model is None:
                 return
         if not self.image_files:
-            messagebox.showwarning("ยังไม่ได้เปิด Dataset", "กรุณาเปิดโฟลเดอร์ dataset ก่อนเริ่ม Batch Auto-Label")
+            messagebox.showwarning("Dataset Not Open", "Open a dataset folder before starting Batch Auto-Label.")
+            return
+        if self._batch_running:
+            messagebox.showinfo("Batch Auto-Label", "A batch job is already running.")
             return
 
-        # หารูปที่ "ยังไม่มี label" เท่านั้น (ไม่ทับรูปที่ตรวจแก้ไปแล้ว)
         to_process = []
         for img_name in self.image_files:
             txt_path = os.path.join(self.lbl_dir, os.path.splitext(img_name)[0] + ".txt")
@@ -1070,32 +1214,28 @@ class AutoLabelerTab(ttk.Frame):
                 to_process.append(img_name)
 
         if not to_process:
-            messagebox.showinfo("ไม่มีรูปที่ต้องทำ", "ทุกรูปมี label อยู่แล้ว (Batch Auto-Label ข้ามรูปที่มี label อยู่แล้วเสมอ)")
+            messagebox.showinfo("Nothing to Process", "All images already have labels. Batch Auto-Label skips labeled images.")
             return
-
         if not messagebox.askyesno(
-            "ยืนยัน Batch Auto-Label",
-            f"พบ {len(to_process)} รูปที่ยังไม่มี label (จากทั้งหมด {len(self.image_files)} รูป)\n"
-            f"ต้องการให้ AI ตีกรอบอัตโนมัติเฉพาะรูปเหล่านี้หรือไม่?\n"
-            f"(รูปที่มี label อยู่แล้วจะไม่ถูกแตะต้อง)",
+            "Confirm Batch Auto-Label",
+            f"Found {len(to_process)} unlabeled images out of {len(self.image_files)} total.\n"
+            f"Run Auto-Label on these images?\n"
+            f"(Existing labels will not be modified.)",
         ):
             return
 
         self._batch_running = True
+        self._batch_errors = []
 
-        def job():
+        def job(cancel_event):
             done_count = 0
-            error_count = 0
             skipped_classes_all = set()
+            total = len(to_process)
             for idx, img_name in enumerate(to_process, start=1):
-                if not self._batch_running:
+                if cancel_event.is_set():
                     break
                 try:
                     img_path = os.path.join(self.img_dir, img_name)
-                    img_data = np.fromfile(img_path, dtype=np.uint8)
-                    cv_img = cv2.imdecode(img_data, cv2.IMREAD_COLOR)
-                    h_px, w_px = cv_img.shape[:2]
-
                     results = self.auto_model.predict(
                         source=img_path, conf=self.conf_threshold, imgsz=self.imgsz, verbose=False
                     )
@@ -1109,32 +1249,40 @@ class AutoLabelerTab(ttk.Frame):
                         cls_id = self.classes.index(cls_name)
                         cx, cy, w, h = box.xywhn[0].tolist()
                         lines.append(f"{cls_id} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
-
                     txt_path = os.path.join(self.lbl_dir, os.path.splitext(img_name)[0] + ".txt")
                     with open(txt_path, "w", encoding="utf-8") as f:
                         f.write("\n".join(lines))
                     done_count += 1
-                except Exception:
-                    error_count += 1
+                except Exception as exc:
+                    self._batch_errors.append({"file": img_name, "error": str(exc)})
+                self.after(0, lambda i=idx, t=total: self.lbl_file_info.config(
+                    text=f"Batch Auto-Label: {i}/{t} images..."
+                ))
+            return done_count, skipped_classes_all, len(to_process)
 
-                if idx % 5 == 0 or idx == len(to_process):
-                    self.after(0, lambda i=idx: self.lbl_file_info.config(
-                        text=f"Batch Auto-Label: {i}/{len(to_process)} รูป..."
-                    ))
-
+        def finish(job_obj):
             self._batch_running = False
+            done_count, skipped_classes_all, total = job_obj.result or (0, set(), len(to_process))
+            error_count = len(self._batch_errors)
+            state = "cancelled" if job_obj.status == "cancelled" else "completed"
+            msg = f"Batch Auto-Label {state}!\nSuccess: {done_count} | Errors: {error_count} | Total: {total}"
+            if skipped_classes_all:
+                msg += f"\n\n(Skipped classes not present in classes.txt: {', '.join(sorted(skipped_classes_all))})"
+            if self._batch_errors:
+                msg += "\n\nFailed files:\n" + "\n".join(
+                    f"- {e['file']}: {e['error']}" for e in self._batch_errors[:10]
+                )
+                if len(self._batch_errors) > 10:
+                    msg += f"\n... and {len(self._batch_errors) - 10} more"
+            messagebox.showinfo("Batch Auto-Label", msg)
+            self.apply_image_filters()
+            self.calculate_global_statistics()
 
-            def finish():
-                msg = f"Batch Auto-Label เสร็จสิ้น!\nสำเร็จ: {done_count} รูป | ผิดพลาด: {error_count} รูป"
-                if skipped_classes_all:
-                    msg += f"\n\n(ข้าม class ที่โมเดลรู้จักแต่ไม่มีใน classes.txt: {', '.join(skipped_classes_all)})"
-                messagebox.showinfo("Batch เสร็จสิ้น", msg)
-                self.apply_image_filters()
-                self.calculate_global_statistics()
+        def error(job_obj):
+            self._batch_running = False
+            messagebox.showerror("Batch Auto-Label", f"Batch failed: {job_obj.error}")
 
-            self.after(0, finish)
-
-        threading.Thread(target=job, daemon=True).start()
+        self._auto_job = self.job_manager.start(job, on_done=finish, on_error=error, ui_call=self.after)
 
     def load_current_image(self):
         if not self.filtered_images:
@@ -1271,9 +1419,131 @@ class AutoLabelerTab(ttk.Frame):
             self.render()
             self.update_box_list()
 
+    def _ensure_dataset_structure(self, root_dir):
+        """Create the standard PK/YOLO dataset layout.
+
+        A saved annotation dataset always has:
+          dataset/images/   -> source images
+          dataset/labels/   -> YOLO .txt annotations
+          dataset/classes.txt -> one class name per line
+        """
+        root_dir = os.path.abspath(root_dir)
+        self.src_dir = root_dir
+        self.img_dir = os.path.join(root_dir, "images")
+        self.lbl_dir = os.path.join(root_dir, "labels")
+        self.meta_file = os.path.join(root_dir, ".pk_annotation_meta.json")
+        self.cls_file = os.path.join(root_dir, "classes.txt")
+        os.makedirs(self.img_dir, exist_ok=True)
+        os.makedirs(self.lbl_dir, exist_ok=True)
+        if self.classes:
+            self._write_classes_file()
+        return root_dir
+
+    def save_as_dataset(self):
+        """Save the current annotation project as a self-contained dataset.
+
+        The user chooses a destination folder. PK Studio creates images/ and
+        labels/, copies the source images, and writes classes.txt. Existing
+        annotation files in the destination are never overwritten unless they
+        are generated by the current Save operation.
+        """
+        if not self.image_files:
+            messagebox.showwarning("Save As", "Open a dataset first.")
+            return
+
+        parent = filedialog.askdirectory(title="Select output folder for Save As")
+        if not parent:
+            return
+
+        dataset_name = simpledialog.askstring(
+            "Save Dataset As",
+            "Dataset folder name:",
+            initialvalue=os.path.basename(self.src_dir) or "dataset",
+            parent=self.winfo_toplevel(),
+        )
+        if not dataset_name:
+            return
+        dataset_name = dataset_name.strip()
+        if not dataset_name:
+            return
+
+        destination = os.path.join(parent, dataset_name)
+        if os.path.exists(destination) and os.listdir(destination):
+            if not messagebox.askyesno(
+                "Save As",
+                f"This folder already contains files:\n{destination}\n\nUse this folder anyway?",
+            ):
+                return
+
+        source_img_dir = self.img_dir if os.path.isdir(self.img_dir) else self.src_dir
+        source_root = self.src_dir
+        source_lbl_dir = os.path.join(source_root, "labels") if os.path.isdir(os.path.join(source_root, "labels")) else source_root
+        self._ensure_dataset_structure(destination)
+
+        copied = 0
+        errors = []
+        exts = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
+        for img_name in self.image_files:
+            src = os.path.join(source_img_dir, img_name)
+            dst = os.path.join(self.img_dir, img_name)
+            if not os.path.isfile(src):
+                errors.append(f"File not found: {img_name}")
+                continue
+            try:
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                shutil.copy2(src, dst)
+                copied += 1
+            except OSError as exc:
+                errors.append(f"{img_name}: {exc}")
+
+        # Copy existing annotations from the source dataset.
+        for img_name in self.image_files:
+            txt_name = os.path.splitext(img_name)[0] + ".txt"
+            candidate = os.path.join(source_lbl_dir, txt_name)
+            if not os.path.exists(candidate):
+                candidate = os.path.join(source_img_dir, txt_name)
+            if os.path.isfile(candidate):
+                try:
+                    shutil.copy2(candidate, os.path.join(self.lbl_dir, txt_name))
+                except OSError as exc:
+                    errors.append(f"{txt_name}: {exc}")
+
+        # Save the current in-memory annotations to the new labels folder.
+        self.filtered_images = list(self.image_files)
+        if self.current_idx >= len(self.filtered_images):
+            self.current_idx = max(0, len(self.filtered_images) - 1)
+        self.save_current()
+
+        with open(self.meta_file, "w", encoding="utf-8") as f:
+            json.dump(self.meta_data, f, indent=2, ensure_ascii=False)
+        self._write_classes_file()
+
+        msg = (
+            f"Dataset saved successfully\n\n"
+            f"{destination}\n\n"
+            f"images/: {copied} files\n"
+            f"labels/: YOLO .txt files\n"
+            f"classes.txt : {len(self.classes)} classes"
+        )
+        if errors:
+            msg += f"\n\nFound {len(errors)} errors"
+        messagebox.showinfo("Save As Complete", msg)
+        self.image_files = sorted(
+            [f for f in os.listdir(self.img_dir) if f.lower().endswith(exts)],
+            key=str.casefold,
+        )
+        self.apply_image_filters()
+        self.calculate_global_statistics()
+
     def save_current(self):
         if not self.filtered_images:
             return
+
+        # Save always guarantees the standard folder layout. This is especially
+        # useful when a user opened a flat image folder and then starts labeling.
+        os.makedirs(self.lbl_dir, exist_ok=True)
+        os.makedirs(self.img_dir, exist_ok=True)
+        self._write_classes_file()
 
         img_name = self.filtered_images[self.current_idx]
         txt_name = os.path.splitext(img_name)[0] + ".txt"

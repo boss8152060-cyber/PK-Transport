@@ -201,7 +201,7 @@ try {
     # Use the custom icon.ico if it exists next to this script, otherwise fall
     # back to a built-in Windows system icon (guaranteed to exist on every
     # machine, so the shortcut icon never fails to show).
-    $customIconPath = Join-Path $ScriptDir "icon.ico"
+    $customIconPath = Join-Path (Join-Path $ScriptDir "assets") "icon.ico"
     if (Test-Path $customIconPath) {
         $iconTarget = $customIconPath
     } else {
@@ -214,7 +214,7 @@ try {
     $desktopShortcut.TargetPath = $runAppBat
     $desktopShortcut.WorkingDirectory = $ScriptDir
     $desktopShortcut.IconLocation = $iconTarget
-    $desktopShortcut.Description = "PK Studio - All-in-One Computer Vision Suite"
+    $desktopShortcut.Description = "PK Studio - Dataset Studio"
     $desktopShortcut.Save()
     Write-Host "Desktop shortcut created: $appName"
 
@@ -224,7 +224,7 @@ try {
     $startMenuShortcut.TargetPath = $runAppBat
     $startMenuShortcut.WorkingDirectory = $ScriptDir
     $startMenuShortcut.IconLocation = $iconTarget
-    $startMenuShortcut.Description = "PK Studio - All-in-One Computer Vision Suite"
+    $startMenuShortcut.Description = "PK Studio - Dataset Studio"
     $startMenuShortcut.Save()
     Write-Host "Start Menu shortcut created - you can now search '$appName' in Windows Search"
 } catch {
