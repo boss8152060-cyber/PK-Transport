@@ -319,6 +319,8 @@ class AutoLabelerTab(ttk.Frame):
 
         target_num = int(val)
         if 1 <= target_num <= len(self.filtered_images):
+            # Auto-save the image we're leaving before jumping away from it.
+            self._write_current_labels()
             self.current_idx = target_num - 1
             self.load_current_image()
             self.entry_jump.delete(0, tk.END)
@@ -1535,7 +1537,10 @@ class AutoLabelerTab(ttk.Frame):
         self.apply_image_filters()
         self.calculate_global_statistics()
 
-    def save_current(self):
+    def _write_current_labels(self):
+        """Write the current image's label/meta files to disk without
+        recomputing the whole-dataset statistics. Used both by the explicit
+        Save button and by the lightweight auto-save on navigation."""
         if not self.filtered_images:
             return
 
@@ -1562,10 +1567,14 @@ class AutoLabelerTab(ttk.Frame):
 
         if img_name not in self.meta_data:
             self.meta_data[img_name] = {}
-        
+
         with open(self.meta_file, "w", encoding="utf-8") as f:
             json.dump(self.meta_data, f, indent=2)
 
+    def save_current(self):
+        if not self.filtered_images:
+            return
+        self._write_current_labels()
         self.calculate_global_statistics()
 
     def save_all(self):
@@ -1574,18 +1583,23 @@ class AutoLabelerTab(ttk.Frame):
 
     def prev_image(self):
         if self.current_idx > 0:
+            # Auto-save the image we're leaving before moving away from it.
+            self._write_current_labels()
             self.current_idx -= 1
             self.load_current_image()
 
     def next_image(self):
         if not self.filtered_images:
             return
-        
+
         img_name = self.filtered_images[self.current_idx]
         if img_name not in self.meta_data:
             self.meta_data[img_name] = {}
         
         self.meta_data[img_name]["reviewed"] = True
+
+        # Auto-save the image we're leaving before moving away from it.
+        self._write_current_labels()
 
         if self.current_idx < len(self.filtered_images) - 1:
             self.current_idx += 1

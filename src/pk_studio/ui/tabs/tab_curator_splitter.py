@@ -717,9 +717,12 @@ class SplitterPanel(ttk.Frame):
             ui_call=self.after,
         )
 
-    def _scan_job(self) -> None:
+    def _scan_job(self, cancel_event=None, source_folder=None, classes_file=None) -> None:
         try:
-            source = Path(self.source_folder.get())
+            source_folder = source_folder or self.source_folder.get()
+            classes_file = classes_file if classes_file is not None else self.classes_file.get()
+
+            source = Path(source_folder)
             image_files = self._find_images_and_labels(source)
             if not image_files:
                 self._show_error(
@@ -742,7 +745,7 @@ class SplitterPanel(ttk.Frame):
                             max_class_idx = max(max_class_idx, cls_idx)
                 image_labels[stem] = labels_here
 
-            class_names = self._load_class_names(self.classes_file.get(), max_class_idx)
+            class_names = self._load_class_names(classes_file, max_class_idx)
 
             current_count = {i: sum(1 for labs in image_labels.values() if i in labs) for i in range(len(class_names))}
             n_background = sum(1 for labs in image_labels.values() if not labs)
