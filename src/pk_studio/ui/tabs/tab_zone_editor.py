@@ -45,6 +45,8 @@ VIDEO_FILETYPES = [
 SNAP_RADIUS_PX = 12    # canvas-space distance (screen px) that snaps/closes the polygon
 VERTEX_HIT_PX = 10     # canvas-space distance (screen px) that counts as "clicked this vertex"
 MAX_UNDO = 50
+ZONE_SNAP_RADIUS_PX = 14
+SHIFT_MASK = 0x1
 
 # Thai-capable fonts to try, in order — Windows fonts first (the app's actual
 # target), then common Linux Thai fonts (so this also renders correctly when
@@ -104,6 +106,9 @@ class ZoneEditorTab(ttk.Frame):
         self.selected_zone_indices = set()   # supports multi-select (Ctrl/Shift-click in the list)
         self.dragging_vertex_idx = None  # index into the selected zone's points, while dragging
         self.mouse_orig_pos = None       # last known mouse position, orig pixel coords
+        # Zone Snap / Shift constraint state
+        self.snap_enabled = tk.BooleanVar(value=True)
+        self.snap_radius = tk.IntVar(value=14)
         self._pan_drag_start = None      # (event.x, event.y) while right-button is held
         self._pan_did_drag = False       # True once a right-drag has moved past the click threshold
         self.zones_file = ""
@@ -244,6 +249,26 @@ class ZoneEditorTab(ttk.Frame):
 
         body.add(canvas_frame, weight=3)
         body.add(side_container, weight=1)
+
+        # ---- Zone snapping
+        snap_box = ttk.LabelFrame(side, text="Zone Snap")
+        snap_box.pack(fill="x", padx=8, pady=(0, 6))
+        ttk.Checkbutton(
+            snap_box,
+            text="Snap to zone points / edges",
+            variable=self.snap_enabled,
+            command=self.render,
+        ).pack(anchor="w", padx=8, pady=(7, 2))
+        snap_row = ttk.Frame(snap_box)
+        snap_row.pack(fill="x", padx=8, pady=(2, 4))
+        ttk.Label(snap_row, text="Snap radius:").pack(side="left")
+        ttk.Spinbox(snap_row, from_=4, to=50, width=5, textvariable=self.snap_radius).pack(side="left", padx=5)
+        ttk.Label(snap_row, text="px").pack(side="left")
+        ttk.Label(
+            snap_box,
+            text="ปลายจุดจะดูดเข้าหาจุดยอด หรือจุดใด ๆ บนเส้นของ Zone อื่น เพื่อให้ขอบต่อกันพอดี",
+            foreground=COLORS["text_muted"], wraplength=290, justify="left"
+        ).pack(anchor="w", padx=8, pady=(0, 7))
 
         # ---- Zone name: one merged box (saved-name list + the active name
         # for the zone about to be finished) instead of two look-alike boxes.
@@ -556,7 +581,9 @@ class ZoneEditorTab(ttk.Frame):
             "5) Select ONE zone in the list to drag its points; right-click a "
             "point to delete it. Ctrl/Shift-click to select several zones at "
             "once — color, label toggle, and delete apply to all of them\n"
-            "6) Scroll wheel zooms toward the cursor; Undo/Redo (or Ctrl+Z / Ctrl+Y) step through zone changes",
+            "6) Shift constrains a new segment perpendicular to the selected reference (X/Y/Z, custom, or previous segment)\n"
+            "7) Zone Snap makes new/edit points share exact coordinates with existing zone vertices or any point on existing edges\n"
+            "8) Scroll wheel zooms toward the cursor; Undo/Redo (or Ctrl+Z / Ctrl+Y) step through zone changes",
             parent=self,
         )
 
@@ -680,6 +707,66 @@ class ZoneEditorTab(ttk.Frame):
                 best_idx, best_dist = i, d
         return best_idx
 
+    def _shift_target_angle(self):
+        """Shift constrains the next segment perpendicular to the previous segment.
+        Reference axes were intentionally removed; this keeps Shift useful for
+        constructing clean rectangular/adjacent zones without a global axis system.
+        """
+        if len(self.current_points) >= 2:
+            return self._angle_deg(self.current_points[-2], self.current_points[-1]) + 90.0
+        return None
+
+    def _apply_shift_constraint(self, point):
+        if not self.current_points:
+            return point
+        target_angle = self._shift_target_angle()
+        if target_angle is None:
+            return point
+        import math
+        p0 = self.current_points[-1]
+        dx, dy = point[0]-p0[0], point[1]-p0[1]
+        length = math.hypot(dx, dy)
+        if length < 1e-6:
+            return point
+        return self._point_from_angle(p0, length, target_angle)
+
+    def _closest_point_on_segment(self, p, a, b):
+        import math
+        ax, ay = a; bx, by = b
+        dx, dy = bx-ax, by-ay
+        denom = dx*dx + dy*dy
+        if denom <= 1e-9:
+            return a, math.hypot(p[0]-a[0], p[1]-a[1])
+        t = max(0.0, min(1.0, ((p[0]-ax)*dx + (p[1]-ay)*dy)/denom))
+        q = (ax+t*dx, ay+t*dy)
+        return q, math.hypot(p[0]-q[0], p[1]-q[1])
+
+    def _snap_point_to_zones(self, point, exclude_zone=None):
+        if not self.snap_enabled.get() or not self.zones:
+            return point, None
+        radius = max(1, int(self.snap_radius.get())) / max(self.render_scale, 1e-6)
+        best = None
+        best_dist = radius
+        for zi, zone in enumerate(self.zones):
+            if zi == exclude_zone:
+                continue
+            pts = zone.get("points", [])
+            for v in pts:
+                d = ((point[0]-v[0])**2 + (point[1]-v[1])**2) ** 0.5
+                if d < best_dist:
+                    best, best_dist = (float(v[0]), float(v[1])), d
+            for i, a in enumerate(pts):
+                b = pts[(i+1) % len(pts)]
+                q, d = self._closest_point_on_segment(point, a, b)
+                if d < best_dist:
+                    best, best_dist = q, d
+        return (best if best is not None else point), best is not None
+
+    def _prepare_point(self, point, shift=False, exclude_zone=None):
+        p = self._apply_shift_constraint(point) if shift else point
+        p, snapped = self._snap_point_to_zones(p, exclude_zone=exclude_zone)
+        return (int(round(p[0])), int(round(p[1]))), snapped
+
     def _on_canvas_press(self, event):
         if self.cv_frame is None:
             return
@@ -707,8 +794,10 @@ class ZoneEditorTab(ttk.Frame):
                 self._finish_zone()
                 return
 
+        shift = bool(event.state & SHIFT_MASK)
+        (x, y), snapped = self._prepare_point((x, y), shift=shift)
         self.current_points.append((x, y))
-        self.lbl_point_count.config(text=f"Points placed: {len(self.current_points)}")
+        self.lbl_point_count.config(text=f"Points placed: {len(self.current_points)}" + ("  • SNAP" if snapped else ""))
         self.render()
 
     def _on_canvas_drag(self, event):
@@ -716,6 +805,15 @@ class ZoneEditorTab(ttk.Frame):
         if self.dragging_vertex_idx is None or single_idx is None:
             return
         x, y = self.canvas_to_orig(event.x, event.y)
+        shift = bool(event.state & SHIFT_MASK)
+        # When editing a vertex, use the adjacent previous vertex as the
+        # temporary segment anchor for Shift, then snap to another zone.
+        anchor_idx = (self.dragging_vertex_idx - 1) % len(self.zones[single_idx]["points"])
+        anchor = self.zones[single_idx]["points"][anchor_idx]
+        old_current = self.current_points
+        self.current_points = [tuple(anchor)]
+        (x, y), _ = self._prepare_point((x, y), shift=shift, exclude_zone=single_idx)
+        self.current_points = old_current
         zone = self.zones[single_idx]
         zone["points"][self.dragging_vertex_idx] = [x, y]
         self.render()
@@ -784,7 +882,9 @@ class ZoneEditorTab(ttk.Frame):
     def _on_canvas_motion(self, event):
         if self.cv_frame is None:
             return
-        self.mouse_orig_pos = self.canvas_to_orig(event.x, event.y)
+        raw = self.canvas_to_orig(event.x, event.y)
+        shift = bool(event.state & SHIFT_MASK)
+        self.mouse_orig_pos, _ = self._prepare_point(raw, shift=shift) if self.current_points else (raw, False)
         # Only worth a re-render while actively drawing, to show the
         # rubber-band preview line and the "click here to close" hint.
         if self.current_points:
