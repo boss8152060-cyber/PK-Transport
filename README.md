@@ -38,8 +38,8 @@ PK Studio intentionally focuses on dataset preparation.
 ## UI
 
 - Modern light workspace with dark navigation rail.
-- Four primary screens: Data, Label, Curate, Analytics.
-- Keyboard shortcuts: Ctrl+1 through Ctrl+4.
+- Six screens: Data, Label, Curate, Analytics, Zone, Other.
+- Keyboard shortcuts: Ctrl+1 through Ctrl+6.
 - Shared visual tokens live in `src/pk_studio/theme.py`.
 
 ## Design rules
@@ -54,3 +54,10 @@ PK Studio intentionally focuses on dataset preparation.
 ## Run
 
 Double-click `run_app.bat`, or run `python main.py`.
+
+## Development
+
+```text
+pip install -r requirements.txt -r requirements-dev.txt
+python -m pytest
+```

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.7
+- Fixed `build_yolo_dataset` overwriting images that share a file name in different sub-folders.
+- Fixed `copy_background=False` copying unlabeled images anyway.
+- `data.yaml` no longer points `val` at an empty split.
+- `DatasetScanner.scan` no longer crashes on unreadable labels; validates class ids and 0..1 coordinates.
+- Label, class-list, project and data.yaml writes are now atomic; the Curate tab writes `data.yaml` via PyYAML.
+- A failing UI callback is no longer reported as a job error.
+- Added requirements files and tests for the builder, scanner, atomic writes and jobs.
+
 ## 1.19.0
 - Standardized the entire application source, documentation, and user-facing messages to English only.
 - Removed remaining Thai text from dialogs, logs, labels, comments, and documentation.

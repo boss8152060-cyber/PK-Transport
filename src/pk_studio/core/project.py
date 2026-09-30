@@ -2,6 +2,8 @@
 import json
 from pathlib import Path
 
+from pk_studio.core.fileio import atomic_write_text
+
 PROJECT_DIR = ".pkstudio"
 PROJECT_FILE = "project.json"
 
@@ -26,5 +28,5 @@ def save_project(dataset_dir, data: dict) -> Path:
     payload = dict(data)
     payload["schema_version"] = 1
     payload["dataset_dir"] = str(Path(dataset_dir).resolve())
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2))
     return path

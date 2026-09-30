@@ -44,16 +44,23 @@ class Job:
         self.status = "running"
         try:
             self.result = self.target(self.cancel_event)
-            self.status = "cancelled" if self.cancelled() else "done"
-            if self.on_done:
-                self._dispatch(self.on_done)
         except Exception as exc:
             self.error = exc
             self.status = "error"
             traceback.print_exc()
-            if self.on_error:
-                self._dispatch(self.on_error)
+            self._safe_dispatch(self.on_error)
+            return
+        self.status = "cancelled" if self.cancelled() else "done"
+        self._safe_dispatch(self.on_done)
 
+    def _safe_dispatch(self, callback) -> None:
+        """A failing UI callback must not be reported as a job failure."""
+        if not callback:
+            return
+        try:
+            self._dispatch(callback)
+        except Exception:
+            traceback.print_exc()
 
 class JobManager:
     def __init__(self):

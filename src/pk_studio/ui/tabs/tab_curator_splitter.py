@@ -17,7 +17,10 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+import yaml
+
 from pk_studio.core.dataset import DatasetScanner
+from pk_studio.core.fileio import atomic_write_text
 from pk_studio.core.job_manager import JobManager
 from pk_studio.core.smart_curator import CuratorWeights, class_rarity
 
@@ -943,9 +946,10 @@ class SplitterPanel(ttk.Frame):
                 split_counts[split] += 1
 
             data_yaml_path = output / "data.yaml"
-            with open(data_yaml_path, "w", encoding="utf-8") as f:
-                f.write("train: train/images\nval: valid/images\ntest: test/images\n\n")
-                f.write(f"nc: {len(class_names)}\nnames: {class_names}\n")
+            atomic_write_text(data_yaml_path, yaml.safe_dump(
+    {"train": "train/images", "val": "valid/images", "test": "test/images",
+     "nc": len(class_names), "names": list(class_names)},
+    sort_keys=False, allow_unicode=True))
 
             summary_lines = [
                 f"Split complete: train={split_counts['train']}, "

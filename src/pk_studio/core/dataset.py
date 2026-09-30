@@ -75,18 +75,35 @@ class DatasetScanner:
         for key, (img, label) in raw.items():
             ids = []
             if label:
-                for line_no, line in enumerate(label.read_text(encoding="utf-8").splitlines(), 1):
+                try:
+                    lines = label.read_text(encoding="utf-8").splitlines()
+                except (OSError, UnicodeError) as exc:
+                    invalid.append(f"{label.name} — unreadable: {exc}")
+                    lines = []
+                for line_no, line in enumerate(lines, 1):
                     parts = line.strip().split()
                     if not parts:
                         continue
                     try:
                         cid = int(parts[0])
-                        ids.append(cid)
-                        max_id = max(max_id, cid)
-                        if len(parts) < 5:
-                            invalid.append(f"{label.name}:{line_no} — expected YOLO 5+ fields")
                     except ValueError:
                         invalid.append(f"{label.name}:{line_no} — invalid class id")
+                        continue
+                    if cid < 0:
+                        invalid.append(f"{label.name}:{line_no} — negative class id")
+                        continue
+                    if len(parts) < 5:
+                        invalid.append(f"{label.name}:{line_no} — expected YOLO 5+ fields")
+                        continue
+                    try:
+                        coords = [float(x) for x in parts[1:5]]
+                    except ValueError:
+                        invalid.append(f"{label.name}:{line_no} — non-numeric coordinates")
+                        continue
+                    if any(not 0.0 <= c <= 1.0 for c in coords):
+                        invalid.append(f"{label.name}:{line_no} — coordinates outside 0..1")
+                    ids.append(cid)
+                    max_id = max(max_id, cid)
             parsed[key] = DatasetItem(key, img, label, ids)
         names = list(class_names) if class_names else cls.load_class_names(source, max_id)
         return DatasetScan(source, parsed, names, invalid)

@@ -33,6 +33,7 @@ from PIL import Image, ImageTk
 
 from pk_studio.theme import COLORS
 from pk_studio.core.class_registry import ClassRegistry
+from pk_studio.core.fileio import atomic_write_text
 from pk_studio.core.job_manager import JobManager
 
 DEFAULT_COLORS = [
@@ -1256,8 +1257,7 @@ class AutoLabelerTab(ttk.Frame):
                         cx, cy, w, h = box.xywhn[0].tolist()
                         lines.append(f"{cls_id} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
                     txt_path = os.path.join(self.lbl_dir, os.path.splitext(img_name)[0] + ".txt")
-                    with open(txt_path, "w", encoding="utf-8") as f:
-                        f.write("\n".join(lines))
+                    atomic_write_text(txt_path, "\n".join(lines))
                     done_count += 1
                 except Exception as exc:
                     self._batch_errors.append({"file": img_name, "error": str(exc)})
@@ -1566,8 +1566,7 @@ class AutoLabelerTab(ttk.Frame):
             cy = (y1 + (y2 - y1) / 2) / self.orig_h
             lines.append(f"{cls_id} {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}")
 
-        with open(txt_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines))
+        atomic_write_text(txt_path, "\n".join(lines))
 
         if img_name not in self.meta_data:
             self.meta_data[img_name] = {}

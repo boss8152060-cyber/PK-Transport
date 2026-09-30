@@ -5,7 +5,9 @@ import random
 import shutil
 import yaml
 
-from pk_studio.core.dataset import DatasetScanner, IMAGE_EXTENSIONS
+from pk_studio.core.dataset import DatasetScanner
+from pk_studio.core.fileio import atomic_write_text
+
 
 @dataclass
 class BuildResult:
@@ -69,26 +71,48 @@ def split_items(items, train=0.7, valid=0.2, test=0.1, seed=0):
     return assigned, warnings
 
 
+def _unique_name(rel_key: str, suffix: str) -> str:
+    """Flatten a relative key (``cam1/frame``) into a collision-free file name."""
+    return rel_key.replace("/", "__") + suffix
+
+
 def build_yolo_dataset(source, output, train=0.7, valid=0.2, test=0.1, seed=0, copy_background=True):
-    source=Path(source).resolve(); output=Path(output).resolve()
-    scan=DatasetScanner.scan(source)
-    if not scan.items: raise ValueError("No images found in the source dataset.")
-    assignment,warnings=split_items(scan.items,train,valid,test,seed)
-    for split in ("train","valid","test"):
-        (output/split/"images").mkdir(parents=True,exist_ok=True)
-        (output/split/"labels").mkdir(parents=True,exist_ok=True)
-    counts={s:0 for s in ("train","valid","test")}
-    for key,split in assignment.items():
-        item=scan.items[key]
-        shutil.copy2(item.image_path, output/split/"images"/item.image_path.name)
+    source = Path(source).resolve()
+    output = Path(output).resolve()
+    scan = DatasetScanner.scan(source)
+    if not scan.items:
+        raise ValueError("No images found in the source dataset.")
+    items = scan.items
+    if not copy_background:
+        items = {k: v for k, v in items.items() if v.label_path and v.label_path.exists()}
+        if not items:
+            raise ValueError("No labeled images found (copy_background is off).")
+    assignment, warnings = split_items(items, train, valid, test, seed)
+    counts = {s: 0 for s in ("train", "valid", "test")}
+    for key, split in assignment.items():
+        item = items[key]
+        img_dir = output / split / "images"
+        lbl_dir = output / split / "labels"
+        img_dir.mkdir(parents=True, exist_ok=True)
+        lbl_dir.mkdir(parents=True, exist_ok=True)
+        stem = _unique_name(key, "")
+        shutil.copy2(item.image_path, img_dir / (stem + item.image_path.suffix))
         if item.label_path and item.label_path.exists():
-            shutil.copy2(item.label_path, output/split/"labels"/item.label_path.name)
-        elif not copy_background:
-            continue
-        counts[split]+=1
-    (output/"classes.txt").write_text("\n".join(scan.class_names)+"\n",encoding="utf-8")
-    payload={"path":str(output),"train":"train/images","val":"valid/images","names":{i:n for i,n in enumerate(scan.class_names)}}
-    if counts["test"]>0: payload["test"]="test/images"
-    data_yaml=output/"data.yaml"
-    data_yaml.write_text(yaml.safe_dump(payload,sort_keys=False,allow_unicode=True),encoding="utf-8")
-    return BuildResult(output,counts,warnings,data_yaml)
+            shutil.copy2(item.label_path, lbl_dir / (stem + ".txt"))
+        counts[split] += 1
+    for split in ("train", "valid", "test"):
+        if counts[split] == 0:
+            (output / split / "images").mkdir(parents=True, exist_ok=True)
+            (output / split / "labels").mkdir(parents=True, exist_ok=True)
+    atomic_write_text(output / "classes.txt", "\n".join(scan.class_names) + "\n")
+    payload = {"path": str(output), "train": "train/images", "names": {i: n for i, n in enumerate(scan.class_names)}}
+    if counts["valid"] > 0:
+        payload["val"] = "valid/images"
+    elif counts["train"] > 0:
+        payload["val"] = "train/images"
+        warnings.append("valid split is empty; data.yaml uses train/images for validation")
+    if counts["test"] > 0:
+        payload["test"] = "test/images"
+    data_yaml = output / "data.yaml"
+    atomic_write_text(data_yaml, yaml.safe_dump(payload, sort_keys=False, allow_unicode=True))
+    return BuildResult(output, counts, warnings, data_yaml)
