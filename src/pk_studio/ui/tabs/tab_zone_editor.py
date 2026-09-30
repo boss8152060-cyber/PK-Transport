@@ -24,6 +24,7 @@ Workflow:
 
 import json
 import uuid
+import copy
 import tkinter as tk
 from datetime import datetime
 from tkinter import colorchooser, filedialog, messagebox, simpledialog, ttk
@@ -43,7 +44,7 @@ VIDEO_FILETYPES = [
 
 SNAP_RADIUS_PX = 12    # canvas-space distance (screen px) that snaps/closes the polygon
 VERTEX_HIT_PX = 10     # canvas-space distance (screen px) that counts as "clicked this vertex"
-MAX_PRESETS = 9        # limited by the 1-9 number-key shortcut
+MAX_UNDO = 50
 
 # Thai-capable fonts to try, in order — Windows fonts first (the app's actual
 # target), then common Linux Thai fonts (so this also renders correctly when
@@ -103,11 +104,18 @@ class ZoneEditorTab(ttk.Frame):
         self.selected_zone_idx = None
         self.dragging_vertex_idx = None  # index into the selected zone's points, while dragging
         self.mouse_orig_pos = None       # last known mouse position, orig pixel coords
+        self._pan_drag_start = None      # (event.x, event.y) while right-button is held
+        self._pan_did_drag = False       # True once a right-drag has moved past the click threshold
         self.zones_file = ""
 
         # Zone name presets — set up before drawing, then recall with
-        # number keys 1-9 + Enter instead of retyping every time.
+        # number keys (any length) + Enter instead of retyping every time.
         self.zone_presets = []     # list of {"name": ...}
+        self.preset_input_buffer = ""
+
+        # Undo / redo — snapshots of self.zones taken before each mutation.
+        self.undo_stack = []
+        self.redo_stack = []
 
         # Canvas render state
         self.zoom_level = 1.0
@@ -135,7 +143,18 @@ class ZoneEditorTab(ttk.Frame):
 
         ttk.Button(top_bar, text="📂 Open Video", command=self._pick_video).pack(side="left")
         self.lbl_video_path = ttk.Label(top_bar, text="No video loaded", foreground=COLORS["text_muted"])
-        self.lbl_video_path.pack(side="left", padx=10)
+        self.lbl_video_path.pack(side="left", padx=(8, 10))
+
+        ttk.Separator(top_bar, orient="vertical").pack(side="left", fill="y", padx=4)
+        ttk.Button(top_bar, text="❓ Help", style="Secondary.TButton", command=self._show_help_popup).pack(side="left", padx=2)
+        ttk.Button(top_bar, text="↶ Undo", style="Secondary.TButton", command=self._undo).pack(side="left", padx=2)
+        ttk.Button(top_bar, text="↷ Redo", style="Secondary.TButton", command=self._redo).pack(side="left", padx=2)
+
+        ttk.Separator(top_bar, orient="vertical").pack(side="left", fill="y", padx=4)
+        ttk.Button(top_bar, text="💾 Save", command=self._save_zones).pack(side="left", padx=2)
+        ttk.Button(top_bar, text="📂 Load", style="Secondary.TButton", command=self._load_zones).pack(side="left", padx=2)
+        ttk.Button(top_bar, text="🐍 Export .py", style="Secondary.TButton", command=self._show_code_preview).pack(side="left", padx=2)
+        ttk.Button(top_bar, text="🗑 Clear All", style="Secondary.TButton", command=self._clear_all_zones).pack(side="left", padx=2)
 
         self.lbl_frame_info = ttk.Label(top_bar, text="", foreground=COLORS["text_muted"])
         self.lbl_frame_info.pack(side="right")
@@ -161,7 +180,9 @@ class ZoneEditorTab(ttk.Frame):
         self.entry_jump_frame = ttk.Entry(scrub_bar, width=8)
         self.entry_jump_frame.pack(side="left", padx=4)
         self.entry_jump_frame.bind("<Return>", lambda e: self._on_jump_frame())
-        ttk.Button(scrub_bar, text="Go", command=self._on_jump_frame).pack(side="left")
+        ttk.Button(scrub_bar, text="Go", command=self._on_jump_frame).pack(side="left", padx=(0, 10))
+
+        ttk.Button(scrub_bar, text="⤢ Reset View", style="Secondary.TButton", command=self._reset_view).pack(side="left")
 
         # -----------------------------------------------------------
         # Body: canvas + side panel, in a draggable split so the panel
@@ -178,7 +199,9 @@ class ZoneEditorTab(ttk.Frame):
         self.canvas.bind("<B1-Motion>", self._on_canvas_drag)
         self.canvas.bind("<ButtonRelease-1>", self._on_canvas_release)
         self.canvas.bind("<Double-Button-1>", lambda e: self._finish_zone())
-        self.canvas.bind("<Button-3>", self._on_canvas_right_click)
+        self.canvas.bind("<ButtonPress-3>", self._on_canvas_right_press)
+        self.canvas.bind("<B3-Motion>", self._on_canvas_right_drag)
+        self.canvas.bind("<ButtonRelease-3>", self._on_canvas_right_release)
         self.canvas.bind("<Motion>", self._on_canvas_motion)
         self.canvas.bind("<Return>", lambda e: self._finish_zone())
         self.canvas.bind("<MouseWheel>", self._on_mouse_wheel)
@@ -222,47 +245,36 @@ class ZoneEditorTab(ttk.Frame):
         body.add(canvas_frame, weight=3)
         body.add(side_container, weight=1)
 
-        ttk.Button(
-            side, text="❓ How to draw / edit a zone", style="Secondary.TButton",
-            command=self._show_help_popup,
-        ).pack(fill="x", pady=(0, 8))
+        # ---- Zone name: one merged box (saved-name list + the active name
+        # for the zone about to be finished) instead of two look-alike boxes.
+        name_box = ttk.LabelFrame(side, text="Zone name")
+        name_box.pack(fill="x", pady=(0, 8))
 
-        preset_box = ttk.LabelFrame(side, text="Zone name presets (set up first, recall with 1-9 + Enter)")
-        preset_box.pack(fill="x", pady=(0, 8))
-
-        preset_add_row = ttk.Frame(preset_box)
-        preset_add_row.pack(fill="x", padx=8, pady=(8, 4))
-        self.entry_preset_name = ttk.Entry(preset_add_row)
-        self.entry_preset_name.pack(side="left", fill="x", expand=True, padx=(0, 4))
-        self.entry_preset_name.bind("<Return>", lambda e: self._add_preset())
-        ttk.Button(preset_add_row, text="+ Add", width=6, command=self._add_preset).pack(side="left")
-
-        self.list_presets = tk.Listbox(preset_box, height=4, exportselection=False)
-        self.list_presets.pack(fill="x", padx=8, pady=(0, 4))
-
-        ttk.Button(preset_box, text="✕ Remove Selected Preset", style="Secondary.TButton", command=self._remove_selected_preset).pack(fill="x", padx=8, pady=(0, 8))
-        ttk.Label(
-            preset_box,
-            wraplength=290,
-            justify="left",
-            foreground=COLORS["text_muted"],
-            text="While drawing (or before), press 1-9 to load a preset's name into the field below, then Enter to finish the zone.",
-        ).pack(padx=8, pady=(0, 8), anchor="w")
-
-        new_zone_box = ttk.LabelFrame(side, text="New zone")
-        new_zone_box.pack(fill="x", pady=(0, 8))
-
-        ttk.Label(new_zone_box, text="Zone name:").pack(anchor="w", padx=8, pady=(8, 0))
-        self.entry_zone_name = ttk.Entry(new_zone_box)
-        self.entry_zone_name.pack(fill="x", padx=8, pady=(2, 6))
+        ttk.Label(name_box, text="Name for the next zone:").pack(anchor="w", padx=8, pady=(8, 0))
+        self.entry_zone_name = ttk.Entry(name_box)
+        self.entry_zone_name.pack(fill="x", padx=8, pady=(2, 4))
         self.entry_zone_name.bind("<Return>", lambda e: self._finish_zone())
 
-        btn_row = ttk.Frame(new_zone_box)
+        ttk.Button(name_box, text="+ Save this name to the list below", style="Secondary.TButton", command=self._add_preset).pack(fill="x", padx=8, pady=(0, 6))
+
+        ttk.Label(name_box, text="Saved names (click, or type a number + Enter):").pack(anchor="w", padx=8)
+        self.list_presets = tk.Listbox(name_box, height=4, exportselection=False)
+        self.list_presets.pack(fill="x", padx=8, pady=(2, 4))
+        self.list_presets.bind("<<ListboxSelect>>", self._on_preset_listbox_select)
+
+        ttk.Button(name_box, text="✕ Remove Selected", style="Secondary.TButton", command=self._remove_selected_preset).pack(fill="x", padx=8, pady=(0, 6))
+
+        self.lbl_preset_typing = ttk.Label(
+            name_box, text="Type a number + Enter to load a saved name", foreground=COLORS["text_muted"], wraplength=290, justify="left",
+        )
+        self.lbl_preset_typing.pack(anchor="w", padx=8, pady=(0, 8))
+
+        btn_row = ttk.Frame(name_box)
         btn_row.pack(fill="x", padx=8, pady=(0, 8))
         ttk.Button(btn_row, text="✔ Finish Zone", command=self._finish_zone).pack(side="left", expand=True, fill="x", padx=(0, 4))
         ttk.Button(btn_row, text="✕ Cancel Draw", style="Secondary.TButton", command=self._cancel_draw).pack(side="left", expand=True, fill="x", padx=(4, 0))
 
-        self.lbl_point_count = ttk.Label(new_zone_box, text="Points placed: 0", foreground=COLORS["text_muted"])
+        self.lbl_point_count = ttk.Label(name_box, text="Points placed: 0", foreground=COLORS["text_muted"])
         self.lbl_point_count.pack(anchor="w", padx=8, pady=(0, 8))
 
         list_box = ttk.LabelFrame(side, text="Zones")
@@ -298,15 +310,6 @@ class ZoneEditorTab(ttk.Frame):
         zone_btn_row2.pack(fill="x", padx=8, pady=(0, 8))
         ttk.Button(zone_btn_row2, text="🏷 Toggle Label", style="Secondary.TButton", command=self._toggle_selected_zone_label).pack(side="left", expand=True, fill="x", padx=(0, 3))
         ttk.Button(zone_btn_row2, text="Delete", style="Secondary.TButton", command=self._delete_selected_zone).pack(side="left", expand=True, fill="x", padx=(3, 0))
-
-        io_box = ttk.LabelFrame(side, text="Save / Load / Export")
-        io_box.pack(fill="x")
-        io_row = ttk.Frame(io_box)
-        io_row.pack(fill="x", padx=8, pady=8)
-        ttk.Button(io_row, text="💾 Save Zones", command=self._save_zones).pack(side="left", expand=True, fill="x", padx=(0, 3))
-        ttk.Button(io_row, text="📂 Load Zones", style="Secondary.TButton", command=self._load_zones).pack(side="left", expand=True, fill="x", padx=(3, 0))
-        ttk.Button(io_box, text="🐍 View / Export as Python", style="Secondary.TButton", command=self._show_code_preview).pack(fill="x", padx=8, pady=(0, 8))
-        ttk.Button(io_box, text="🗑 Clear All Zones", style="Secondary.TButton", command=self._clear_all_zones).pack(fill="x", padx=8, pady=(0, 8))
 
         self.status_label = ttk.Label(self, text="Open a video to begin.", padding=(12, 4), foreground=COLORS["text_muted"])
         self.status_label.pack(fill="x", side="bottom")
@@ -346,6 +349,9 @@ class ZoneEditorTab(ttk.Frame):
         self.zones = []
         self.current_points = []
         self.selected_zone_idx = None
+        self.dragging_vertex_idx = None
+        self.undo_stack = []
+        self.redo_stack = []
         self._refresh_zone_list()
 
         self.scrubber.config(from_=0, to=max(0, self.total_frames - 1))
@@ -433,11 +439,31 @@ class ZoneEditorTab(ttk.Frame):
         if isinstance(self.focus_get(), (ttk.Entry, tk.Entry, tk.Text, ttk.Combobox, tk.Listbox)):
             return  # don't hijack typing in a text field
 
-        if event.keysym in ("Return", "KP_Enter"):
-            self._finish_zone()
+        ctrl_held = bool(event.state & 0x4)
+        if ctrl_held and event.keysym.lower() == "z":
+            self._undo()
             return "break"
+        if ctrl_held and event.keysym.lower() in ("y",):
+            self._redo()
+            return "break"
+
+        if event.keysym in ("Return", "KP_Enter"):
+            if self.preset_input_buffer:
+                self._apply_typed_preset()
+            else:
+                self._finish_zone()
+            return "break"
+
         if event.keysym == "Escape":
-            self._cancel_draw()
+            if self.preset_input_buffer:
+                self._clear_preset_typing_buffer()
+            else:
+                self._cancel_draw()
+            return "break"
+
+        if event.keysym in ("BackSpace", "Delete") and self.preset_input_buffer:
+            self.preset_input_buffer = self.preset_input_buffer[:-1]
+            self._update_preset_typing_feedback()
             return "break"
 
         digit = None
@@ -446,65 +472,137 @@ class ZoneEditorTab(ttk.Frame):
         elif event.keysym.startswith("KP_") and event.keysym[3:].isdigit():
             digit = event.keysym[3:]
 
-        if digit is not None and digit != "0":
-            self._apply_preset(int(digit) - 1)
+        if digit is not None:
+            self.preset_input_buffer += digit
+            self._update_preset_typing_feedback()
             return "break"
 
+    # ---- Zone name presets (any number of them; recalled by typing their
+    # number, of any length, then Enter — not limited to single digits) ----
     def _refresh_preset_list(self):
         self.list_presets.delete(0, tk.END)
         for i, p in enumerate(self.zone_presets, start=1):
             self.list_presets.insert(tk.END, f"{i}. {p['name']}")
 
     def _add_preset(self):
-        name = self.entry_preset_name.get().strip()
+        name = self.entry_zone_name.get().strip()
         if not name:
-            messagebox.showwarning("Missing name", "Enter a preset name first.")
-            return
-        if len(self.zone_presets) >= MAX_PRESETS:
-            messagebox.showwarning("Preset limit", f"Only {MAX_PRESETS} presets are supported (keys 1-{MAX_PRESETS}).")
+            messagebox.showwarning("Missing name", "Type a name in the field above first.")
             return
         self.zone_presets.append({"name": name})
-        self.entry_preset_name.delete(0, tk.END)
         self._refresh_preset_list()
+        self.status_label.config(text=f"Saved '{name}' as preset #{len(self.zone_presets)}.")
 
     def _remove_selected_preset(self):
         sel = self.list_presets.curselection()
         if not sel:
-            messagebox.showinfo("No selection", "Select a preset from the list first.")
+            messagebox.showinfo("No selection", "Select a saved name from the list first.")
             return
         del self.zone_presets[sel[0]]
         self._refresh_preset_list()
 
     def _apply_preset(self, idx):
         if idx < 0 or idx >= len(self.zone_presets):
-            self.status_label.config(text=f"No preset #{idx + 1} — add one in \u201cZone name presets\u201d first.")
+            self.status_label.config(text=f"No saved name #{idx + 1} — save one first.")
             return
         preset = self.zone_presets[idx]
         self.entry_zone_name.delete(0, tk.END)
         self.entry_zone_name.insert(0, preset["name"])
         self.status_label.config(
-            text=f"Preset {idx + 1} selected: '{preset['name']}' \u2014 press Enter to finish the zone."
+            text=f"Loaded #{idx + 1}: '{preset['name']}' \u2014 press Enter (or Finish Zone) to close the polygon."
         )
+
+    def _on_preset_listbox_select(self, _event):
+        sel = self.list_presets.curselection()
+        if sel:
+            self._apply_preset(sel[0])
+
+    def _update_preset_typing_feedback(self):
+        if self.preset_input_buffer:
+            try:
+                num = int(self.preset_input_buffer)
+            except ValueError:
+                return
+            idx = num - 1
+            if 0 <= idx < len(self.zone_presets):
+                name = self.zone_presets[idx]["name"]
+                self.lbl_preset_typing.config(text=f"Typing: [{num}] \u2192 {name} (Enter to load)", foreground=COLORS["warning"])
+            else:
+                self.lbl_preset_typing.config(text=f"Typing: [{num}] (out of range)", foreground=COLORS["danger"])
+        else:
+            self.lbl_preset_typing.config(text="Type a number + Enter to load a saved name", foreground=COLORS["text_muted"])
+
+    def _clear_preset_typing_buffer(self):
+        self.preset_input_buffer = ""
+        self._update_preset_typing_feedback()
+
+    def _apply_typed_preset(self):
+        try:
+            num = int(self.preset_input_buffer)
+            self._apply_preset(num - 1)
+        except ValueError:
+            pass
+        self._clear_preset_typing_buffer()
 
     def _show_help_popup(self):
         messagebox.showinfo(
             "How to draw / edit a zone",
             "1) Left-click to place polygon points (need 3+)\n"
-            "2) Right-click to undo the last point\n"
-            "3) Set a name below (before or after drawing) \u2014 or press 1-9 "
-            "to recall a preset name\n"
+            "2) Right-click to undo the last point; right-click + drag pans the view\n"
+            "3) Set a name below (before or after drawing) \u2014 or type a saved "
+            "name's number + Enter to recall it\n"
             "4) Click back near the first point, press Enter, double-click, "
             "or press \"Finish Zone\" to close it\n"
-            "5) Select a zone in the list below to drag its points; "
-            "right-click a point to delete it",
+            "5) Select a zone in the list to drag its points; right-click a "
+            "point to delete it\n"
+            "6) Scroll wheel zooms; Undo/Redo (or Ctrl+Z / Ctrl+Y) step through zone changes",
             parent=self,
         )
 
+    # =====================================================================
+    # Undo / redo — snapshots of the zone list, taken before each mutation
+    # =====================================================================
+    def _snapshot(self):
+        return copy.deepcopy(self.zones)
+
+    def _push_undo(self):
+        self.undo_stack.append(self._snapshot())
+        if len(self.undo_stack) > MAX_UNDO:
+            self.undo_stack.pop(0)
+        self.redo_stack.clear()
+
+    def _undo(self):
+        if not self.undo_stack:
+            self.status_label.config(text="Nothing to undo.")
+            return
+        self.redo_stack.append(self._snapshot())
+        self.zones = self.undo_stack.pop()
+        self.selected_zone_idx = None
+        self.dragging_vertex_idx = None
+        self._refresh_zone_list()
+        self.render()
+        self.status_label.config(text="Undid last zone change.")
+
+    def _redo(self):
+        if not self.redo_stack:
+            self.status_label.config(text="Nothing to redo.")
+            return
+        self.undo_stack.append(self._snapshot())
+        self.zones = self.redo_stack.pop()
+        self.selected_zone_idx = None
+        self.dragging_vertex_idx = None
+        self._refresh_zone_list()
+        self.render()
+        self.status_label.config(text="Redid zone change.")
 
     def reset_zoom(self):
         self.zoom_level = 1.0
         self.pan_x = 0
         self.pan_y = 0
+
+    def _reset_view(self):
+        self.reset_zoom()
+        self.render()
 
     def _change_zoom(self, delta):
         self.zoom_level = max(0.25, min(8.0, self.zoom_level + delta))
@@ -559,6 +657,7 @@ class ZoneEditorTab(ttk.Frame):
         if not self.current_points and self.selected_zone_idx is not None:
             vidx = self._find_vertex_at(self.selected_zone_idx, x, y)
             if vidx is not None:
+                self._push_undo()
                 self.dragging_vertex_idx = vidx
                 return
 
@@ -592,7 +691,32 @@ class ZoneEditorTab(ttk.Frame):
         self.dragging_vertex_idx = None
         self.render()
 
-    def _on_canvas_right_click(self, event):
+    def _on_canvas_right_press(self, event):
+        # Right-click alone (no drag) undoes a point / deletes a vertex;
+        # right-click + drag pans the view instead — like the Label tab.
+        self._pan_drag_start = (event.x, event.y)
+        self._pan_did_drag = False
+
+    def _on_canvas_right_drag(self, event):
+        if self._pan_drag_start is None:
+            return
+        dx = event.x - self._pan_drag_start[0]
+        dy = event.y - self._pan_drag_start[1]
+        if not self._pan_did_drag and (abs(dx) + abs(dy)) < 3:
+            return  # still within click tolerance — not a real drag yet
+        self._pan_did_drag = True
+        self.pan_x += dx
+        self.pan_y += dy
+        self._pan_drag_start = (event.x, event.y)
+        self.render()
+
+    def _on_canvas_right_release(self, event):
+        was_drag = self._pan_did_drag
+        self._pan_drag_start = None
+        self._pan_did_drag = False
+        if was_drag:
+            return  # panning already applied live during the drag
+
         x, y = self.canvas_to_orig(event.x, event.y)
 
         # If a zone is selected and we're not mid-draw, right-click on one of
@@ -604,6 +728,7 @@ class ZoneEditorTab(ttk.Frame):
                 if len(zone["points"]) <= 3:
                     messagebox.showwarning("Cannot delete", "A zone needs at least 3 points.")
                     return
+                self._push_undo()
                 del zone["points"][vidx]
                 zone["area_px"] = round(self._polygon_area(zone["points"]), 2)
                 self._refresh_zone_list(keep_selection=True)
@@ -644,6 +769,7 @@ class ZoneEditorTab(ttk.Frame):
         color = ZONE_PALETTE_BGR[len(self.zones) % len(ZONE_PALETTE_BGR)]
         area_px = self._polygon_area(self.current_points)
 
+        self._push_undo()
         zone = {
             "id": f"zone_{uuid.uuid4().hex[:8]}",
             "name": name,
@@ -697,6 +823,7 @@ class ZoneEditorTab(ttk.Frame):
         zone = self.zones[self.selected_zone_idx]
         new_name = simpledialog.askstring("Rename zone", "New name:", initialvalue=zone["name"])
         if new_name and new_name.strip():
+            self._push_undo()
             zone["name"] = new_name.strip()
             self._refresh_zone_list()
             self.render()
@@ -712,6 +839,7 @@ class ZoneEditorTab(ttk.Frame):
         if rgb is None:
             return
         r, g, b = (int(round(v)) for v in rgb)
+        self._push_undo()
         zone["color_bgr"] = [b, g, r]
         self.render()
 
@@ -720,6 +848,7 @@ class ZoneEditorTab(ttk.Frame):
             messagebox.showinfo("No selection", "Select a zone from the list first.")
             return
         zone = self.zones[self.selected_zone_idx]
+        self._push_undo()
         zone["show_label"] = not zone.get("show_label", True)
         self._refresh_zone_list(keep_selection=True)
         self.render()
@@ -730,6 +859,7 @@ class ZoneEditorTab(ttk.Frame):
             return
         zone = self.zones[self.selected_zone_idx]
         if messagebox.askyesno("Delete zone", f"Delete zone '{zone['name']}'?"):
+            self._push_undo()
             del self.zones[self.selected_zone_idx]
             self.selected_zone_idx = None
             self._refresh_zone_list()
@@ -738,7 +868,8 @@ class ZoneEditorTab(ttk.Frame):
     def _clear_all_zones(self):
         if not self.zones:
             return
-        if messagebox.askyesno("Clear all zones", "Delete every zone? This cannot be undone."):
+        if messagebox.askyesno("Clear all zones", "Delete every zone? You can Undo this afterward."):
+            self._push_undo()
             self.zones = []
             self.selected_zone_idx = None
             self._refresh_zone_list()
@@ -824,6 +955,7 @@ class ZoneEditorTab(ttk.Frame):
             z.setdefault("color_bgr", list(ZONE_PALETTE_BGR[i % len(ZONE_PALETTE_BGR)]))
             z.setdefault("show_label", True)
 
+        self._push_undo()
         self.zones = loaded_zones
         self.zones_file = path
         self.selected_zone_idx = None
