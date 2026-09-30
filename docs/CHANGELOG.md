@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.9
+- Label > Classes: rewritten. Select several classes (Ctrl/Shift+click), rename (double-click), merge, delete several at once, reorder, add several (comma-separated); each class shows its box count.
+- Import classes from a trained model (.pt), classes.txt or data.yaml: either use them as your class list (your labels follow by name) or map each class to one of yours (map / merge / skip / add new).
+- Auto-Label and Batch use the saved model-to-dataset class mapping (`.pk_model_class_map.json` in the dataset folder) and automatic matching that ignores case, spaces, `_` and `-`. Loading a model whose classes do not match now offers the mapping dialog instead of silently finding nothing.
+- Class changes also remap colors, filters and undo history; classes.txt is written atomically.
+- Tests share one Tk root (fixes a flaky "no display" skip).
+
 ## 1.3.8
 - Auto-Label and Batch work without a YOLO model: choose "No" at the prompt and PK Studio labels from boxes you already drew (multi-scale template matching, `core/reference_labeler.py`).
 - Reference mode skips images that already have labels in Batch, never modifies existing labels, and asks for a match threshold (default 0.70).

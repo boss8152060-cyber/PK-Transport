@@ -41,6 +41,7 @@ PK Studio/                     # ← git repo (PKA-Project)
 | `dataset.py` | สแกนภาพ/label แบบ YOLO (key = path สัมพัทธ์, ตรวจ label ผิดรูปแบบ), `flat_name()` |
 | `dataset_builder.py` | แบ่ง train/valid/test แบบ stratified + เขียน `data.yaml` (`build_yolo_dataset`) |
 | `class_registry.py` | ลำดับ class (id ใน YOLO เริ่มที่ 0) |
+| `class_ops.py` | แก้/รวม/ลบ/ย้าย class, นำเข้า class จากโมเดล/ไฟล์, จับคู่ class โมเดล → dataset, remap ไฟล์ label |
 | `smart_curator.py` | คัดภาพด้วยคะแนน rarity/diversity/difficulty/relevance (greedy) |
 | `reference_labeler.py` | **Auto-Label โดยไม่มีโมเดล:** crop กรอบที่วาดไว้ แล้ว template matching หลายสเกล + NMS |
 | `job_manager.py` | Job เบื้องหลัง + `UiQueue` ส่ง callback กลับ main thread |
@@ -52,7 +53,7 @@ PK Studio/                     # ← git repo (PKA-Project)
 | แท็บ | ไฟล์ | หน้าที่ |
 |---|---|---|
 | Data | `tab_data.py` → `tools/extract_frames.py` | วิดีโอ → เฟรม |
-| Label | `tab_autolabeler.py` (~1,700 บรรทัด) | ตีกรอบ, จัดการ class, Auto-Label / Batch (YOLO **หรือ** reference), review |
+| Label | `tab_autolabeler.py` (~1,600 บรรทัด) + `ui/class_dialogs.py` | ตีกรอบ, Auto-Label / Batch (YOLO **หรือ** reference), review; หน้าต่าง Classes: เลือกหลายอัน, เปลี่ยนชื่อ, รวม, ลบ, นำเข้าจากโมเดล/ไฟล์, จับคู่ class ของโมเดล |
 | Curate | `tab_curator_splitter.py` | คัดภาพ, แบ่ง train/valid/test |
 | Analytics | `tab_analytics.py` | สถิติ class/ตำแหน่งกรอบ/ขนาดภาพ |
 | Zone | `tab_zone_editor.py` | วาด polygon zone บนเฟรมวิดีโอ (ส่งออกไปใช้กับโปรแกรมวิเคราะห์) |
@@ -78,6 +79,7 @@ PK Studio/                     # ← git repo (PKA-Project)
 6. ✅ (1.3.7(1)) Curate ส่งออกด้วยชื่อไฟล์เดิม → ภาพชื่อซ้ำต่างโฟลเดอร์ทับกัน
 7. ✅ (1.3.7(1)) `ui_call=self.after` ทำให้เกิด `TclError` — `on_done/on_error` ของ job ไม่เคยถึง UI
 8. ✅ (1.3.8) worker thread เรียก Tk ตรง ๆ ในแท็บ Label/Curate → ใช้ `UiQueue`
+8a. ✅ (1.3.9) หน้าต่าง Classes เลือกได้ทีละ 1 แก้ชื่อไม่ได้ (ต้องลบแล้วสร้างใหม่) และ Auto-Label หาไม่เจอเมื่อชื่อ class ของโมเดลไม่ตรง dataset → เขียนใหม่ + ระบบจับคู่/นำเข้า class
 9. ⬜ Curate ยังมี export ของตัวเอง ไม่ได้เรียก `build_yolo_dataset` (ตรรกะซ้ำสองชุด)
 10. ⬜ `tools/extract_frames.py` ยังมี `threading.Thread` ดิบ 6 จุด + `root.after` จาก worker 18 จุด (ยังไม่พบบั๊กจริง ต้องทดสอบกับวิดีโอ)
 

@@ -6,9 +6,9 @@
 
 ## ▶ ทำต่อจากตรงนี้
 
-- **สถานะปัจจุบัน:** เวอร์ชัน 1.3.8 — แก้บั๊ก core/UI job แล้ว, Auto-Label/Batch ทำงานได้โดยไม่มีโมเดล (reference boxes), มี 21 test, push ขึ้น GitHub แล้ว, เอกสารครบ
+- **สถานะปัจจุบัน:** เวอร์ชัน 1.3.9 — จัดการ Class ใหม่ (แก้ชื่อ/รวม/ลบหลายอัน/นำเข้าจากโมเดล+จับคู่), แก้บั๊ก core/UI job แล้ว, Auto-Label/Batch ทำงานได้โดยไม่มีโมเดล (reference boxes), มี 21 test, push ขึ้น GitHub แล้ว, เอกสารครบ
 - **ขั้นถัดไป:** ให้ผู้ใช้ลองเปิดแอปกับภาพจริง 20–30 ภาพ (ทั้ง Auto-Label เดี่ยวและ Batch โหมด No) แล้วรายงานว่ากรอบเกิน/ขาดแบบไหน → ปรับ threshold/วิธี; จากนั้นเริ่มเฟส 1 ข้อ 1.1
-- **commit ถัดไปควรเป็น:** `PK Studio 1.3.9: ...` (ดูรูปแบบใน `CLAUDE.md`)
+- **commit ถัดไปควรเป็น:** `PK Studio 1.3.10: ...` (ดูรูปแบบใน `CLAUDE.md`)
 - **Remote:** `origin` = https://github.com/boss8152060-cyber/PKA-Project.git (branch `main`)
 - **Backup:** `PSU Transport Project 2026\Backups\` (ต้นฉบับ `PK_Program_backup_2026-09-30.zip`)
 
@@ -21,6 +21,7 @@
 
 ## เฟส 1 — ยืนยันและปรับ Auto-Label แบบไม่มีโมเดล (1.3.8)
 
+- [x] 1.0b จัดการ Class: เลือกหลายอัน, เปลี่ยนชื่อ, รวม, ลบ, นำเข้าจากโมเดล/ไฟล์, จับคู่ class โมเดล→dataset (1.3.9)
 - [x] 1.0 สร้าง `core/reference_labeler.py` + ต่อ UI (Auto-Label เดี่ยว + Batch) + test (1.3.8)
 - [ ] 1.1 (#13-สำรอง) สำรอง label เดิมก่อน Batch + ปุ่มย้อนทั้ง batch
 - [ ] 1.2 ทดสอบกับภาพจริง 20–30 ภาพ, ปรับ threshold/จำนวน reference/สเกล ตามผล (ต้องมีผู้ใช้รายงาน)
@@ -53,6 +54,7 @@
 
 | วันที่ | สิ่งที่ทำ | ไฟล์ที่เกี่ยวข้อง | ค้างอยู่ |
 |---|---|---|---|
+| 2026-09-30 | 1.3.9: หน้าต่าง Classes ใหม่ + `core/class_ops.py` + `ui/class_dialogs.py`; Auto-Label ใช้การจับคู่ class ของโมเดล; 40 test (เพิ่ม 19) | `core/class_ops.py`, `ui/class_dialogs.py`, `ui/tabs/tab_autolabeler.py`, `tests/` | ให้ผู้ใช้ลองกับโมเดลจริงของโครงการ (best.pt 8 class) |
 | 2026-09-30 | รวมเวอร์ชันเป็นโฟลเดอร์เดียว `PK Program\PK Studio`: นำเข้า 1.1.0–1.3.6 เป็น commit + tag, งานแก้ของ Claude เป็น 1.3.7/1.3.8 (แก้เลขเวอร์ชันให้ตรงกันทุกที่) ย้ายโฟลเดอร์เก่าไป `_PK_Studio_backup_before_git` | git history, `CLAUDE.md`, `__version__` | force-push ขึ้น GitHub |
 | 2026-09-30 | เพิ่มเอกสารควบคุมงาน (CLAUDE/OVERVIEW/plan/GIT_GUIDE) ตามแนว Run | `CLAUDE.md`, `PROJECT_OVERVIEW.md`, `plan.md`, `GIT_GUIDE.md` | ลองแอปกับภาพจริง |
 | 2026-09-30 | 1.3.8: Auto-Label/Batch ไม่ต้องมีโมเดล; `UiQueue` แทน `after` จาก worker | `core/reference_labeler.py`, `core/job_manager.py`, `ui/tabs/tab_autolabeler.py`, `tab_curator_splitter.py` | ปรับ threshold กับภาพจริง |

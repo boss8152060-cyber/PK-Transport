@@ -21,3 +21,4 @@ Thumbs.db
 dataset/
 Dataset/
 Output/
+.pk_ui_config.json

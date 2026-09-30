@@ -51,15 +51,12 @@ def test_smart_curator_diversity_prefers_dissimilar_embedding():
     assert picked[0] == "a" and picked[1] == "c"
 
 
-def test_ui_queue_runs_callbacks_on_main_thread():
+def test_ui_queue_runs_callbacks_on_main_thread(tk_root):
     import threading
     import tkinter as tk
     import pytest
     from pk_studio.core.job_manager import JobManager, ui_queue_for
-    try:
-        root = tk.Tk()
-    except tk.TclError:
-        pytest.skip("no display")
+    root = tk_root
     seen = []
     q = ui_queue_for(root)
     JobManager().start(lambda ev: 7, on_done=lambda j: seen.append((j.result, threading.current_thread() is threading.main_thread())), ui_call=q.call)
@@ -68,5 +65,4 @@ def test_ui_queue_runs_callbacks_on_main_thread():
         if seen:
             break
         root.after(25)
-    root.destroy()
     assert seen == [(7, True)]

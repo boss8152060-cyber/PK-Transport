@@ -33,7 +33,9 @@ import numpy as np
 from PIL import Image, ImageTk
 
 from pk_studio.theme import COLORS
+from pk_studio.ui.class_dialogs import ClassManagerDialog
 from pk_studio.core.class_registry import ClassRegistry
+from pk_studio.core import class_ops
 from pk_studio.core.fileio import atomic_write_text
 from pk_studio.core.reference_labeler import (build_references, propose, read_gray,
                                             to_yolo_line)
@@ -82,6 +84,7 @@ class AutoLabelerTab(ttk.Frame):
         self.conf_threshold = 0.35
         self.imgsz = 640
         self.ref_threshold = 0.70
+        self.model_class_map = {}  # model class name -> my class name (None = skip)
         self._batch_running = False
         self.job_manager = JobManager()
         ui_queue_for(self)  # create on the Tk main thread
@@ -387,116 +390,7 @@ class AutoLabelerTab(ttk.Frame):
     # Class Manager & Color Palette Window
     # =========================================================================
     def open_class_manager_window(self):
-        win = tk.Toplevel(self)
-        win.title("Manage Classes & Colors")
-        win.geometry("420x520")
-        win.grab_set()
-
-        ttk.Label(win, text="🏷️ Dataset Class & Color Palette", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=10, pady=5)
-
-        list_frame = ttk.Frame(win, padding=5)
-        list_frame.pack(fill="both", expand=True, padx=5)
-
-        canvas = tk.Canvas(list_frame, highlightthickness=0)
-        scroll = ttk.Scrollbar(list_frame, orient="vertical", command=canvas.yview)
-        inner = ttk.Frame(canvas)
-
-        canvas.create_window((0, 0), window=inner, anchor="nw")
-        canvas.configure(yscrollcommand=scroll.set)
-
-        canvas.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="right", fill="y")
-
-        selected_cls_idx = [None]
-
-        def refresh_manager_list():
-            for w in inner.winfo_children():
-                w.destroy()
-
-            for i, c in enumerate(self.classes):
-                row = ttk.Frame(inner)
-                row.pack(fill="x", anchor="w", pady=2, padx=2)
-
-                rgb = self.get_class_color(i)
-                hex_col = f"#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}"
-
-                btn_color = tk.Button(
-                    row, width=2, height=1, bg=hex_col, relief="flat",
-                    command=lambda idx=i: self.choose_class_color(idx, win, refresh_manager_list)
-                )
-                btn_color.pack(side="left", padx=(0, 6))
-
-                lbl = ttk.Label(row, text=f"[{i + 1}] {c}", font=("Consolas", 10))
-                lbl.pack(side="left")
-
-                def select_row(idx=i):
-                    selected_cls_idx[0] = idx
-
-                row.bind("<Button-1>", lambda e, idx=i: select_row(idx))
-                lbl.bind("<Button-1>", lambda e, idx=i: select_row(idx))
-
-            inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-
-        refresh_manager_list()
-
-        move_frame = ttk.Frame(win, padding=(10, 2))
-        move_frame.pack(fill="x", padx=0, pady=2)
-
-        def move_selected(delta):
-            idx = selected_cls_idx[0]
-            if idx is None:
-                return
-            old_classes = list(self.classes)
-            new_idx = idx + delta
-            if not (0 <= new_idx < len(self.classes)):
-                return
-            if not messagebox.askyesno(
-                "Change Class Order",
-                "Changing class order changes YOLO class IDs and will update every label file in this dataset.\n\nContinue?",
-            ):
-                return
-            self.classes[idx], self.classes[new_idx] = self.classes[new_idx], self.classes[idx]
-            self._update_classes_after_change(old_classes)
-            selected_cls_idx[0] = new_idx
-            refresh_manager_list()
-
-        ttk.Button(move_frame, text="↑ Move Up", command=lambda: move_selected(-1)).pack(side="left", expand=True, fill="x", padx=2)
-        ttk.Button(move_frame, text="↓ Move Down", command=lambda: move_selected(1)).pack(side="left", expand=True, fill="x", padx=2)
-        ttk.Label(move_frame, text="Default = alphabetical; moving changes YOLO IDs", foreground=COLORS["text_muted"]).pack(side="left", padx=8)
-
-        add_frame = ttk.LabelFrame(win, text="Add New Class", padding=5)
-        add_frame.pack(fill="x", padx=10, pady=5)
-
-        entry_name = ttk.Entry(add_frame)
-        entry_name.pack(side="left", fill="x", expand=True, padx=(0, 5))
-
-        def add_cls():
-            name = entry_name.get().strip()
-            if name and name not in self.classes:
-                old_classes = list(self.classes)
-                self.class_registry.load(self.classes, sort=False)
-                self.class_registry.add(name, sort=True)
-                self.classes = self.class_registry.names
-                self._update_classes_after_change(old_classes)
-                refresh_manager_list()
-                entry_name.delete(0, tk.END)
-
-        ttk.Button(add_frame, text="Add", command=add_cls).pack(side="right")
-
-        def del_cls():
-            if selected_cls_idx[0] is not None:
-                del_idx = selected_cls_idx[0]
-                del_name = self.classes[del_idx]
-                if messagebox.askyesno("Confirm", f"Delete class [{del_idx + 1}] {del_name}?"):
-                    old_classes = list(self.classes)
-                    self.classes.remove(del_name)
-                    self.class_registry.load(self.classes, sort=False)
-                    self.bboxes = [b for b in self.bboxes if b[0] != del_idx]
-                    self._update_classes_after_change(old_classes)
-                    selected_cls_idx[0] = None
-                    refresh_manager_list()
-
-        ttk.Button(win, text="🗑️ Delete Selected Class", command=del_cls).pack(fill="x", padx=10, pady=5)
+        ClassManagerDialog(self)
 
     def choose_class_color(self, cls_idx, parent_win=None, callback=None):
         curr_rgb = self.get_class_color(cls_idx)
@@ -580,79 +474,73 @@ class AutoLabelerTab(ttk.Frame):
     # =========================================================================
     # Unified Checklist Panel
     # =========================================================================
-    def _update_classes_after_change(self, old_classes):
-        """Persist class order and remap YOLO ids across the whole dataset."""
-        old_to_new = {old_idx: self.classes.index(name) for old_idx, name in enumerate(old_classes) if name in self.classes}
-        removed_old_ids = {old_idx for old_idx, name in enumerate(old_classes) if name not in self.classes}
+    def _apply_class_ops(self, change):
+        """Apply a class_ops.ClassChange to labels, colors, filters and the UI."""
+        failures = class_ops.remap_label_files(self.lbl_dir, change)
+        if failures:
+            messagebox.showwarning(
+                "Class update warning",
+                "Could not update these label files:\n" + "\n".join(failures[:10]),
+            )
 
-        # Colors belong to the class name, not its numeric position. Preserve
-        # them when the user reorders classes.
-        old_colors = dict(self.class_colors)
-        self.class_colors = {
-            old_to_new[old_idx]: color
-            for old_idx, color in old_colors.items()
-            if old_idx in old_to_new
-        }
+        self.class_colors = class_ops.remap_index_dict(self.class_colors, change)
+        self.visible_classes = class_ops.remap_index_dict(self.visible_classes, change)
+        self.search_classes = class_ops.remap_index_dict(self.search_classes, change)
+        self._save_ui_config()
 
-        if self.lbl_dir and os.path.isdir(self.lbl_dir):
-            for filename in os.listdir(self.lbl_dir):
-                if not filename.lower().endswith('.txt') or filename.lower() == 'classes.txt':
-                    continue
-                path = os.path.join(self.lbl_dir, filename)
-                try:
-                    lines_out, changed = [], False
-                    with open(path, 'r', encoding='utf-8') as f:
-                        for line in f:
-                            parts = line.strip().split()
-                            if not parts:
-                                continue
-                            try:
-                                old_id = int(parts[0])
-                            except ValueError:
-                                lines_out.append(line.rstrip())
-                                continue
-                            if old_id not in old_to_new:
-                                # Only IDs belonging to an intentionally deleted class are removed.
-                                # Preserve unrelated invalid IDs so Dataset QA can report them.
-                                if old_id in removed_old_ids:
-                                    changed = True
-                                    continue
-                                lines_out.append(' '.join(parts))
-                                continue
-                            new_id = old_to_new[old_id]
-                            changed = changed or (new_id != old_id)
-                            parts[0] = str(new_id)
-                            lines_out.append(' '.join(parts))
-                    if changed:
-                        tmp = path + '.pk_tmp'
-                        with open(tmp, 'w', encoding='utf-8') as f:
-                            if lines_out:
-                                f.write('\n'.join(lines_out) + '\n')
-                        os.replace(tmp, path)
-                except (OSError, UnicodeError) as exc:
-                    messagebox.showwarning('Class update warning', f'Could not update {filename}: {exc}')
-
-        if self.cls_file:
-            with open(self.cls_file, 'w', encoding='utf-8') as f:
-                f.write('\n'.join(self.classes))
-
-        new_bboxes = []
-        for bbox in self.bboxes:
-            if bbox[0] in old_to_new:
-                bbox[0] = old_to_new[bbox[0]]
-                new_bboxes.append(bbox)
-        self.bboxes = new_bboxes
-
-        old_color_by_name = {name: self.class_colors.get(i, DEFAULT_COLORS[i % len(DEFAULT_COLORS)]) for i, name in enumerate(old_classes)}
-        self.class_colors = {i: old_color_by_name[name] for i, name in enumerate(self.classes) if name in old_color_by_name}
+        self.classes = list(change.new_classes)
         self.class_registry.load(self.classes, sort=False)
+        self._write_classes_file()
 
-        display_classes = [f"[{i + 1}] {c}" for i, c in enumerate(self.classes)]
-        self.cb_classes['values'] = display_classes
+        remapped = []
+        for bbox in self.bboxes:
+            if bbox[0] in change.dropped:
+                continue
+            bbox[0] = change.old_to_new.get(bbox[0], bbox[0])
+            remapped.append(bbox)
+        self.bboxes = remapped
+        self.selected_box_idx = None
+        self.init_history()  # older undo states use the old class ids
+
+        self.cb_classes["values"] = [f"[{i + 1}] {c}" for i, c in enumerate(self.classes)]
         if self.classes:
             self.cb_classes.current(0)
         self.update_box_list()
         self.render()
+        if self.image_files:
+            self.apply_image_filters()
+            self.calculate_global_statistics()
+
+    def model_class_names(self):
+        """Class names of the loaded YOLO model, ordered by id."""
+        if self.auto_model is None:
+            return []
+        return class_ops.names_to_list(self.auto_model.names)
+
+    def set_model_class_map(self, mapping):
+        """Remember how model classes map to this dataset's classes (per dataset)."""
+        self.model_class_map = dict(mapping)
+        if self.src_dir:
+            try:
+                class_ops.save_model_map(self.src_dir, self.model_class_map)
+            except OSError:
+                pass
+
+    def _check_model_class_match(self):
+        """Offer the class mapping dialog when the model has classes we would skip."""
+        if self.auto_model is None or not self.src_dir or not self.classes:
+            return
+        missing = class_ops.unmatched_model_classes(self.model_class_names(), self.classes, self.model_class_map)
+        if not missing:
+            return
+        shown = ", ".join(missing[:8]) + (" ..." if len(missing) > 8 else "")
+        if messagebox.askyesno(
+            "Model classes do not match",
+            f"{len(missing)} class(es) of this model are not in your class list and would be ignored:\n\n{shown}\n\n"
+            "Open the class mapping now? (map them to your classes, add them as new classes, or skip them)",
+        ):
+            dlg = ClassManagerDialog(self)
+            dlg.map_loaded_model()
 
     def update_box_list(self):
         for widget in self.unified_container.winfo_children():
@@ -1081,8 +969,10 @@ class AutoLabelerTab(ttk.Frame):
             messagebox.showerror("Error", "No valid image files found!")
             return
 
+        self.model_class_map = class_ops.load_model_map(self.src_dir)
         self.apply_image_filters()
         self.calculate_global_statistics()
+        self.after(200, self._check_model_class_match)
 
     # =========================================================================
     # Auto-Label Engine (YOLO) — : 
@@ -1092,7 +982,7 @@ class AutoLabelerTab(ttk.Frame):
         if path:
             self.load_yolo_model_path(path, show_message=True)
 
-    def load_yolo_model_path(self, path: str, show_message: bool = True) -> bool:
+    def load_yolo_model_path(self, path: str, show_message: bool = True, check_classes: bool = True) -> bool:
         """Load a model supplied by another PK Studio workflow, e.g. Training Studio."""
         if not path:
             return False
@@ -1115,6 +1005,8 @@ class AutoLabelerTab(ttk.Frame):
 
             if show_message:
                 messagebox.showinfo("Model Loaded", f"Model loaded:\n{os.path.basename(path)}")
+            if check_classes:
+                self._check_model_class_match()
             return True
         except Exception as e:
             if show_message:
@@ -1129,8 +1021,7 @@ class AutoLabelerTab(ttk.Frame):
             return
         try:
             target = os.path.join(self.src_dir, "classes.txt")
-            with open(target, "w", encoding="utf-8") as f:
-                f.write("\n".join(self.classes))
+            atomic_write_text(target, "\n".join(self.classes))
             self.cls_file = target
         except Exception:
             pass
@@ -1145,10 +1036,10 @@ class AutoLabelerTab(ttk.Frame):
         skipped_classes = set()
         for box in result.boxes:
             cls_name = model_names[int(box.cls.item())]
-            if cls_name not in self.classes:
+            cls_id = class_ops.resolve_target(cls_name, self.classes, self.model_class_map)
+            if cls_id is None:
                 skipped_classes.add(cls_name)
                 continue
-            cls_id = self.classes.index(cls_name)
             cx, cy, w, h = box.xywhn[0].tolist()
             x1 = int((cx - w / 2) * self.orig_w)
             y1 = int((cy - h / 2) * self.orig_h)
@@ -1346,10 +1237,10 @@ class AutoLabelerTab(ttk.Frame):
                     lines = []
                     for box in results[0].boxes:
                         cls_name = model_names[int(box.cls.item())]
-                        if cls_name not in self.classes:
+                        cls_id = class_ops.resolve_target(cls_name, self.classes, self.model_class_map)
+                        if cls_id is None:
                             skipped_classes_all.add(cls_name)
                             continue
-                        cls_id = self.classes.index(cls_name)
                         cx, cy, w, h = box.xywhn[0].tolist()
                         lines.append(f"{cls_id} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
                     txt_path = os.path.join(self.lbl_dir, os.path.splitext(img_name)[0] + ".txt")

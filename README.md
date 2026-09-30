@@ -65,3 +65,7 @@ python -m pytest
 ## Auto-Label without a model
 
 Click Auto-Label or Batch with no YOLO model loaded and choose **No**. PK Studio then crops the boxes you already drew and searches new images for similar regions. Best for fixed cameras and similar-looking objects; always review the results.
+
+## Classes
+
+Label > Classes: select several classes with Ctrl/Shift+click, double-click to rename, merge, delete, reorder, add. **Import classes** reads a trained model (.pt), classes.txt or data.yaml, so your class list can match the model. If a model's class names differ from yours, map each one (map / merge / skip / add new) and PK Studio remembers the choice per dataset.

@@ -3,12 +3,9 @@ import numpy as np
 import pytest
 
 
-def test_batch_reference_mode_labels_unlabeled_images(tmp_path, monkeypatch):
-    tk = pytest.importorskip("tkinter")
-    try:
-        root = tk.Tk()
-    except tk.TclError:
-        pytest.skip("no display")
+def test_batch_reference_mode_labels_unlabeled_images(tk_root, tmp_path, monkeypatch):
+    root = tk_root
+    monkeypatch.chdir(tmp_path)
     from tkinter import messagebox, simpledialog
     from pk_studio.ui.tabs.tab_autolabeler import AutoLabelerTab
 
@@ -41,7 +38,7 @@ def test_batch_reference_mode_labels_unlabeled_images(tmp_path, monkeypatch):
         if not tab._batch_running:
             break
         root.after(25)
-    root.destroy()
+    tab.destroy()
 
     for name, (x, y) in [("f1", (200, 150)), ("f2", (20, 20))]:
         cid, cx, cy, w, h = (lbl_dir / f"{name}.txt").read_text().split()
