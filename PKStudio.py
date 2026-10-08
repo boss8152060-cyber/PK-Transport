@@ -420,7 +420,8 @@ DEFAULT_SETTINGS = {
     "show_label_zone": True,
     "show_label_speed": True,
     "show_bbox": True,
-    "outside_zone_normal": "dot",           # vehicles outside every zone in the normal video: dot (point only) | hide | show
+    "show_ref_lines": True,                 # the reference line of every stream Gap Acceptance / Headway uses (drawn Line or shared zone edge); normal video
+    "outside_zone_normal": "dot",          # vehicles outside every zone in the normal video: dot (point only) | hide | show
     "outside_zone_xy": "show",              # the same for the X-Y video and picture
     "show_prefix_id": False,
     "show_prefix_class": False,
@@ -450,6 +451,7 @@ DEFAULT_SETTINGS = {
     "xy_show_point": True,                  # the dot at the vehicle's Trajectory Position (yellow = in a zone, red ring = in none)
     "xy_show_grid": True,                   # the metre grid and its numbers
     "xy_show_time": True,                   # "t = ... s  frame ..." at the bottom
+    "xy_show_ref_lines": True,              # the reference lines of Gap Acceptance / Headway on the X-Y plane
 }
 
 XY_DISPLAY_KEYS = tuple(k for k in DEFAULT_SETTINGS if k.startswith("xy_"))
@@ -529,7 +531,7 @@ RUN3_DEFAULTS = {
     "headway_movements": ["1-3-4", "2-3-1", "1-3-6-7", "5-6-3-1", "2-3-4", "5-6-7"],   # Movements analysed by Headway
     "headway_max_s": "",                   # blank = no limit: a follower is paired with the nearest leader in its path, however long ago the leader passed
     "headway_line_mapping": "",            # Site_ID|Movement|Line N for Headway only; a Movement left out uses the Reference Line Mapping of Gap Acceptance, then the origin zone
-    "reference_line_source": "zone_edge",   # reference line of a Movement: "zone_edge" = the edge two zones share (ZONE_EDGE_DEFAULT) / "drawn" = the Line of the Reference Line Mapping
+    "reference_line_source": "zone_edge",   # reference line of a Movement: "zone_edge" = the edge two zones share (ZONE_EDGE_DEFAULT) / "drawn" = the Line of the Reference Line Mapping / "per_stream" = each stream as chosen in the Line window (an `Edge a-b` or a `Line N` row of the mapping)
     "zone_edge_tol_px": "6",                # two zone corners count as one shared node when closer than this (pixels) - our choice, no source
     "critical_gap_by_subject_class": True,   # Critical Gap: one estimate per class of the WAITING driver (off = all classes together)
     "critical_gap_by_lag_class": False,      # ... and per class of the vehicle BEHIND the gap (the one that arrives; the Lag vehicle). Off = not split by it
@@ -2094,17 +2096,29 @@ GAP_STAGE_CONFLICTS = {
 LINE_NAMES = [f"Line {i}" for i in range(1, 7)]
 
 
+class _NoLinesToSave(Exception):
+    """Every stream of the Line window uses its zone edge: nothing to write into the Zone file."""
+
+
 class LineEditorDialog:
     """Click two points on a video frame to place the Reference Lines that Gap
     Acceptance needs (one per conflicting stream). Saves the Lines into the Zone
     JSON file and fills the Reference Line Mapping text."""
 
-    def __init__(self, app, frame_bgr, frame_index, movements, assignments, lines):
+    def __init__(self, app, frame_bgr, frame_index, movements, assignments, lines, modes=None):
         self.app = app
         self.frame_index = frame_index
         self.h, self.w = frame_bgr.shape[:2]
         self.movements = list(movements)
         self.assign = dict(assignments)
+        # per stream: "edge" = the edge the stream's two zones share (nothing to draw) / "drawn" = a Line drawn here
+        try:
+            tol = float(app.run3_zone_edge_tol_var.get() or 6.0)
+        except Exception:
+            tol = 6.0
+        self.edge_name = {mv: "Edge %d-%d" % ZONE_EDGE_DEFAULT[mv] for mv in self.movements if mv in ZONE_EDGE_DEFAULT}
+        self.edge_pts = {mv: [tuple(q) for q in app._run3_named_line(nm, tol)] for mv, nm in self.edge_name.items()}
+        self.mode = {mv: ((modes or {}).get(mv, "drawn") if len(self.edge_pts.get(mv, [])) == 2 else "drawn") for mv in self.movements}
         self.points = {mv: [tuple(pt) for pt in lines.get(self.assign[mv], [])][:2] for mv in self.movements}
         self.pending = None
         self.current = next((mv for mv in self.movements if len(self.points[mv]) != 2), self.movements[0])
@@ -2124,14 +2138,24 @@ class LineEditorDialog:
         ttk.Label(side, text="1) เลือกกระแสรถ\n2) คลิก 2 จุดบนภาพ วางเส้นขวางทาง\n    ที่รถกระแสนั้นวิ่งผ่าน (ให้ยาวพอ\n    ที่รถทุกคันข้ามเส้นชัดเจน)\n3) กด \"บันทึก\"", justify="left").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
         self.choice = tk.StringVar(value=self.current)
         self.status_labels = {}
+        self.mode_vars = {}
         for i, mv in enumerate(self.movements, start=1):
-            ttk.Radiobutton(side, text=f"กระแส {mv}  →  {self.assign[mv]}", value=mv, variable=self.choice,
-                            command=lambda m=mv: self.select(m)).grid(row=i * 2 - 1, column=0, sticky="w")
-            ttk.Button(side, text="ล้าง", width=5, command=lambda m=mv: self.clear(m)).grid(row=i * 2 - 1, column=1, padx=(6, 0))
+            ttk.Radiobutton(side, text=f"กระแส {mv}", value=mv, variable=self.choice,
+                            command=lambda m=mv: self.select(m)).grid(row=i * 3 - 2, column=0, sticky="w")
+            ttk.Button(side, text="ล้าง", width=5, command=lambda m=mv: self.clear(m)).grid(row=i * 3 - 2, column=1, padx=(6, 0))
+            if mv in self.edge_name:
+                fr = ttk.Frame(side)
+                fr.grid(row=i * 3 - 1, column=0, columnspan=2, sticky="w", padx=(22, 0))
+                var = tk.StringVar(value=self.mode[mv])
+                self.mode_vars[mv] = var
+                ttk.Radiobutton(fr, text="ขอบโซน %d|%d ที่ติดกัน" % ZONE_EDGE_DEFAULT[mv], value="edge", variable=var,
+                                command=lambda m=mv: self.set_mode(m, self.mode_vars[m].get())).pack(side="left")
+                ttk.Radiobutton(fr, text=f"วาดเอง ({self.assign[mv]})", value="drawn", variable=var,
+                                command=lambda m=mv: self.set_mode(m, self.mode_vars[m].get())).pack(side="left", padx=(8, 0))
             lab = ttk.Label(side, text="", foreground="#555555")
-            lab.grid(row=i * 2, column=0, columnspan=2, sticky="w", padx=(22, 0), pady=(0, 4))
+            lab.grid(row=i * 3, column=0, columnspan=2, sticky="w", padx=(22, 0), pady=(0, 4))
             self.status_labels[mv] = lab
-        nrow = len(self.movements) * 2 + 1
+        nrow = len(self.movements) * 3 + 1
         ttk.Separator(side, orient="horizontal").grid(row=nrow, column=0, columnspan=2, sticky="ew", pady=8)
         ttk.Label(side, text=f"เฟรมที่ {frame_index} ของวิดีโอ ({self.w}×{self.h})", foreground="#555555").grid(row=nrow + 1, column=0, columnspan=2, sticky="w")
         ttk.Button(side, text="บันทึก", command=self.save).grid(row=nrow + 2, column=0, columnspan=2, sticky="ew", pady=(10, 2))
@@ -2162,16 +2186,20 @@ class LineEditorDialog:
         colors = ["#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4", "#008080"]
         for i, mv in enumerate(self.movements):
             col = colors[i % len(colors)]
-            pts = self.points[mv]
+            edge_mode = self.mode.get(mv) == "edge"
+            pts = self.edge_pts[mv] if edge_mode else self.points[mv]       # a stream on its zone edge shows the edge (and its drawn Line is hidden)
             if len(pts) == 2:
                 (x1, y1), (x2, y2) = pts
-                self.canvas.create_line(x1 * self.scale, y1 * self.scale, x2 * self.scale, y2 * self.scale, fill=col, width=4, tags="ov")
+                self.canvas.create_line(x1 * self.scale, y1 * self.scale, x2 * self.scale, y2 * self.scale, fill=col, width=4,
+                                        dash=((8, 5) if edge_mode else None), tags="ov")
                 for x, y in pts:
                     self.canvas.create_oval(x * self.scale - 5, y * self.scale - 5, x * self.scale + 5, y * self.scale + 5, fill=col, outline="white", tags="ov")
-                self.canvas.create_text((x1 + x2) / 2 * self.scale + 6, (y1 + y2) / 2 * self.scale - 10, text=f"{mv} ({self.assign[mv]})", fill=col, anchor="w", font=("Segoe UI", 10, "bold"), tags="ov")
-                self.status_labels[mv].config(text="วาดแล้ว ✓", foreground="#0a7a0a")
+                label = self.edge_name[mv] if edge_mode else self.assign[mv]
+                self.canvas.create_text((x1 + x2) / 2 * self.scale + 6, (y1 + y2) / 2 * self.scale - 10, text=f"{mv} ({label})", fill=col, anchor="w", font=("Segoe UI", 10, "bold"), tags="ov")
+                self.status_labels[mv].config(text=("ใช้ขอบโซนที่ติดกัน ✓ (ไม่ต้องวาด)" if edge_mode else "วาดแล้ว ✓"), foreground="#0a7a0a")
             else:
-                self.status_labels[mv].config(text="ยังไม่ได้วาด", foreground="#b00020")
+                msg = "ยังไม่ได้วาด" if mv not in self.edge_name or len(self.edge_pts.get(mv, [])) == 2 else "ยังไม่ได้วาด (โซนสองโซนนี้ไม่มีขอบที่ติดกัน)"
+                self.status_labels[mv].config(text=msg, foreground="#b00020")
         if self.pending is not None:
             x, y = self.pending
             self.canvas.create_oval(x * self.scale - 6, y * self.scale - 6, x * self.scale + 6, y * self.scale + 6, outline="yellow", width=3, tags="ov")
@@ -2189,7 +2217,23 @@ class LineEditorDialog:
             self.pending = None
         self.redraw()
 
+    def set_mode(self, mv, mode):
+        """Stream `mv` uses the shared zone edge ("edge") or the Line drawn here ("drawn")."""
+        if mode == "edge" and len(self.edge_pts.get(mv, [])) != 2:
+            mode = "drawn"                                             # the zones share no edge: nothing to use
+        self.mode[mv] = mode
+        if mv in self.mode_vars:
+            self.mode_vars[mv].set(mode)
+        if mv == self.current:
+            self.pending = None
+        self.redraw()
+
+    def _done(self, mv):
+        return len(self.edge_pts.get(mv, [])) == 2 if self.mode.get(mv) == "edge" else len(self.points[mv]) == 2
+
     def add_point(self, cx, cy):
+        if self.mode.get(self.current) == "edge":
+            self.set_mode(self.current, "drawn")                       # clicking on the picture = the user wants to draw this one
         x, y = canvas_to_video(cx, cy, self.scale, self.w, self.h)
         if self.pending is None:
             self.pending = (x, y)
@@ -2199,25 +2243,27 @@ class LineEditorDialog:
                 return
             self.points[self.current] = [self.pending, (x, y)]
             self.pending = None
-            nxt = next((m for m in self.movements if len(self.points[m]) != 2), None)
+            nxt = next((m for m in self.movements if not self._done(m)), None)
             if nxt:
                 self.select(nxt)
                 return
         self.redraw()
 
     def save(self):
-        drawn = [mv for mv in self.movements if len(self.points[mv]) == 2]
-        if not drawn:
+        edge = [mv for mv in self.movements if self.mode.get(mv) == "edge" and self._done(mv)]
+        drawn = [mv for mv in self.movements if self.mode.get(mv) != "edge" and len(self.points[mv]) == 2]
+        if not drawn and not edge:
             messagebox.showwarning("Line", "ยังไม่ได้วาดเส้นใดเลย", parent=self.top)
             return False
-        missing = [mv for mv in self.movements if mv not in drawn]
+        missing = [mv for mv in self.movements if mv not in drawn and mv not in edge]
         if missing and not messagebox.askyesno(
                 "Line", "ยังไม่ได้วาดเส้นของกระแส: " + ", ".join(missing) + "\n\nบันทึกเฉพาะที่วาดแล้วหรือไม่?", parent=self.top):
             return False
-        ok = self.app.apply_editor_lines(
-            {self.assign[mv]: self.points[mv] for mv in drawn},
-            {mv: self.assign[mv] for mv in drawn}, self.w, self.h)
+        assignments = {mv: (self.edge_name[mv] if mv in edge else self.assign[mv]) for mv in self.movements if mv in drawn or mv in edge}
+        ok = self.app.apply_editor_lines({self.assign[mv]: self.points[mv] for mv in drawn}, assignments, self.w, self.h)
         if ok:
+            if self.app.run3_ref_line_source_var.get() != "per_stream":
+                self.app.run3_ref_line_source_var.set("per_stream")   # each stream now uses what was chosen here
             self.top.destroy()
         return ok
 
@@ -4078,6 +4124,7 @@ class Run1App:
         self.show_label_zone_var = tk.BooleanVar(value=DEFAULT_SETTINGS["show_label_zone"])
         self.show_label_speed_var = tk.BooleanVar(value=DEFAULT_SETTINGS["show_label_speed"])
         self.show_bbox_var = tk.BooleanVar(value=DEFAULT_SETTINGS["show_bbox"])
+        self.show_ref_lines_var = tk.BooleanVar(value=DEFAULT_SETTINGS["show_ref_lines"])
         self.outside_zone_normal_var = tk.StringVar(value=DEFAULT_SETTINGS["outside_zone_normal"])
         self.outside_zone_xy_var = tk.StringVar(value=DEFAULT_SETTINGS["outside_zone_xy"])
         self.show_prefix_id_var = tk.BooleanVar(value=DEFAULT_SETTINGS["show_prefix_id"])
@@ -4454,6 +4501,8 @@ class Run1App:
              dict(items=[("ID", xyv["xy_show_prefix_id"]), ("Class", xyv["xy_show_prefix_class"]), ("Conf", xyv["xy_show_prefix_conf"]),
                          ("Zone", xyv["xy_show_prefix_zone"]), ("Speed", xyv["xy_show_prefix_speed"])]))
         trow("กรอบวัตถุ (bbox)", dict(items=[("แสดง", self.show_bbox_var)]), dict(text="— (ผังเมตรไม่มีกรอบภาพ ดูสี่เหลี่ยมรถของ TTC)"))
+        trow("เส้นอ้างอิง (Gap Acceptance / Headway)", dict(items=[("แสดง (เส้นที่ใช้จริง: Line ที่วาดหรือขอบโซนที่ติดกัน)", self.show_ref_lines_var)]),
+             dict(items=[("แสดง", xyv["xy_show_ref_lines"])]))
         trow("จุดที่คาดว่าจะชน (TTC)", dict(items=[("แสดง (วาดเพิ่มหลังคำนวณ TTC เสร็จ ใช้เวลาเพิ่ม)", self.run3_ttc_show_video_var)]),
              dict(items=[("แสดง (กากบาท = จุดที่เส้นทางตรงของสองคันตัดกัน + ค่า TTC)", self.run3_ttc_show_xy_var)]))
         trow("จุดตัดของเส้นทาง (PET)", dict(items=[("แสดง (วาดเพิ่มหลังคำนวณ PET เสร็จ ใช้เวลาเพิ่ม)", self.run3_pet_show_video_var)]),
@@ -4632,7 +4681,8 @@ class Run1App:
         self.run3_reference_text.grid(row=6, column=0, columnspan=8, sticky="ew", pady=(0, 2))
         self.run3_reference_text.insert("1.0", self.run3_reference_mapping_text)
         ttk.Label(box, text="เส้นอ้างอิงของแต่ละกระแส (Gap Acceptance / Headway)").grid(row=7, column=0, sticky="w", pady=(6, 2))
-        SOURCES = {"zone_edge": "ขอบโซนที่ติดกัน (เส้นเชื่อมโหนดร่วม เช่น 1-3-6-7 = โซน 1|3)", "drawn": "Line ที่วาดไว้ (Reference Line Mapping)"}
+        SOURCES = {"zone_edge": "ขอบโซนที่ติดกัน (เส้นเชื่อมโหนดร่วม เช่น 1-3-6-7 = โซน 1|3)", "drawn": "Line ที่วาดไว้ (Reference Line Mapping)",
+                   "per_stream": "เลือกทีละกระแสในหน้า 'วาด Line…' (ขอบโซนหรือวาดเอง)"}
         shown_src = tk.StringVar(value=SOURCES.get(self.run3_ref_line_source_var.get(), SOURCES["zone_edge"]))
         cbs = ttk.Combobox(box, textvariable=shown_src, values=list(SOURCES.values()), state="readonly", width=60)
         cbs.grid(row=7, column=1, columnspan=7, sticky="w", pady=(6, 2))
@@ -5219,13 +5269,23 @@ class Run1App:
         for mv in movements:
             if mv not in assignments:
                 assignments[mv] = free.pop(0)
-        self.line_editor = LineEditorDialog(self, frame, 0, movements, assignments, self.lines)
+        source = self.run3_ref_line_source_var.get()
+        modes = {}
+        for mv in movements:
+            row = existing.get(mv)
+            if source == "zone_edge" or (source == "per_stream" and str(row or "").startswith("Edge")):
+                modes[mv] = "edge"                                    # what a run would use now: the shared edge (the dialog turns it into "drawn" when there is none)
+            else:
+                modes[mv] = "drawn"
+        self.line_editor = LineEditorDialog(self, frame, 0, movements, assignments, self.lines, modes)
         return self.line_editor
 
     def apply_editor_lines(self, lines_by_name, assignments, frame_w, frame_h):
-        """Store the drawn Lines, write them into the Zone JSON and fill the mapping text."""
+        """Store the drawn Lines, write them into the Zone JSON and fill the mapping text (`assignments` = {stream: "Line N" or "Edge a-b"})."""
+        path = self.zone_line_config_var.get().strip()
         try:
-            path = self.zone_line_config_var.get().strip()
+            if not lines_by_name:
+                raise _NoLinesToSave()
             if path.lower().endswith(".json") and os.path.isfile(path):
                 if not messagebox.askyesno(
                         "บันทึก Line",
@@ -5260,13 +5320,16 @@ class Run1App:
             data["lines_frame_height"] = frame_h
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=4, ensure_ascii=False)
+        except _NoLinesToSave:
+            pass
         except Exception as exc:
             messagebox.showerror("บันทึก Line", f"บันทึกไม่สำเร็จ:\n{exc}")
             return False
 
         for name, pts in lines_by_name.items():
             self.lines[name] = [tuple(q) for q in pts]
-        self.zone_line_config_var.set(path)
+        if lines_by_name:
+            self.zone_line_config_var.set(path)
         site = self.run3_site_id_var.get().strip()
         old = self.run3_reference_text.get("1.0", "end-1c") if hasattr(self, "run3_reference_text") else self.run3_reference_mapping_text
         new_text = update_reference_mapping_text(old, site, assignments)
@@ -5275,7 +5338,10 @@ class Run1App:
             self.run3_reference_text.delete("1.0", "end")
             self.run3_reference_text.insert("1.0", new_text)
         self.refresh_measurement_status()
-        self.status_var.set(f"บันทึก {len(lines_by_name)} Line ลง {os.path.basename(path)} และเติม Reference Line Mapping แล้ว")
+        if lines_by_name:
+            self.status_var.set(f"บันทึก {len(lines_by_name)} Line ลง {os.path.basename(path)} และเติม Reference Line Mapping แล้ว")
+        else:
+            self.status_var.set("เติม Reference Line Mapping แล้ว (ทุกกระแสใช้ขอบโซนที่ติดกัน ไม่มี Line ใหม่)")
         return True
 
     def save_measurement_config(self):
@@ -5416,17 +5482,18 @@ class Run1App:
             if opacity > 0.0:
                 cv2.addWeighted(overlay, opacity, frame, 1.0 - opacity, 0, frame)
 
-        # Keep line geometry behavior unchanged.
-        for lname in LINE_NAMES:
-            line = self.lines.get(lname, [])
-            if len(line) != 2:
-                continue
-            p1 = tuple(map(int, line[0])); p2 = tuple(map(int, line[1]))
+        # The reference lines Gap Acceptance / Headway really use (a drawn Line or the edge two zones share) - not every Line that was ever drawn.
+        if rt is not None:
+            ref_lines = rt.get("ref_lines") if rt.get("show_ref_lines", True) else []
+        else:
+            ref_lines = self._display_ref_lines() if bool(self.show_ref_lines_var.get()) else []
+        for label, p1, p2 in ref_lines or []:
+            p1 = (int(round(p1[0])), int(round(p1[1]))); p2 = (int(round(p2[0])), int(round(p2[1])))
             cv2.line(frame, p1, p2, (255, 255, 255), 4, cv2.LINE_AA)
             cv2.circle(frame, p1, 6, (255, 255, 255), -1)
             cv2.circle(frame, p2, 6, (255, 255, 255), -1)
             mx, my = (p1[0] + p2[0]) // 2, (p1[1] + p2[1]) // 2
-            cv2.putText(frame, lname, (mx, max(20, my - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2, cv2.LINE_AA)
+            cv2.putText(frame, label, (mx, max(20, my - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2, cv2.LINE_AA)
 
     # ========================================================
     # V27 RUNTIME SNAPSHOT (read once on the main thread)
@@ -5478,6 +5545,8 @@ class Run1App:
             "show_zone_label": b(self.show_zone_label_var),
             "show_zone_label_prefix": b(self.show_zone_label_prefix_var),
             "show_bbox": b(self.show_bbox_var),
+            "show_ref_lines": b(self.show_ref_lines_var),
+            "ref_lines": self._display_ref_lines() if b(self.show_ref_lines_var) else [],
             "show_decision_point": b(self.draw_center_var),
             "show_info_text": b(self.show_info_text_var),
             "outside_zone_normal": str(self.outside_zone_normal_var.get() or "dot"),
@@ -6109,6 +6178,7 @@ class Run1App:
             "show_label_zone": self.show_label_zone_var.get(),
             "show_label_speed": self.show_label_speed_var.get(),
             "show_bbox": self.show_bbox_var.get(),
+            "show_ref_lines": self.show_ref_lines_var.get(),
             "outside_zone_normal": self.outside_zone_normal_var.get(),
             "outside_zone_xy": self.outside_zone_xy_var.get(),
             "show_prefix_id": self.show_prefix_id_var.get(),
@@ -6292,6 +6362,7 @@ class Run1App:
             ("show_label_zone", self.show_label_zone_var),
             ("show_label_speed", self.show_label_speed_var),
             ("show_bbox", self.show_bbox_var),
+            ("show_ref_lines", self.show_ref_lines_var),
             ("outside_zone_normal", self.outside_zone_normal_var),
             ("outside_zone_xy", self.outside_zone_xy_var),
             ("show_prefix_id", self.show_prefix_id_var),
@@ -7466,21 +7537,25 @@ class Run1App:
                     tol = float(self.run3_zone_edge_tol_var.get() or 6.0)
                 except Exception:
                     pass
-                if source == "zone_edge":
-                    # the shared edge of each stream's zones is the reference line: only a stream whose zones share no edge needs a drawn Line
-                    no_edge = [c for c in needed if c in ZONE_EDGE_DEFAULT
-                               and len(self._run3_named_line("Edge %d-%d" % ZONE_EDGE_DEFAULT[c], tol)) != 2]
-                    site_map = {c: site_map[c] for c in no_edge if c in site_map}
-                    needed = no_edge
-                    if no_edge:
-                        warnings.append("Gap Acceptance: the zones of stream(s) " + ", ".join(
-                            f"{c} (Zone {ZONE_EDGE_DEFAULT[c][0]}|{ZONE_EDGE_DEFAULT[c][1]})" for c in no_edge)
-                            + " share no edge (draw the zones so that they touch, or choose 'Line ที่วาดไว้')." + fallback)
-                missing = [c for c in needed if c not in site_map]
-                undrawn = sorted({f"{ln} ({c})" for c, ln in site_map.items()
-                                  if c in needed and len(self._run3_named_line(ln, tol)) != 2})
-                if source == "zone_edge":
-                    missing = []                       # the stream already got its edge warning above
+                cfg_ref = {"reference_line_source": source, "zone_edge_tol_px": tol}
+                no_edge, undrawn, missing = [], [], []
+                for cs in needed:
+                    names = self._run3_reference_names(cs, mapping, site, cfg_ref)
+                    if any(len(self._run3_named_line(n, tol)) == 2 for n in names):
+                        continue                       # this stream has a usable reference line
+                    row = site_map.get(cs)
+                    edge_expected = source == "zone_edge" or (source == "per_stream" and row is None)
+                    if edge_expected and cs in ZONE_EDGE_DEFAULT:
+                        no_edge.append(cs)
+                    if row is not None:
+                        undrawn.append(f"{row} ({cs})")
+                    elif not (edge_expected and cs in ZONE_EDGE_DEFAULT):
+                        missing.append(cs)
+                undrawn = sorted(set(undrawn))
+                if no_edge:
+                    warnings.append("Gap Acceptance: the zones of stream(s) " + ", ".join(
+                        f"{c_} (Zone {ZONE_EDGE_DEFAULT[c_][0]}|{ZONE_EDGE_DEFAULT[c_][1]})" for c_ in no_edge)
+                        + " share no edge (draw the zones so that they touch, or choose 'Line ที่วาดไว้')." + fallback)
                 parts = []
                 if missing:
                     parts.append("no Line mapped for stream(s) " + ", ".join(missing) + f" (Site_ID '{site}')")
@@ -9670,7 +9745,7 @@ class Run1App:
             "headway_enabled": bool(self.run3_headway_enabled_var.get()),
             "headway_movements": [mv for mv, v in self.run3_headway_movement_vars.items() if v.get()],
             "headway_max_s": num(self.run3_headway_max_var, None),
-            "reference_line_source": ("drawn" if self.run3_ref_line_source_var.get() == "drawn" else "zone_edge"),
+            "reference_line_source": (self.run3_ref_line_source_var.get() if self.run3_ref_line_source_var.get() in ("drawn", "per_stream") else "zone_edge"),
             "zone_edge_tol_px": num(self.run3_zone_edge_tol_var, 6.0) or 6.0,
             "critical_gap_by_subject_class": bool(self.run3_cg_by_subject_var.get()),
             "critical_gap_by_lag_class": bool(self.run3_cg_by_lag_var.get()),
@@ -10039,6 +10114,14 @@ class Run1App:
                     (tw, th), _ = cv2.getTextSize(text_, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
                     cv2.putText(zlayer, text_, (int(cx) - tw // 2, int(cy) + th // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.55, zcol, 1, cv2.LINE_AA)
             base = cv2.addWeighted(zlayer, max(zone_alpha, 0.35), base, 1.0 - max(zone_alpha, 0.35), 0)
+        if flag("show_ref_lines", True):                                  # the reference lines of Gap Acceptance / Headway, as in the normal video
+            for label, p1, p2 in self._run3_display_ref_lines(c):
+                q = np.round(topview_px(cv, self._run3_to_metric(np.array([p1, p2], dtype=float), c))).astype(int)
+                a_, b_ = (int(q[0][0]), int(q[0][1])), (int(q[1][0]), int(q[1][1]))
+                cv2.line(base, a_, b_, (255, 255, 255), 3, cv2.LINE_AA)
+                cv2.circle(base, a_, 5, (255, 255, 255), -1, cv2.LINE_AA)
+                cv2.circle(base, b_, 5, (255, 255, 255), -1, cv2.LINE_AA)
+                cv2.putText(base, label, ((a_[0] + b_[0]) // 2 + 6, max(14, (a_[1] + b_[1]) // 2 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
         cv2.putText(base, f"X-Y plane in metres (x right, y down) · {cv['scale']:.1f} px/m · {self._run3_calibration_mode(c)}", (6, 16),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1, cv2.LINE_AA)
         mode = str(dsp.get("outside_zone_xy", "show") or "show")
@@ -10447,24 +10530,87 @@ class Run1App:
             return [] if edge is None else [edge[0], edge[1]]
         return self.lines.get(name, [])
 
-    def _run3_reference_line(self, cm, mapping, site, c=None, explicit=None):
-        """(line, label) of the reference line of Movement `cm`. Order: an entry of `explicit` (Headway's own Line / Edge) -> the shared zone edge of the
-        Movement (ZONE_EDGE_DEFAULT; only while reference_line_source is "zone_edge") -> the Reference Line Mapping entry of Gap Acceptance.
-        The first one that gives 2 points wins; none -> ([], first name tried) and the caller falls back to the origin zone."""
+    def _run3_reference_names(self, cm, mapping, site, c=None, explicit=None):
+        """The names tried, in order, for the reference line of Movement `cm`. `reference_line_source`:
+        "zone_edge" = Headway's own entry -> the shared zone edge -> the mapping (the edge wins over a Line left in the mapping);
+        "drawn" = Headway's own entry -> the mapping (never the edge);
+        "per_stream" = Headway's own entry -> the mapping row of the stream (an `Edge a-b` or a `Line N`, chosen per stream in the Line window) -> the shared edge when there is no row."""
         c = c or {}
-        tol = float(c.get("zone_edge_tol_px") or 6.0)
+        source = c.get("reference_line_source", "zone_edge")
         names = []
         if explicit and (site, cm) in explicit:
             names.append(explicit[(site, cm)])
-        if c.get("reference_line_source", "zone_edge") == "zone_edge" and cm in ZONE_EDGE_DEFAULT:
-            names.append("Edge %d-%d" % ZONE_EDGE_DEFAULT[cm])
-        if mapping and (site, cm) in mapping:
-            names.append(mapping[(site, cm)])
+        edge = ("Edge %d-%d" % ZONE_EDGE_DEFAULT[cm]) if cm in ZONE_EDGE_DEFAULT else None
+        row = mapping[(site, cm)] if (mapping and (site, cm) in mapping) else None
+        if source == "zone_edge":
+            order = [edge, row]
+        elif source == "per_stream":
+            order = [row, edge]
+        else:
+            order = [row]
+        names += [n for n in order if n and n not in names]
+        return names
+
+    def _run3_reference_line(self, cm, mapping, site, c=None, explicit=None):
+        """(line, label) of the reference line of Movement `cm` (see _run3_reference_names for the order). The first name that gives 2 points wins;
+        none -> ([], first name tried) and the caller falls back to the origin zone."""
+        c = c or {}
+        tol = float(c.get("zone_edge_tol_px") or 6.0)
+        names = self._run3_reference_names(cm, mapping, site, c, explicit)
         for name in names:
             line = self._run3_named_line(name, tol)
             if len(line) == 2:
                 return line, name
         return [], (names[0] if names else None)
+
+    def _run3_display_ref_lines(self, c):
+        """[(label, (x1, y1), (x2, y2))] in video pixels: the reference line of every stream that Gap Acceptance (the streams it waits for) and Headway
+        (its Movements) use, as resolved for the run (`c`). Streams that share one line (1-3-4 and 1-3-6-7 -> Zone 1|3) give one entry named after both."""
+        streams = []
+        if c.get("gap_enabled"):
+            for m in c.get("gap_movements") or []:
+                for conflict in RUN3_GAP_CONFLICT_MAP.get(m, []):
+                    if conflict not in streams:
+                        streams.append(conflict)
+        if c.get("headway_enabled"):
+            for m in c.get("headway_movements") or []:
+                if m not in streams:
+                    streams.append(m)
+        if not streams:
+            return []
+        try:
+            mapping = self._run3_parse_reference_mapping(c.get("mapping_text") or "")
+        except Exception:
+            mapping = {}
+        hw_text = (c.get("headway_mapping_text") or "").strip()
+        try:
+            explicit = self._run3_parse_reference_mapping(hw_text) if hw_text else {}
+        except Exception:
+            explicit = {}
+        site = c.get("site_id", "")
+        found = []
+        for cm in MOVEMENT_IDS:
+            if cm not in streams:
+                continue
+            line, name = self._run3_reference_line(cm, mapping, site, c, explicit if cm in (c.get("headway_movements") or []) else None)
+            if len(line) != 2:
+                continue
+            key = tuple(int(round(v)) for q in line for v in q)
+            for item in found:
+                if item[0] == key:
+                    item[2].append(cm)
+                    break
+            else:
+                found.append((key, name, [cm], line))
+        return [(f"{name} ({', '.join(ms)})", tuple(line[0]), tuple(line[1])) for _k, name, ms, line in found]
+
+    def _display_ref_lines(self):
+        """The reference lines to draw, from what is set now (pixels); [] when the settings are incomplete."""
+        try:
+            return self._run3_display_ref_lines(self._run3_snapshot_config())
+        except Exception:
+            log.debug("reference lines for the display", exc_info=True)
+            return []
 
     def _run3_stream_events(self, tracks, movement_by_id, cm, mapping, site, c=None, explicit=None):
         """The reference event of every vehicle of stream `cm` (a Movement): (time, id, class, reference label, qc flag).

@@ -13,12 +13,14 @@ TREE = ast.parse(SRC)
 import re
 NS = {"math": math, "re": re}
 exec(SRC[SRC.index("# ==== CORE-BEGIN"):SRC.index("# ==== CORE-END")], NS)
+NS["RUN3_ALL_MOVEMENTS"] = NS["MOVEMENT_IDS"]
+NS["LINE_NAMES"] = [f"Line {i}" for i in range(1, 7)]
 for node in TREE.body:
     if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name) and node.targets[0].id in (
             "GAP_STAGE_CONFLICTS", "RUN3_GAP_CONFLICT_MAP", "ZONE_EDGE_DEFAULT"):
         exec(compile(ast.Module([node], []), "x", "exec"), NS)
 for node in ast.walk(TREE):
-    if isinstance(node, ast.FunctionDef) and node.name in ("_run3_gap", "_run3_stream_events", "_run3_headway", "_run3_canonical_class", "_run3_reference_line", "_run3_named_line"):
+    if isinstance(node, ast.FunctionDef) and node.name in ("_run3_gap", "_run3_stream_events", "_run3_headway", "_run3_canonical_class", "_run3_reference_line", "_run3_named_line", "_run3_reference_names", "_run3_display_ref_lines", "_run3_parse_reference_mapping"):
         exec(compile(ast.Module([node], []), node.name, "exec"), NS)
 for node in TREE.body:
     if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name) and node.targets[0].id == "GAP_REFERENCE_ZONE":
@@ -30,6 +32,9 @@ class Fake:
     _run3_stream_events = NS["_run3_stream_events"]
     _run3_reference_line = NS["_run3_reference_line"]
     _run3_named_line = NS["_run3_named_line"]
+    _run3_reference_names = NS["_run3_reference_names"]
+    _run3_display_ref_lines = NS["_run3_display_ref_lines"]
+    _run3_parse_reference_mapping = NS["_run3_parse_reference_mapping"]
     zones = {}
     _run3_canonical_class = staticmethod(NS["_run3_canonical_class"])
     _fmt = staticmethod(lambda v, d=3: "" if v is None else f"{v:.{d}f}")
@@ -166,6 +171,58 @@ class ReferenceLine(unittest.TestCase):
     def test_edge_name_can_be_written_in_the_mapping(self):
         line, label = self.fake()._run3_reference_line("2-3-4", {(8, "2-3-4"): "Edge 1-3"}, 8, {"reference_line_source": "drawn"})
         self.assertEqual(label, "Edge 1-3")
+
+    def test_per_stream_follows_the_mapping_row_then_the_edge(self):
+        f = self.fake()
+        line, label = f._run3_reference_line("1-3-6-7", {(8, "1-3-6-7"): "Line 4"}, 8, {"reference_line_source": "per_stream"})
+        self.assertEqual(label, "Line 4")                                                          # a row of the stream wins over the edge
+        line, label = f._run3_reference_line("1-3-6-7", {(8, "1-3-6-7"): "Edge 1-3"}, 8, {"reference_line_source": "per_stream"})
+        self.assertEqual(label, "Edge 1-3")
+        line, label = f._run3_reference_line("1-3-6-7", {}, 8, {"reference_line_source": "per_stream"})
+        self.assertEqual(label, "Edge 1-3")                                                        # no row -> the shared edge
+
+    def test_names_order_by_source(self):
+        f = self.fake()
+        m = {(8, "1-3-6-7"): "Line 4"}
+        self.assertEqual(f._run3_reference_names("1-3-6-7", m, 8, {"reference_line_source": "zone_edge"}), ["Edge 1-3", "Line 4"])
+        self.assertEqual(f._run3_reference_names("1-3-6-7", m, 8, {"reference_line_source": "per_stream"}), ["Line 4", "Edge 1-3"])
+        self.assertEqual(f._run3_reference_names("1-3-6-7", m, 8, {"reference_line_source": "drawn"}), ["Line 4"])
+
+
+class DisplayRefLines(unittest.TestCase):
+    """The lines drawn in the videos: only the reference lines that the enabled indicators really use."""
+
+    def fake(self):
+        f = Fake()
+        f.lines = {"Line 1": [(1.0, 1.0), (2.0, 2.0)], "Line 2": [(5.0, 5.0), (6.0, 6.0)]}
+        f.zones = {"Zone 1": [(0, 0), (10, 0), (10, 10), (0, 10)], "Zone 3": [(10, 0), (20, 0), (20, 10), (10, 10)],
+                   "Zone 2": [(30, 0), (40, 0), (40, 10), (30, 10)]}
+        return f
+
+    def cfg(self, **kw):
+        c = {"site_id": "8", "gap_enabled": True, "gap_movements": ["1-3-6-7"], "headway_enabled": False, "headway_movements": [],
+             "mapping_text": "8|2-3-4|Line 1\n8|5-6-7|Line 2", "reference_line_source": "zone_edge", "zone_edge_tol_px": 6.0}
+        c.update(kw)
+        return c
+
+    def test_nothing_enabled_nothing_drawn(self):
+        self.assertEqual(self.fake()._run3_display_ref_lines(self.cfg(gap_enabled=False)), [])
+
+    def test_unused_drawn_lines_are_not_shown_on_zone_edge(self):
+        out = self.fake()._run3_display_ref_lines(self.cfg(gap_movements=["1-3-4"]))      # 1-3-4 meets 2-3-4 (zones 2|3: zone 2 does not touch zone 3 here)
+        self.assertTrue(all(lbl.startswith("Line 1") or lbl.startswith("Edge") for lbl, _a, _b in out))
+        self.assertNotIn("Line 2", " ".join(lbl for lbl, _a, _b in out))
+
+    def test_streams_sharing_an_edge_give_one_line(self):
+        c = self.cfg(gap_enabled=False, headway_enabled=True, headway_movements=["1-3-4", "1-3-6-7"])
+        out = self.fake()._run3_display_ref_lines(c)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0][0], "Edge 1-3 (1-3-4, 1-3-6-7)")
+        self.assertEqual(sorted([out[0][1], out[0][2]]), [(10.0, 0.0), (10.0, 10.0)])
+
+    def test_drawn_source_shows_the_mapped_lines(self):
+        out = self.fake()._run3_display_ref_lines(self.cfg(reference_line_source="drawn", gap_movements=["1-3-6-7"]))
+        self.assertEqual(sorted(lbl.split(" ")[0] + " " + lbl.split(" ")[1] for lbl, _a, _b in out), ["Line 1", "Line 2"])
 
 
 if __name__ == "__main__":
