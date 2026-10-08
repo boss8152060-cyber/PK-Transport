@@ -67,6 +67,14 @@ check("at t = 1.0 s both cars are 'hot' (in a counted TTC frame) and the pair TT
 poly = sh["rects"][0]["poly"]
 check("the rectangle of car 1 is 5.0 m x 2.3 m (4.5 x 1.8 + 0.25 m on each side), long side along +x",
       abs((poly[:, 0].max() - poly[:, 0].min()) - 5.0) < 1e-6 and abs((poly[:, 1].max() - poly[:, 1].min()) - 2.3) < 1e-6)
+check("Trajectory Position centre: the rectangle is centred on the reference point (y = 15.0 m)", abs(float(poly[:, 1].mean()) - 15.0) < 1e-6 and abs(float(poly[:, 0].mean()) - 15.0) < 0.2,
+      f"{poly[:, 0].mean():.3f} {poly[:, 1].mean():.3f}")
+# Trajectory Position = Bottom, offset 10 % (anchor 0.5 / 0.9): the reference point sits 0.4 x 1.8 = 0.72 m below the centre of the rectangle (picture down = +y here)
+_r2, _d2, _f2, shapes_b = app._run3_ttc(tracks, dict(c, anchor=(0.5, 0.9)), {})
+poly_b = shapes_b[11]["rects"][0]["poly"]
+check("Trajectory Position Bottom 10 %: the rectangle is placed so that the reference point is at the bottom 10 % line (centre 0.72 m above the point)",
+      abs(float(poly_b[:, 1].mean()) - (15.0 - 0.72)) < 1e-6 and abs(float(poly_b[:, 0].mean()) - float(poly[:, 0].mean())) < 1e-6,
+      f"{poly_b[:, 1].mean():.3f}")
 last = shapes[21]
 check("at t = 2.0 s the boxes overlap: not hot", last["hot"] == set() and len(last["rects"]) == 2, str(last["hot"]))
 

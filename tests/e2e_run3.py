@@ -294,6 +294,7 @@ def scene2(app):
         (5, "Car", make_rows(5, "Car", along_x(-12.0, 5.0, x0=20.0), lambda x, y: 3, n, (4.5, 1.8))),
     ]
     app.run3_ttc_method_var.set("box")                              # the rectangle method first (the checks below), the point method at the end of this scene
+    app.run3_pet_area_shape_var.set("circle")                       # the circle area first (the checks below), the rectangle area right after the PET checks
     out, summary = run_scene(app, veh)
     print("scene 2 output:", out)
     # the pair screening radius is adjustable: at 5 m only the P-R pair (about 1 m apart when they cross) is evaluated
@@ -341,6 +342,22 @@ def scene2(app):
               r["PET_Level"] == m.risk_level_low_is_risky(float(r["PET_s"]), lim_pet) and r["Speed_Level"] == "Moderate"
               and r["PET_Risk_Level"] == m.combine_risk(r["PET_Level"], "Moderate") and abs(float(r["Speed_A_At_Crossing_kmh"]) - 36.0) < 0.5,
               f"{r['PET_s']} {r['PET_Level']} {r['Speed_Level']} {r['PET_Risk_Level']} speeds {r['Speed_A_At_Crossing_kmh']} {r['Speed_B_At_Crossing_kmh']}")
+
+    # PET with the vehicle RECTANGLES (as TTC): the area where the two paths cross is a 2.3 x 2.3 m square (cars 1.8 m wide + 0.25 m margin each side);
+    # P (+x, 10 m/s, at the crossing at 1.5 s) has its front in the square at 1.135 s and its rear out at 1.865 s (half length 2.25 + 0.25 = 2.5 m);
+    # Q (+y, at the crossing at 3.1 s) is in it from 2.735 s to 3.465 s  =>  PET = 2.735 - 1.865 = 0.87 s
+    app.run3_pet_area_shape_var.set("box")
+    out_bx, _ = run_scene(app, veh)
+    pet_bx = {(r["Vehicle_A_ID"], r["Vehicle_B_ID"]): r for r in read_csv(os.path.join(out_bx, "PET.csv"))}
+    if ("1", "2") in pet_bx:
+        r = pet_bx[("1", "2")]
+        check("PET rectangles: PET(P,Q) = 0.87 s, Area_Shape Box, no radius", abs(float(r["PET_s"]) - 0.87) < 0.06 and r["Area_Shape"] == "Box" and r["Area_Radius_m"] == "",
+              f"{r['PET_s']} {r['Area_Shape']} {r['Area_Radius_m']}")
+        check("PET rectangles: T1 (P rear leaves) = 1.87 s, T2 (Q front enters) = 2.74 s", abs(float(r["T1_Exit_Time_s"]) - 1.865) < 0.06 and abs(float(r["T2_Entry_Time_s"]) - 2.735) < 0.06,
+              f"{r['T1_Exit_Time_s']} {r['T2_Entry_Time_s']}")
+    else:
+        check("PET rectangles: event P-Q exists", False, str(sorted(pet_bx)))
+    app.run3_pet_area_shape_var.set("circle")
 
     # PET with the area switched off = the crossing point only: PET = the difference of the times at the point
     app.run3_pet_use_area_var.set(False)
