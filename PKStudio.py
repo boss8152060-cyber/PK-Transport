@@ -472,6 +472,21 @@ DR_FROM_XY = {"dr_" + k[3:]: k for k in XY_DISPLAY_KEYS}
 # RUN 3 DEFAULTS
 # ============================================================
 
+# The result files of Run 3 that can be switched off one by one: (file, the indicator it belongs to - None = always possible, text shown)
+RUN3_CSV_CHOICES = [
+    ("LDP.csv", "ldp", "LDP — ผลต่อคันต่อโซน"),
+    ("Lateral_Clearance_Pairs.csv", "lc", "Lateral Clearance — สรุปรายคู่"),
+    ("Gap_Acceptance.csv", "gap", "Gap Acceptance"),
+    ("Critical_Gap.csv", "gap", "Critical Gap (Raff / MLE)"),
+    ("Headway.csv", "headway", "Headway"),
+    ("TTC.csv", "ttc", "TTC — รายเหตุการณ์"),
+    ("PET.csv", "pet", "PET"),
+    ("Speed.csv", "speed", "Speed — ทุกเฟรมในโซน"),
+    ("Indicator_Summary.csv", None, "สรุปทุกตัวชี้วัด (ค่าเฉลี่ย / SD / P85 …)"),
+    ("Detection_Records_Topview.csv", None, "พิกัดรถเป็นเมตร (ใช้วาดผัง X–Y)"),
+    ("Duplicate_Tracks.csv", None, "รายงาน ID ซ้ำของรถคันเดียว"),
+]
+
 RUN3_VEHICLE_CLASSES = [
     "Bus", "Car", "Motorcycle", "Pickup", "Sidecar", "Truck", "Van"
 ]
@@ -530,6 +545,7 @@ RUN3_DEFAULTS = {
     "pet_show_point_xy": True,              # draw the PET crossing point (magenta X + PET) in the X-Y video
     "pet_show_point_drone": True,           # ... and in the X-Y-on-drone video
     "pet_show_point_video": False,         # draw it also on the normal roadside video (Tracking_Result.mp4) after Run 3
+    "csv_off": "",                         # the Run 3 result files NOT to write (names separated by commas, see RUN3_CSV_CHOICES); an indicator that is switched off writes nothing anyway
     "write_detail_files": False,           # also write the checking files: Lateral_Clearance.csv (every sample), TTC_Detail.csv, TTC_Frames.csv
     "ttc_include_rear_end": True,          # TTC counts events of TTC_Type Rear-end / Lane change / Crossing (the angle limits below); each can be switched off
     "ttc_include_lane_change": True,
@@ -4342,6 +4358,8 @@ class Run1App:
         self.run3_pet_max_var = tk.StringVar(value=RUN3_DEFAULTS["pet_max_s"])
         self.run3_pet_min_speed_var = tk.StringVar(value=RUN3_DEFAULTS["pet_min_speed_kmh"])
         self.run3_write_detail_var = tk.BooleanVar(value=RUN3_DEFAULTS["write_detail_files"])
+        off_ = {x.strip() for x in str(RUN3_DEFAULTS["csv_off"]).split(",") if x.strip()}
+        self.run3_csv_vars = {name: tk.BooleanVar(value=name not in off_) for name, _k, _t in RUN3_CSV_CHOICES}
         self.run3_pet_use_area_var = tk.BooleanVar(value=RUN3_DEFAULTS["pet_use_area"])
         self.run3_pet_area_shape_var = tk.StringVar(value=RUN3_DEFAULTS["pet_area_shape"])
         self.run3_traj_smooth_method_var = tk.StringVar(value=RUN3_DEFAULTS["traj_smooth_method"])
@@ -4690,6 +4708,28 @@ class Run1App:
         trow("ตารางเมตร", dict(text="—"), dict(items=[("เส้นตารางและตัวเลข", xyv["xy_show_grid"])]), dict(text="— (ใช้ภาพโดรนเป็นพื้น)"))
         ttk.Label(box, text="จุดชน/สี่เหลี่ยมของ TTC ต้องเปิดตัวชี้วัด TTC;  แต่ละวิดีโอตั้งได้เป็นอิสระ (เช่น วิดีโอปกติโชว์ Speed แต่ X–Y ไม่โชว์)", foreground=gray).grid(
             row=row[0], column=0, columnspan=4, sticky="w", pady=(4, 0))
+
+        csvb = self.section("ไฟล์ CSV ผลลัพธ์ที่บันทึก")
+        ttk.Label(csvb, text="ติ๊ก = บันทึก  ไม่ติ๊ก = ไม่บันทึกไฟล์นั้น   (ไฟล์ของตัวชี้วัดที่ปิดอยู่ในหน้า ③ ไม่ถูกสร้างอยู่แล้ว จึงเป็นสีเทา)", foreground=gray).grid(
+            row=0, column=0, columnspan=3, sticky="w", pady=(0, 4))
+        enabled_var = {"ldp": self.run3_ldp_enabled_var, "lc": self.run3_lc_enabled_var, "gap": self.run3_gap_enabled_var, "headway": self.run3_headway_enabled_var,
+                       "ttc": self.run3_ttc_enabled_var, "pet": self.run3_pet_enabled_var, "speed": self.run3_speed_enabled_var}
+        self._csv_checks = {}
+        for i, (name, key, text) in enumerate(RUN3_CSV_CHOICES):
+            cb = ttk.Checkbutton(csvb, text=f"{name}  —  {text}", variable=self.run3_csv_vars[name])
+            cb.grid(row=1 + i // 2, column=i % 2, sticky="w", padx=(0, 24), pady=1)
+            self._csv_checks[name] = (cb, key)
+
+        def refresh_csv_checks(*_):
+            for name_, (cb_, key_) in self._csv_checks.items():
+                on_ = True if key_ is None else bool(enabled_var[key_].get())
+                cb_.state(["!disabled"] if on_ else ["disabled"])
+        for var_ in enabled_var.values():
+            var_.trace_add("write", refresh_csv_checks)
+        refresh_csv_checks()
+        ttk.Label(csvb, text="ไฟล์ตรวจสอบเพิ่มเติม (Lateral_Clearance.csv ทุกตัวอย่าง, TTC_Detail.csv, TTC_Frames.csv) เลือกในหน้า ③ ช่อง \"เขียนไฟล์ตรวจสอบเพิ่มเติม\"; "
+                                "ไฟล์ตรวจจับ (Detection_Records.csv ฯลฯ) ใช้ช่อง Save CSV ด้านบน — Run 3 ต้องใช้ไฟล์เหล่านั้น", foreground=gray, wraplength=900, justify="left").grid(
+            row=2 + (len(RUN3_CSV_CHOICES) + 1) // 2, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
     # ---------------- tab 2: site ----------------
     def build_site_tab(self):
@@ -6441,6 +6481,7 @@ class Run1App:
                 "pet_max_s": self.run3_pet_max_var.get(),
                 "pet_min_speed_kmh": self.run3_pet_min_speed_var.get(),
                 "write_detail_files": self.run3_write_detail_var.get(),
+                "csv_off": ",".join(name for name, var in self.run3_csv_vars.items() if not var.get()),
                 "pet_use_area": self.run3_pet_use_area_var.get(),
                 "pet_area_shape": self.run3_pet_area_shape_var.get(),
                 "traj_smooth_method": self.run3_traj_smooth_method_var.get(),
@@ -6614,6 +6655,10 @@ class Run1App:
                 str(k): v for k, v in zc.items()
                 if isinstance(v, dict) and len(v.get("points", [])) == 4 and len(v.get("lengths", [])) == 4
             } if isinstance(zc, dict) else {}
+            if "csv_off" in run3:
+                off_ = {x.strip() for x in str(run3.get("csv_off") or "").split(",") if x.strip()}
+                for name_, var_ in self.run3_csv_vars.items():
+                    var_.set(name_ not in off_)
             mapping_pairs = [
                 ("site_id", self.run3_site_id_var),
                 ("speed_enabled", self.run3_speed_enabled_var),
@@ -10003,6 +10048,7 @@ class Run1App:
             "pet_threshold": num(self.run3_pet_threshold_var, 1.0),
             "pet_max_s": pet_max if (pet_max is not None and pet_max > 0) else None,
             "write_detail_files": bool(self.run3_write_detail_var.get()),
+            "csv_off": {name for name, var in self.run3_csv_vars.items() if not var.get()},
             "pet_use_area": bool(self.run3_pet_use_area_var.get()),
             "pet_area_shape": ("circle" if str(self.run3_pet_area_shape_var.get()).strip() == "circle" else "box"),
             "traj_smooth_method": (str(self.run3_traj_smooth_method_var.get()).strip() if str(self.run3_traj_smooth_method_var.get()).strip() in SMOOTH_METHODS else "none"),
@@ -12061,6 +12107,8 @@ class Run1App:
         row_counts = {}
 
         def write_csv(filename, fields, rows):
+            if filename in (c.get("csv_off") or ()):
+                return None                                       # switched off in the list of result files: nothing is written
             fields, rows = apply_csv_renames(filename, fields, rows)
             csv_file, actual = self._run3_open_csv_safe(os.path.join(output_dir, filename))
             with csv_file as f:
@@ -12369,7 +12417,7 @@ class Run1App:
             "risk_levels": "Exported per dimension; combination rule not defined in sources",
         }
         summary["timings_s"] = dict(timings, total=round(time.time() - t_start, 3))
-        summary["outputs"] = outputs
+        summary["outputs"] = {k: v for k, v in outputs.items() if v}
         summary_path = os.path.join(output_dir, "Summary.json")
         with open(summary_path, "w", encoding="utf-8") as f:
             json.dump(self._json_safe(summary), f, indent=4, ensure_ascii=False)

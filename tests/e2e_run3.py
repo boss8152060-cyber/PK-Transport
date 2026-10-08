@@ -370,6 +370,13 @@ def scene2(app):
               abs(float(pet_pt[("1", "2")]["PET_s"]) - 1.6) < 0.06 and abs(float(pet_pt[("1", "3")]["PET_s"]) - 0.1) < 0.06 and pet_pt[("1", "2")]["Area_Radius_m"] == "",
               f"{pet_pt[('1', '2')]['PET_s']} {pet_pt[('1', '3')]['PET_s']}")
 
+    # a result file switched off in the list of files is not written, the others still are
+    app.run3_csv_vars["PET.csv"].set(False)
+    out_off, summary_off = run_scene(app, veh)
+    app.run3_csv_vars["PET.csv"].set(True)
+    check("result file switched off (PET.csv) is not written; TTC.csv still is", not os.path.exists(os.path.join(out_off, "PET.csv")) and os.path.exists(os.path.join(out_off, "TTC.csv")))
+    check("the run summary lists TTC.csv but not the switched-off PET.csv", "ttc" in summary_off["outputs"] and "pet" not in summary_off["outputs"], str(sorted(summary_off["outputs"])))
+
     # ---- TTC (vehicle rectangles: the time until they first touch) ----
     ttc = read_csv(os.path.join(out, "TTC.csv"))
     ev = {(r["Vehicle_A_ID"], r["Vehicle_B_ID"]): r for r in ttc}
