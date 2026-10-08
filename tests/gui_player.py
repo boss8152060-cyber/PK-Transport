@@ -78,7 +78,26 @@ dlg2 = m.ClipPlayerDialog(app, path, {"analysis_start_s": "1.0", "analysis_end_s
                                        "record_start_s": "1.5", "record_end_s": "2.5"}, modal=False)
 check("existing record range opens in range mode", dlg2.rec_mode.get() == "range")
 check("apply returns the chosen times", dlg2.apply() and dlg2.result == {
-    "analysis_start_s": "1.0", "analysis_end_s": "4", "save_video": True, "record_start_s": "1.5", "record_end_s": "2.5"}, str(dlg2.result))
+    "analysis_start_s": "1.0", "analysis_end_s": "4", "save_video": True, "record_start_s": "1.5", "record_end_s": "2.5",
+    "xy_video": True, "xy_start_s": "", "xy_end_s": "", "drone_video": False, "drone_start_s": "", "drone_end_s": ""}, str(dlg2.result))
+
+# the X-Y video and the X-Y-on-drone video are chosen independently of the roadside video
+dlg4 = m.ClipPlayerDialog(app, path, {"analysis_start_s": "1.0", "analysis_end_s": "4", "save_video": False, "xy_video": False,
+                                       "drone_video": True, "drone_start_s": "2", "drone_end_s": "3"}, modal=False)
+check("the three record choices open independently", (dlg4.rec_mode.get(), dlg4.xy_mode.get(), dlg4.drone_mode.get()) == ("none", "none", "range"))
+dlg4.xy_mode.set("range")
+dlg4.xy_start.set("1.5")
+dlg4.xy_end.set("2.5")
+check("each video keeps its own record choice", dlg4.apply() and dlg4.result["save_video"] is False and dlg4.result["xy_video"] is True
+      and (dlg4.result["xy_start_s"], dlg4.result["xy_end_s"]) == ("1.5", "2.5") and dlg4.result["drone_video"] is True
+      and (dlg4.result["drone_start_s"], dlg4.result["drone_end_s"]) == ("2", "3"), str(dlg4.result))
+dlg5 = m.ClipPlayerDialog(app, path, {"xy_video": True, "drone_video": False}, modal=False)
+dlg5.xy_mode.set("range")
+dlg5.xy_start.set("3")
+dlg5.xy_end.set("2")
+errors.clear()
+check("a wrong X-Y record range is refused", dlg5.apply() is False and len(errors) == 1, str(errors))
+errors.clear()
 
 dlg3 = m.ClipPlayerDialog(app, path, {"analysis_start_s": "3", "analysis_end_s": "2"}, modal=False)
 check("end before start is refused with a message", dlg3.apply() is False and len(errors) == 1 and dlg3.result is None, str(errors))

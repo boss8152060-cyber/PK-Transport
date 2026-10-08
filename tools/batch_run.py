@@ -188,7 +188,8 @@ def collect_row(run_dir, run_name, video, rel_dir, overrides, error, seconds):
     return row
 
 
-CLIP_KEYS = ("analysis_start_s", "analysis_end_s", "save_video", "record_start_s", "record_end_s")
+CLIP_KEYS = ("analysis_start_s", "analysis_end_s", "save_video", "record_start_s", "record_end_s",
+             "xy_video", "xy_start_s", "xy_end_s", "drone_video", "drone_start_s", "drone_end_s")     # the last six: the X-Y video and the X-Y-on-drone video (own choice each)
 PLAN_KEYS = CLIP_KEYS + ("continues_previous",)       # saved in a plan; continues_previous is not a run setting
 
 
@@ -240,6 +241,21 @@ def clip_label(clip):
         r0, r1 = str(clip.get("record_start_s", "") or ""), str(clip.get("record_end_s", "") or "")
         rec = "ตลอดช่วงวิเคราะห์" if not r0 and not r1 else f"{r0 or 'เริ่ม'} – {r1 or 'จบ'}"
     return ana, rec
+
+
+def _record_label(on, v0, v1):
+    if not on:
+        return "ไม่บันทึก"
+    v0, v1 = str(v0 or ""), str(v1 or "")
+    return "ตลอดช่วงวิเคราะห์" if not v0 and not v1 else f"{v0 or 'เริ่ม'} – {v1 or 'จบ'}"
+
+
+def clip_labels(clip):
+    """(analysis, normal video, X-Y video, X-Y-on-drone video) texts of a clip for the list. A clip without the X-Y keys (an old plan) = X-Y on, drone off."""
+    ana, rec = clip_label(clip)
+    xy = _record_label(clip.get("xy_video", True), clip.get("xy_start_s"), clip.get("xy_end_s"))
+    dr = _record_label(clip.get("drone_video", False), clip.get("drone_start_s"), clip.get("drone_end_s"))
+    return ana, rec, xy, dr
 
 
 def finish_batch(out_root, runs, rows, log=print):

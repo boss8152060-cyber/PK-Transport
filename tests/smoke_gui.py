@@ -120,7 +120,7 @@ app.clips_panel.clips[1].update({"analysis_start_s": "0:30.01", "analysis_end_s"
 app.clips_panel.refresh()
 _v = [app.clips_panel.tree.item(i, "values") for i in app.clips_panel.tree.get_children()]
 check("list: a continued clip still shows its own time range and recording, plus the continue mark",
-      _v[0][1] == "0:00 – 0:30" and _v[1][1] == "0:30.01 – 0:59.99" and _v[1][2] == "ตลอดช่วงวิเคราะห์" and _v[1][3].startswith("↳") and _v[0][3] == "", str(_v))
+      _v[0][1] == "0:00 – 0:30" and _v[1][1] == "0:30.01 – 0:59.99" and _v[1][2] == "ตลอดช่วงวิเคราะห์" and _v[1][5].startswith("↳") and _v[0][5] == "" and _v[0][3] == "ตลอดช่วงวิเคราะห์" and _v[0][4] == "ไม่บันทึก", str(_v))
 app.clips_panel.clear()
 from tkinter import messagebox as _mb
 _shown = []

@@ -458,6 +458,12 @@ XY_DISPLAY_KEYS = tuple(k for k in DEFAULT_SETTINGS if k.startswith("xy_"))
 XY_FROM_NORMAL = {"xy_" + k: k for k in ("show_zone_boundary", "show_zone_label", "show_zone_label_prefix", "zone_overlay_opacity", "draw_trail", "trail_length",
                                          "show_label_id", "show_label_class", "show_label_conf", "show_label_zone", "show_label_speed",
                                          "show_prefix_id", "show_prefix_class", "show_prefix_conf", "show_prefix_zone", "show_prefix_speed")}
+# the third video (the X-Y picture on the drone / top-view picture of the Align): every X-Y switch has its twin dr_...; a settings file without them copies the X-Y choices
+for _k in XY_DISPLAY_KEYS:
+    DEFAULT_SETTINGS["dr_" + _k[3:]] = DEFAULT_SETTINGS[_k]
+DEFAULT_SETTINGS["outside_zone_dr"] = "show"          # vehicles outside every zone in the X-Y-on-drone video
+DR_DISPLAY_KEYS = tuple(k for k in DEFAULT_SETTINGS if k.startswith("dr_"))
+DR_FROM_XY = {"dr_" + k[3:]: k for k in XY_DISPLAY_KEYS}
 
 
 # ============================================================
@@ -513,12 +519,14 @@ RUN3_DEFAULTS = {
     "gap_hold_min_duration_s": "0.30",      # ... for at least this long (s)
     "lateral_axis_angle_deg": "0.00",       # implementation starter value; verify per video
     "lc_heading_window_s": "0.50",          # centred window (s) used to get the heading of vehicle A
-    "topview_video": True,                  # also write Tracking_Topview.mp4 (road-plane picture drawn from the metric points)
+    "topview_video": True,                  # also write Tracking_Topview.mp4 (road-plane picture drawn from the metric points); the clip list decides per clip (clip key xy_video)
+    "drone_video": False,                   # also write Tracking_Topview_Drone.mp4 (the same on the drone / top-view picture of the Align); per clip: clip key drone_video
     "lc_along_limit_m": "0",                # side-by-side window along the heading (m); 0 = auto (L_A + L_B) / 2
     "lc_max_lateral_m": "3.50",             # pairs further apart sideways than this (m) are unrelated; 0 = no limit
     "pet_threshold_s": "1.00",
     # V27 implementation starter values (editable; verify per site):
     "pet_show_point_xy": True,              # draw the PET crossing point (magenta X + PET) in the X-Y video
+    "pet_show_point_drone": True,           # ... and in the X-Y-on-drone video
     "pet_show_point_video": False,         # draw it also on the normal roadside video (Tracking_Result.mp4) after Run 3
     "write_detail_files": False,           # also write the checking files: Lateral_Clearance.csv (every sample), TTC_Detail.csv, TTC_Frames.csv
     "ttc_include_rear_end": True,          # TTC counts events of TTC_Type Rear-end / Lane change / Crossing (the angle limits below); each can be switched off
@@ -544,6 +552,7 @@ RUN3_DEFAULTS = {
     "ttc_min_speed_kmh": "5.0",             # a frame where either vehicle is slower than this is skipped (a parked vehicle whose box flickers has a false velocity)
     "ttc_method": "point",                  # point: one point per vehicle (vector TTC, with the miss-distance rule) | box: vehicle rectangles
     "ttc_miss_margin_m": "0.5",             # point method: counts only when the two points come within (W_A + W_B)/2 + this (m)
+    "ttc_show_boxes_drone": True,           # the same in the X-Y-on-drone video
     "ttc_show_boxes_xy": True,              # draw what TTC used in the X-Y video: the expected collision point (point method) / the rectangles (box method)
     "ttc_show_boxes_video": False,          # draw it also on the normal roadside video (Tracking_Result.mp4) after Run 3
     "ttc_box_margin_m": "0.25",             # every vehicle rectangle (length x width by class) is enlarged by this on each side (m): room for the position error
@@ -2274,6 +2283,8 @@ class ClipPlayerDialog:
       analysis_start_s / analysis_end_s   text, '' = from the beginning / to the end
       save_video                          False = record nothing
       record_start_s / record_end_s       text, '' = same as the analysis window
+      xy_video / xy_start_s / xy_end_s    the same for the X-Y video (Tracking_Topview.mp4)
+      drone_video / drone_start_s / drone_end_s   the same for the X-Y-on-drone video (Tracking_Topview_Drone.mp4)
     Times are video times (m:ss.s); frame N is at (N-1)/fps like in every CSV file."""
 
     SHOW_W, SHOW_H = 900, 500
@@ -2316,6 +2327,16 @@ class ClipPlayerDialog:
         else:
             mode = "window"
         self.rec_mode = tk.StringVar(value=mode)
+        # the X-Y video and the X-Y-on-drone video: the same choice (none / whole analysed part / only a range) of their own
+        self.xy_start = tk.StringVar(value=str(plan.get("xy_start_s", "") or ""))
+        self.xy_end = tk.StringVar(value=str(plan.get("xy_end_s", "") or ""))
+        self.drone_start = tk.StringVar(value=str(plan.get("drone_start_s", "") or ""))
+        self.drone_end = tk.StringVar(value=str(plan.get("drone_end_s", "") or ""))
+
+        def mode_of(on, v0, v1):
+            return "none" if not on else ("range" if (v0.get().strip() or v1.get().strip()) else "window")
+        self.xy_mode = tk.StringVar(value=mode_of(plan.get("xy_video", True), self.xy_start, self.xy_end))
+        self.drone_mode = tk.StringVar(value=mode_of(plan.get("drone_video", False), self.drone_start, self.drone_end))
         self.time_text = tk.StringVar(value="")
 
         self.canvas = tk.Canvas(self.top, width=self.SHOW_W, height=self.SHOW_H, bg="#111111", highlightthickness=0)
@@ -2332,23 +2353,30 @@ class ClipPlayerDialog:
         self.play_button = ttk.Button(bar, text="▶ เล่น", width=9, command=self.toggle_play)
         self.play_button.pack(side="left", padx=(12, 2))
 
-        a_box = ttk.LabelFrame(self.top, text="ช่วงที่ให้โปรแกรมวิเคราะห์ (ว่าง = ทั้งคลิป)", padding=6)
-        a_box.grid(row=4, column=0, sticky="nsew", padx=(8, 4), pady=6)
+        boxes = ttk.Frame(self.top)
+        boxes.grid(row=4, column=0, columnspan=2, sticky="nsew", padx=8, pady=6)
+        a_box = ttk.LabelFrame(boxes, text="ช่วงที่ให้โปรแกรมวิเคราะห์ (ว่าง = ทั้งคลิป)", padding=6)
+        a_box.pack(side="left", fill="y", padx=(0, 4))
         self._time_row(a_box, 0, "เริ่ม", self.a_start)
         self._time_row(a_box, 1, "สิ้นสุด", self.a_end)
-        ttk.Label(a_box, text="เลื่อนวิดีโอไปจุดที่ต้องการ แล้วกด \"ใช้เวลานี้\"", foreground="#666666").grid(row=2, column=0, columnspan=4, sticky="w")
+        ttk.Label(a_box, text="เลื่อนวิดีโอไปจุดที่ต้องการ\nแล้วกด \"ใช้เวลานี้\"", foreground="#666666").grid(row=2, column=0, columnspan=4, sticky="w")
 
-        r_box = ttk.LabelFrame(self.top, text="บันทึกวิดีโอผลลัพธ์ของคลิปนี้", padding=6)
-        r_box.grid(row=4, column=1, sticky="nsew", padx=(4, 8), pady=6)
-        ttk.Radiobutton(r_box, text="ไม่บันทึก", value="none", variable=self.rec_mode, command=self._redraw_timeline).grid(row=0, column=0, columnspan=4, sticky="w")
-        ttk.Radiobutton(r_box, text="บันทึกตลอดช่วงที่วิเคราะห์", value="window", variable=self.rec_mode, command=self._redraw_timeline).grid(row=1, column=0, columnspan=4, sticky="w")
-        ttk.Radiobutton(r_box, text="บันทึกเฉพาะช่วง:", value="range", variable=self.rec_mode, command=self._redraw_timeline).grid(row=2, column=0, columnspan=4, sticky="w")
-        self._time_row(r_box, 3, "เริ่ม", self.r_start)
-        self._time_row(r_box, 4, "สิ้นสุด", self.r_end)
+        def rec_box(title, mode_var, v_start, v_end):
+            box = ttk.LabelFrame(boxes, text=title, padding=6)
+            box.pack(side="left", fill="y", padx=4)
+            ttk.Radiobutton(box, text="ไม่บันทึก", value="none", variable=mode_var, command=self._redraw_timeline).grid(row=0, column=0, columnspan=4, sticky="w")
+            ttk.Radiobutton(box, text="ตลอดช่วงที่วิเคราะห์", value="window", variable=mode_var, command=self._redraw_timeline).grid(row=1, column=0, columnspan=4, sticky="w")
+            ttk.Radiobutton(box, text="เฉพาะช่วง:", value="range", variable=mode_var, command=self._redraw_timeline).grid(row=2, column=0, columnspan=4, sticky="w")
+            self._time_row(box, 3, "เริ่ม", v_start)
+            self._time_row(box, 4, "สิ้นสุด", v_end)
+            return box
+        rec_box("วิดีโอปกติ (ข้างทาง)", self.rec_mode, self.r_start, self.r_end)
+        rec_box("วิดีโอ X–Y (ผังเมตร)", self.xy_mode, self.xy_start, self.xy_end)
+        rec_box("วิดีโอ X–Y บนภาพโดรน", self.drone_mode, self.drone_start, self.drone_end)
 
-        self.timeline = tk.Canvas(self.top, width=self.SHOW_W, height=26, bg="#dddddd", highlightthickness=0)
+        self.timeline = tk.Canvas(self.top, width=self.SHOW_W, height=44, bg="#dddddd", highlightthickness=0)
         self.timeline.grid(row=5, column=0, columnspan=2, padx=8, pady=(0, 2))
-        ttk.Label(self.top, text="แถบเวลา: สีเทา = ทั้งคลิป · ฟ้า = ช่วงวิเคราะห์ · แดง = ช่วงบันทึก · ขีดดำ = ตำแหน่งปัจจุบัน",
+        ttk.Label(self.top, text="แถบเวลา: ฟ้า = ช่วงวิเคราะห์ · แดง = วิดีโอปกติ · เขียว = X–Y · ส้ม = X–Y บนภาพโดรน · ขีดดำ = ตำแหน่งปัจจุบัน",
                   foreground="#666666").grid(row=6, column=0, columnspan=2)
         btns = ttk.Frame(self.top)
         btns.grid(row=7, column=0, columnspan=2, pady=8)
@@ -2356,7 +2384,7 @@ class ClipPlayerDialog:
         self.ok_button.pack(side="left", padx=6)
         ttk.Button(btns, text="ยกเลิก (ไม่บันทึก)", width=18, command=self.cancel).pack(side="left", padx=6)
 
-        for var in (self.a_start, self.a_end, self.r_start, self.r_end):
+        for var in (self.a_start, self.a_end, self.r_start, self.r_end, self.xy_start, self.xy_end, self.drone_start, self.drone_end):
             var.trace_add("write", lambda *_: self._redraw_timeline())
         self.top.bind("<Left>", lambda e: self.step(-1))
         self.top.bind("<Right>", lambda e: self.step(1))
@@ -2453,16 +2481,18 @@ class ClipPlayerDialog:
         a1 = self._seconds(self.a_end.get())
         a0 = 0.0 if a0 is None else a0
         a1 = self.duration if a1 is None else a1
-        c.create_rectangle(x(a0), 3, x(a1), 13, fill="#4a90e2", outline="")
-        mode = self.rec_mode.get()
-        if mode != "none":
-            r0, r1 = a0, a1
-            if mode == "range":
-                v0, v1 = self._seconds(self.r_start.get()), self._seconds(self.r_end.get())
-                r0 = a0 if v0 is None else max(a0, v0)
-                r1 = a1 if v1 is None else min(a1, v1)
-            c.create_rectangle(x(r0), 14, x(r1), 23, fill="#d9534f", outline="")
-        c.create_line(x(self.current_time()), 0, x(self.current_time()), 26, fill="black", width=2)
+        c.create_rectangle(x(a0), 3, x(a1), 12, fill="#4a90e2", outline="")
+        for k, (mode_var, v_start, v_end, color) in enumerate(((self.rec_mode, self.r_start, self.r_end, "#d9534f"), (self.xy_mode, self.xy_start, self.xy_end, "#3c9d4a"),
+                                                                 (self.drone_mode, self.drone_start, self.drone_end, "#f0ad4e"))):
+            mode = mode_var.get()
+            if mode != "none":
+                r0, r1 = a0, a1
+                if mode == "range":
+                    q0, q1 = self._seconds(v_start.get()), self._seconds(v_end.get())
+                    r0 = a0 if q0 is None else max(a0, q0)
+                    r1 = a1 if q1 is None else min(a1, q1)
+                c.create_rectangle(x(r0), 14 + k * 10, x(r1), 22 + k * 10, fill=color, outline="")
+        c.create_line(x(self.current_time()), 0, x(self.current_time()), 44, fill="black", width=2)
 
     # ---- result ----
     def _validated(self):
@@ -2479,6 +2509,10 @@ class ClipPlayerDialog:
             raise ValueError("เวลาสิ้นสุดวิเคราะห์ต้องมากกว่าเวลาเริ่ม")
         if self.rec_mode.get() == "range" and r0 is not None and r1 is not None and r1 <= r0:
             raise ValueError("เวลาสิ้นสุดบันทึกต้องมากกว่าเวลาเริ่ม")
+        for name, mode_var, v_start, v_end in (("X–Y", self.xy_mode, self.xy_start, self.xy_end), ("X–Y บนภาพโดรน", self.drone_mode, self.drone_start, self.drone_end)):
+            q0, q1 = get(v_start, f"เริ่มบันทึก {name}"), get(v_end, f"สิ้นสุดบันทึก {name}")
+            if mode_var.get() == "range" and q0 is not None and q1 is not None and q1 <= q0:
+                raise ValueError(f"เวลาสิ้นสุดบันทึก {name} ต้องมากกว่าเวลาเริ่ม")
         return a0, a1, r0, r1
 
     def apply(self):
@@ -2494,6 +2528,12 @@ class ClipPlayerDialog:
             "save_video": mode != "none",
             "record_start_s": self.r_start.get().strip() if mode == "range" else "",
             "record_end_s": self.r_end.get().strip() if mode == "range" else "",
+            "xy_video": self.xy_mode.get() != "none",
+            "xy_start_s": self.xy_start.get().strip() if self.xy_mode.get() == "range" else "",
+            "xy_end_s": self.xy_end.get().strip() if self.xy_mode.get() == "range" else "",
+            "drone_video": self.drone_mode.get() != "none",
+            "drone_start_s": self.drone_start.get().strip() if self.drone_mode.get() == "range" else "",
+            "drone_end_s": self.drone_end.get().strip() if self.drone_mode.get() == "range" else "",
         }
         self.close()
         return True
@@ -3804,8 +3844,9 @@ class ClipListPanel(ttk.Frame):
         ttk.Button(bar, text="บันทึกรายการ…", command=self.save_plan).pack(side="right", padx=2)
         ttk.Button(bar, text="โหลดรายการ…", command=self.load_plan).pack(side="right", padx=2)
 
-        self.tree = ttk.Treeview(self, columns=("clip", "analysis", "record", "chain"), show="headings", height=9, selectmode="extended")
-        for col, text, width in (("clip", "คลิป (โฟลเดอร์ในผลลัพธ์ / ไฟล์)", 420), ("analysis", "ช่วงที่วิเคราะห์", 140), ("record", "บันทึกวิดีโอ", 170), ("chain", "ต่อเนื่อง", 130)):
+        self.tree = ttk.Treeview(self, columns=("clip", "analysis", "record", "xy", "drone", "chain"), show="headings", height=9, selectmode="extended")
+        for col, text, width in (("clip", "คลิป (โฟลเดอร์ในผลลัพธ์ / ไฟล์)", 330), ("analysis", "ช่วงที่วิเคราะห์", 120), ("record", "วิดีโอปกติ", 130),
+                                 ("xy", "วิดีโอ X–Y", 130), ("drone", "X–Y บนภาพโดรน", 130), ("chain", "ต่อเนื่อง", 110)):
             self.tree.heading(col, text=text)
             self.tree.column(col, width=width, anchor="w")
         self.tree.grid(row=1, column=0, sticky="nsew")
@@ -3819,8 +3860,8 @@ class ClipListPanel(ttk.Frame):
         ttk.Button(act, text="ต่อจากคลิปก่อน (ติ๊ก/เอาออก)", command=self.toggle_continue).pack(side="left", padx=2)
         ttk.Button(act, text="ลบที่เลือก", command=self.remove_selected).pack(side="left", padx=2)
         ttk.Button(act, text="ล้างรายการ", command=self.clear).pack(side="left", padx=2)
-        ttk.Button(act, text="ทุกคลิป: ไม่บันทึกวิดีโอ", command=lambda: self.set_all_record(False)).pack(side="right", padx=2)
-        ttk.Button(act, text="ทุกคลิป: บันทึกตลอดช่วงที่วิเคราะห์", command=lambda: self.set_all_record(True)).pack(side="right", padx=2)
+        ttk.Button(act, text="ทุกคลิป: ไม่บันทึกวิดีโอ (ทั้ง 3)", command=lambda: self.set_all_record(False, ("save_video", "xy_video", "drone_video"))).pack(side="right", padx=2)
+        ttk.Button(act, text="ทุกคลิป: บันทึกตลอดช่วงที่วิเคราะห์ (ทั้ง 3)", command=lambda: self.set_all_record(True, ("save_video", "xy_video", "drone_video"))).pack(side="right", padx=2)
 
         out = ttk.Frame(self)
         out.grid(row=3, column=0, sticky="ew", pady=(6, 0))
@@ -3848,7 +3889,8 @@ class ClipListPanel(ttk.Frame):
 
     def _new_clip(self, video, rel_dir):
         return {"video": video, "rel_dir": rel_dir, "analysis_start_s": "", "analysis_end_s": "",
-                "save_video": False, "record_start_s": "", "record_end_s": "", "continues_previous": False}     # new clips: no result video (faster, smaller)
+                "save_video": False, "record_start_s": "", "record_end_s": "", "continues_previous": False,     # new clips: no roadside result video (faster, smaller)
+                "xy_video": True, "xy_start_s": "", "xy_end_s": "", "drone_video": False, "drone_start_s": "", "drone_end_s": ""}
 
     def add_videos(self, found):
         have = {c["video"] for c in self.clips}
@@ -3887,10 +3929,10 @@ class ClipListPanel(ttk.Frame):
     def refresh(self):
         self.tree.delete(*self.tree.get_children())
         for i, c in enumerate(self.clips):
-            ana, rec = self.bt.clip_label(c)
+            ana, rec, xy, dr = self.bt.clip_labels(c)
             cont = bool(c.get("continues_previous")) and i > 0
             name = "/".join(x for x in (c.get("rel_dir", ""), os.path.basename(c["video"])) if x)
-            self.tree.insert("", "end", iid=str(i), values=(name, ana, rec, "↳ ต่อจากคลิปก่อน" if cont else ""))
+            self.tree.insert("", "end", iid=str(i), values=(name, ana, rec, xy, dr, "↳ ต่อจากคลิปก่อน" if cont else ""))
         if self.clips:
             self.app.video_var.set(self.clips[0]["video"])
         self.app.refresh_checklist()
@@ -3925,11 +3967,14 @@ class ClipListPanel(ttk.Frame):
         self.refresh()
         self.tree.selection_set([str(i) for i in sel])
 
-    def set_all_record(self, on):
+    def set_all_record(self, on, which=("save_video",)):
+        """Every clip: record (the whole analysed part) / do not record the videos named in `which` (clip keys save_video / xy_video / drone_video)."""
+        ranges = {"save_video": ("record_start_s", "record_end_s"), "xy_video": ("xy_start_s", "xy_end_s"), "drone_video": ("drone_start_s", "drone_end_s")}
         for c in self.clips:
-            c["save_video"] = bool(on)
-            if not on:
-                c["record_start_s"] = c["record_end_s"] = ""
+            for key in which:
+                c[key] = bool(on)
+                if not on:
+                    c[ranges[key][0]] = c[ranges[key][1]] = ""
         self.refresh()
 
     # ---- list file ----
@@ -4135,6 +4180,9 @@ class Run1App:
         self.show_info_text_var = tk.BooleanVar(value=DEFAULT_SETTINGS["show_info_text"])
         self.xy_vars = {key: (tk.StringVar(value=DEFAULT_SETTINGS[key]) if isinstance(DEFAULT_SETTINGS[key], str) else tk.BooleanVar(value=DEFAULT_SETTINGS[key]))
                         for key in XY_DISPLAY_KEYS}
+        self.dr_vars = {key: (tk.StringVar(value=DEFAULT_SETTINGS[key]) if isinstance(DEFAULT_SETTINGS[key], str) else tk.BooleanVar(value=DEFAULT_SETTINGS[key]))
+                        for key in DR_DISPLAY_KEYS}
+        self.outside_zone_dr_var = tk.StringVar(value=DEFAULT_SETTINGS["outside_zone_dr"])
 
 
         # ========================================================
@@ -4166,6 +4214,7 @@ class Run1App:
         self.run3_lateral_axis_angle_var = tk.StringVar(value=RUN3_DEFAULTS["lateral_axis_angle_deg"])
         self.run3_lc_heading_window_var = tk.StringVar(value=RUN3_DEFAULTS["lc_heading_window_s"])
         self.run3_topview_video_var = tk.BooleanVar(value=RUN3_DEFAULTS["topview_video"])
+        self.run3_drone_video_var = tk.BooleanVar(value=RUN3_DEFAULTS["drone_video"])
         self.run3_lc_along_limit_var = tk.StringVar(value=RUN3_DEFAULTS["lc_along_limit_m"])
         self.run3_lc_max_lateral_var = tk.StringVar(value=RUN3_DEFAULTS["lc_max_lateral_m"])
         self.run3_lc_motorcycle_pairs_only_var = tk.BooleanVar(value=RUN3_DEFAULTS["lc_motorcycle_pairs_only"])
@@ -4205,6 +4254,7 @@ class Run1App:
         self.run3_cg_by_lag_var = tk.BooleanVar(value=RUN3_DEFAULTS["critical_gap_by_lag_class"])
         self.run3_cg_min_drivers_var = tk.StringVar(value=RUN3_DEFAULTS["critical_gap_min_drivers"])
         self.run3_pet_show_xy_var = tk.BooleanVar(value=RUN3_DEFAULTS["pet_show_point_xy"])
+        self.run3_pet_show_drone_var = tk.BooleanVar(value=RUN3_DEFAULTS["pet_show_point_drone"])
         self.run3_pet_show_video_var = tk.BooleanVar(value=RUN3_DEFAULTS["pet_show_point_video"])
         self.run3_ttc_max_record_var = tk.StringVar(value=RUN3_DEFAULTS["ttc_max_record_s"])
         self.run3_ttc_velocity_window_var = tk.StringVar(value=RUN3_DEFAULTS["ttc_velocity_window_s"])
@@ -4214,6 +4264,7 @@ class Run1App:
         self.run3_ttc_method_var = tk.StringVar(value=RUN3_DEFAULTS["ttc_method"])
         self.run3_ttc_miss_margin_var = tk.StringVar(value=RUN3_DEFAULTS["ttc_miss_margin_m"])
         self.run3_ttc_show_xy_var = tk.BooleanVar(value=RUN3_DEFAULTS["ttc_show_boxes_xy"])
+        self.run3_ttc_show_drone_var = tk.BooleanVar(value=RUN3_DEFAULTS["ttc_show_boxes_drone"])
         self.run3_ttc_show_video_var = tk.BooleanVar(value=RUN3_DEFAULTS["ttc_show_boxes_video"])
         self.run3_ttc_min_rel_speed_var = tk.StringVar(value=RUN3_DEFAULTS["ttc_min_rel_speed_ms"])
         self.run3_ttc_pair_radius_var = tk.StringVar(value=RUN3_DEFAULTS["ttc_pair_radius_m"])
@@ -4453,13 +4504,14 @@ class Run1App:
         # one row per thing that can be drawn, one column per video: every switch of the normal video has its twin for the X-Y video
         ttk.Label(box, text="สิ่งที่วาด (ติ๊ก = แสดง)", font=("TkDefaultFont", 9, "bold")).grid(row=2, column=0, sticky="w", pady=(0, 3))
         ttk.Label(box, text="วิดีโอปกติ (ข้างทาง)", font=("TkDefaultFont", 9, "bold")).grid(row=2, column=1, sticky="w", padx=(0, 24))
-        ttk.Label(box, text="วิดีโอ X–Y (ผังเมตร)", font=("TkDefaultFont", 9, "bold")).grid(row=2, column=2, sticky="w")
+        ttk.Label(box, text="วิดีโอ X–Y (ผังเมตร)", font=("TkDefaultFont", 9, "bold")).grid(row=2, column=2, sticky="w", padx=(0, 24))
+        ttk.Label(box, text="วิดีโอ X–Y บนภาพโดรน", font=("TkDefaultFont", 9, "bold")).grid(row=2, column=3, sticky="w")
         OUTSIDE = {"dot": "แสดงเฉพาะจุด (กรอบ ป้าย เส้นทางซ่อน)", "hide": "ซ่อนทั้งหมด (ไม่เห็นรถนอกโซนเลย)", "show": "แสดงเต็ม (กรอบ ป้าย เส้นทาง จุด)"}
         row = [3]
 
         def cell(col, r, items=(), spin=None, text=None, combo=None):
             fr = ttk.Frame(box)
-            fr.grid(row=r, column=col, sticky="w", padx=(0, 14 if col == 1 else 0), pady=2)
+            fr.grid(row=r, column=col, sticky="w", padx=(0, 14 if col in (1, 2) else 0), pady=2)
             for label, var in items:
                 ttk.Checkbutton(fr, text=label, variable=var).pack(side="left", padx=(0, 10))
             if spin is not None:
@@ -4475,14 +4527,33 @@ class Run1App:
                 cb.bind("<<ComboboxSelected>>", lambda e, v=combo, sv=shown: v.set(next((k for k, t in OUTSIDE.items() if t == sv.get()), "dot")))
                 combo.trace_add("write", lambda *_, v=combo, sv=shown: sv.set(OUTSIDE.get(v.get(), OUTSIDE["dot"])))
 
-        def trow(label, normal, xy):
+        # the third column (X-Y on the drone picture) has the same rows as the X-Y column: each variable of the X-Y column has its twin there
+        twin = {id(v): self.dr_vars["dr_" + k[3:]] for k, v in xyv.items()}
+        twin[id(self.outside_zone_xy_var)] = self.outside_zone_dr_var
+        twin[id(self.run3_ttc_show_xy_var)] = self.run3_ttc_show_drone_var
+        twin[id(self.run3_pet_show_xy_var)] = self.run3_pet_show_drone_var
+
+        def drone_of(xy):
+            out = dict(xy)
+            if "items" in out:
+                out["items"] = [(t, twin.get(id(v), v)) for t, v in out["items"]]
+            if "spin" in out:
+                lab, var, lo, hi, inc = out["spin"]
+                out["spin"] = (lab, twin.get(id(var), var), lo, hi, inc)
+            if "combo" in out:
+                out["combo"] = twin.get(id(out["combo"]), out["combo"])
+            return out
+
+        def trow(label, normal, xy, drone="same"):
             r = row[0]
             ttk.Label(box, text=label).grid(row=r, column=0, sticky="w", pady=2)
             cell(1, r, **normal)
             cell(2, r, **xy)
+            cell(3, r, **(drone_of(xy) if drone == "same" else drone))
             row[0] += 1
 
-        trow("สร้างวิดีโอ", dict(text="เลือกต่อคลิปในรายการด้านบน"), dict(items=[("สร้าง Tracking_Topview.mp4", self.run3_topview_video_var)]))
+        trow("สร้างวิดีโอ", dict(text="เลือกต่อคลิปในรายการด้านบน"), dict(text="เลือกต่อคลิปในรายการด้านบน"),
+             dict(text="เลือกต่อคลิปในรายการด้านบน (ต้อง \"จัดแนว…\" กับภาพโดรนไว้ก่อน)"))
         trow("เส้นทางรถ (Trajectory)", dict(items=[("แสดง", self.draw_trail_var)], spin=("ความยาว", self.trail_length_var, 1, 300, 1)),
              dict(items=[("แสดง", xyv["xy_draw_trail"])], spin=("ความยาว", xyv["xy_trail_length"], 1, 300, 1)))
         trow("Zone", dict(items=[("กรอบ", self.show_zone_boundary_var), ("ชื่อ", self.show_zone_label_var), ("คำว่า Zone", self.show_zone_label_prefix_var)]),
@@ -4500,7 +4571,7 @@ class Run1App:
                                               ("Zone", self.show_prefix_zone_var), ("Speed", self.show_prefix_speed_var)]),
              dict(items=[("ID", xyv["xy_show_prefix_id"]), ("Class", xyv["xy_show_prefix_class"]), ("Conf", xyv["xy_show_prefix_conf"]),
                          ("Zone", xyv["xy_show_prefix_zone"]), ("Speed", xyv["xy_show_prefix_speed"])]))
-        trow("กรอบวัตถุ (bbox)", dict(items=[("แสดง", self.show_bbox_var)]), dict(text="— (ผังเมตรไม่มีกรอบภาพ ดูสี่เหลี่ยมรถของ TTC)"))
+        trow("กรอบวัตถุ (bbox)", dict(items=[("แสดง", self.show_bbox_var)]), dict(text="— (ผังเมตรไม่มีกรอบภาพ ดูสี่เหลี่ยมรถของ TTC)"), dict(text="—"))
         trow("เส้นอ้างอิง (Gap Acceptance / Headway)", dict(items=[("แสดง (เส้นที่ใช้จริง: Line ที่วาดหรือขอบโซนที่ติดกัน)", self.show_ref_lines_var)]),
              dict(items=[("แสดง", xyv["xy_show_ref_lines"])]))
         trow("จุดที่คาดว่าจะชน (TTC)", dict(items=[("แสดง (วาดเพิ่มหลังคำนวณ TTC เสร็จ ใช้เวลาเพิ่ม)", self.run3_ttc_show_video_var)]),
@@ -4508,9 +4579,9 @@ class Run1App:
         trow("จุดตัดของเส้นทาง (PET)", dict(items=[("แสดง (วาดเพิ่มหลังคำนวณ PET เสร็จ ใช้เวลาเพิ่ม)", self.run3_pet_show_video_var)]),
              dict(items=[("แสดง (กากบาทสีม่วง = จุดที่เส้นทางจริงของสองคันตัดกัน + ค่า PET)", self.run3_pet_show_xy_var)]))
         trow("ข้อความที่มุม/ล่างภาพ", dict(items=[("Frame / FPS / เวลา / ETA", self.show_info_text_var)]), dict(items=[("t = … s  frame …", xyv["xy_show_time"])]))
-        trow("ตารางเมตร", dict(text="—"), dict(items=[("เส้นตารางและตัวเลข", xyv["xy_show_grid"])]))
+        trow("ตารางเมตร", dict(text="—"), dict(items=[("เส้นตารางและตัวเลข", xyv["xy_show_grid"])]), dict(text="— (ใช้ภาพโดรนเป็นพื้น)"))
         ttk.Label(box, text="จุดชน/สี่เหลี่ยมของ TTC ต้องเปิดตัวชี้วัด TTC;  แต่ละวิดีโอตั้งได้เป็นอิสระ (เช่น วิดีโอปกติโชว์ Speed แต่ X–Y ไม่โชว์)", foreground=gray).grid(
-            row=row[0], column=0, columnspan=3, sticky="w", pady=(4, 0))
+            row=row[0], column=0, columnspan=4, sticky="w", pady=(4, 0))
 
     # ---------------- tab 2: site ----------------
     def build_site_tab(self):
@@ -6181,6 +6252,7 @@ class Run1App:
             "show_ref_lines": self.show_ref_lines_var.get(),
             "outside_zone_normal": self.outside_zone_normal_var.get(),
             "outside_zone_xy": self.outside_zone_xy_var.get(),
+            "outside_zone_dr": self.outside_zone_dr_var.get(),
             "show_prefix_id": self.show_prefix_id_var.get(),
             "show_prefix_class": self.show_prefix_class_var.get(),
             "show_prefix_conf": self.show_prefix_conf_var.get(),
@@ -6188,6 +6260,7 @@ class Run1App:
             "show_prefix_speed": self.show_prefix_speed_var.get(),
             "show_info_text": self.show_info_text_var.get(),
             **{key: var.get() for key, var in self.xy_vars.items()},
+            **{key: var.get() for key, var in self.dr_vars.items()},
             "run3": {
                 "site_id": self.run3_site_id_var.get(),
                 "speed_enabled": self.run3_speed_enabled_var.get(),
@@ -6215,6 +6288,7 @@ class Run1App:
                 "lateral_axis_angle_deg": self.run3_lateral_axis_angle_var.get(),
                 "lc_heading_window_s": self.run3_lc_heading_window_var.get(),
                 "topview_video": self.run3_topview_video_var.get(),
+                "drone_video": self.run3_drone_video_var.get(),
                 "lc_along_limit_m": self.run3_lc_along_limit_var.get(),
                 "lc_max_lateral_m": self.run3_lc_max_lateral_var.get(),
                 "lc_motorcycle_pairs_only": self.run3_lc_motorcycle_pairs_only_var.get(),
@@ -6249,6 +6323,7 @@ class Run1App:
                 "critical_gap_min_drivers": self.run3_cg_min_drivers_var.get(),
                 "headway_line_mapping": self.run3_headway_text.get("1.0", "end-1c") if hasattr(self, "run3_headway_text") else self.run3_headway_mapping_text,
                 "pet_show_point_xy": self.run3_pet_show_xy_var.get(),
+                "pet_show_point_drone": self.run3_pet_show_drone_var.get(),
                 "pet_show_point_video": self.run3_pet_show_video_var.get(),
                 "ttc_max_record_s": self.run3_ttc_max_record_var.get(),
                 "ttc_velocity_window_s": self.run3_ttc_velocity_window_var.get(),
@@ -6258,6 +6333,7 @@ class Run1App:
                 "ttc_method": self.run3_ttc_method_var.get(),
                 "ttc_miss_margin_m": self.run3_ttc_miss_margin_var.get(),
                 "ttc_show_boxes_xy": self.run3_ttc_show_xy_var.get(),
+                "ttc_show_boxes_drone": self.run3_ttc_show_drone_var.get(),
                 "ttc_show_boxes_video": self.run3_ttc_show_video_var.get(),
                 "ttc_min_rel_speed_ms": self.run3_ttc_min_rel_speed_var.get(),
                 "ttc_pair_radius_m": self.run3_ttc_pair_radius_var.get(),
@@ -6365,6 +6441,7 @@ class Run1App:
             ("show_ref_lines", self.show_ref_lines_var),
             ("outside_zone_normal", self.outside_zone_normal_var),
             ("outside_zone_xy", self.outside_zone_xy_var),
+            ("outside_zone_dr", self.outside_zone_dr_var),
             ("show_prefix_id", self.show_prefix_id_var),
             ("show_prefix_class", self.show_prefix_class_var),
             ("show_prefix_conf", self.show_prefix_conf_var),
@@ -6372,6 +6449,7 @@ class Run1App:
             ("show_prefix_speed", self.show_prefix_speed_var),
             ("show_info_text", self.show_info_text_var),
             *[(key, var) for key, var in self.xy_vars.items()],
+            *[(key, var) for key, var in self.dr_vars.items()],
         ]
 
         for key, variable in pairs:
@@ -6380,6 +6458,14 @@ class Run1App:
         for xy_key, normal_key in XY_FROM_NORMAL.items():            # an older settings file: the X-Y video shows what the normal video showed
             if xy_key not in settings and normal_key in settings:
                 self.xy_vars[xy_key].set(settings[normal_key])
+        for dr_key, xy_key in DR_FROM_XY.items():                    # a file written before the third video: it shows what the X-Y video showed
+            if dr_key not in settings:
+                if xy_key in settings:
+                    self.dr_vars[dr_key].set(settings[xy_key])
+                elif XY_FROM_NORMAL.get(xy_key) in settings:
+                    self.dr_vars[dr_key].set(settings[XY_FROM_NORMAL[xy_key]])
+        if "outside_zone_dr" not in settings and "outside_zone_xy" in settings:
+            self.outside_zone_dr_var.set(settings["outside_zone_xy"])
 
         run3 = settings.get("run3", {})
         if isinstance(run3, dict):
@@ -6428,6 +6514,7 @@ class Run1App:
                 ("critical_gap_by_lag_class", self.run3_cg_by_lag_var),
                 ("critical_gap_min_drivers", self.run3_cg_min_drivers_var),
                 ("pet_show_point_xy", self.run3_pet_show_xy_var),
+                ("pet_show_point_drone", self.run3_pet_show_drone_var),
                 ("pet_show_point_video", self.run3_pet_show_video_var),
                 ("ttc_max_record_s", self.run3_ttc_max_record_var),
                 ("ttc_velocity_window_s", self.run3_ttc_velocity_window_var),
@@ -6437,6 +6524,7 @@ class Run1App:
                 ("ttc_method", self.run3_ttc_method_var),
                 ("ttc_miss_margin_m", self.run3_ttc_miss_margin_var),
                 ("ttc_show_boxes_xy", self.run3_ttc_show_xy_var),
+                ("ttc_show_boxes_drone", self.run3_ttc_show_drone_var),
                 ("ttc_show_boxes_video", self.run3_ttc_show_video_var),
                 ("ttc_min_rel_speed_ms", self.run3_ttc_min_rel_speed_var),
                 ("ttc_pair_radius_m", self.run3_ttc_pair_radius_var),
@@ -6451,6 +6539,7 @@ class Run1App:
                 ("lateral_axis_angle_deg", self.run3_lateral_axis_angle_var),
                 ("lc_heading_window_s", self.run3_lc_heading_window_var),
                 ("topview_video", self.run3_topview_video_var),
+                ("drone_video", self.run3_drone_video_var),
                 ("lc_along_limit_m", self.run3_lc_along_limit_var),
                 ("lc_max_lateral_m", self.run3_lc_max_lateral_var),
                 ("lc_motorcycle_pairs_only", self.run3_lc_motorcycle_pairs_only_var),
@@ -7268,6 +7357,15 @@ class Run1App:
                     messagebox.showerror("ไฟล์โซนใหม่", str(exc))
         return ZoneAlignEditor(self, video, data, cfg, on_saved=saved)
 
+    def _run3_align_drone_source(self):
+        """(path, frame) of the drone / top-view picture saved with the Align (the background of the X-Y-on-drone video), or None."""
+        try:
+            d = (json.loads(self.run3_align_var.get() or "{}").get("drone") or {})
+            path = str(d.get("path", "") or "")
+            return (path, d.get("frame") or None) if path else None
+        except Exception:
+            return None
+
     def _run3_align_cfg(self, silent=False, force=False):
         """The usable Align config (see align_build) when 'use the Align result' is ticked, else None. The pairs were clicked on a frame of
         a given size; for a video of another size the video points are scaled."""
@@ -7563,6 +7661,12 @@ class Run1App:
                     parts.append("mapped Line is not drawn/loaded in the Zone/Line file: " + ", ".join(undrawn))
                 if parts:
                     warnings.append("Gap Acceptance: " + "; ".join(parts) + "." + fallback)
+        # the X-Y-on-drone video needs the Align (video pixels -> the drone picture) and the picture file
+        clips = getattr(getattr(self, "clips_panel", None), "clips", []) or []
+        if any(cl.get("drone_video") for cl in clips):
+            src = self._run3_align_drone_source()
+            if self._run3_align_cfg(silent=True) is None or not src or not os.path.isfile(src[0]):
+                warnings.append("วิดีโอ X–Y บนภาพโดรน: ต้องติ๊ก \"ใช้ผลการจัดแนวแทน PPM / Perspective\" และมีภาพโดรนที่ใช้จัดแนวอยู่ในเครื่อง (ขั้น ② ทางแยก → จัดแนว…) มิฉะนั้นจะไม่สร้างวิดีโอนี้")
         return warnings
 
     # ========================================================
@@ -9729,6 +9833,8 @@ class Run1App:
             "hold_min_duration_s": num(self.run3_hold_min_duration_var, GAP_HOLD_MIN_S),
             "lc_heading_window_s": num(self.run3_lc_heading_window_var, 0.5),
             "topview_video": bool(self.run3_topview_video_var.get()),
+            "drone_video": bool(self.run3_drone_video_var.get()),
+            "align_drone": self._run3_align_drone_source(),
             "lc_along_limit_m": max(0.0, num(self.run3_lc_along_limit_var, 0.0) or 0.0),
             "lc_max_lateral_m": max(0.0, num(self.run3_lc_max_lateral_var, 3.5) or 0.0),
             "lc_motorcycle_pairs_only": bool(self.run3_lc_motorcycle_pairs_only_var.get()),
@@ -9752,6 +9858,7 @@ class Run1App:
             "critical_gap_min_drivers": num(self.run3_cg_min_drivers_var, None),
             "headway_mapping_text": (self.run3_headway_text.get("1.0", "end-1c") if hasattr(self, "run3_headway_text") else self.run3_headway_mapping_text),
             "pet_show_point_xy": bool(self.run3_pet_show_xy_var.get()),
+            "pet_show_point_drone": bool(self.run3_pet_show_drone_var.get()),
             "pet_show_point_video": bool(self.run3_pet_show_video_var.get()),
             "pet_min_speed_kmh": pet_min_speed if (pet_min_speed is not None and pet_min_speed > 0) else None,
             "ttc_max_record_s": (None if not str(self.run3_ttc_max_record_var.get()).strip() else num(self.run3_ttc_max_record_var, 3.0)),
@@ -9766,6 +9873,7 @@ class Run1App:
             "ttc_method": "box" if str(self.run3_ttc_method_var.get()).strip() == "box" else "point",
             "ttc_miss_margin_m": num(self.run3_ttc_miss_margin_var, 0.5),
             "ttc_show_boxes_xy": bool(self.run3_ttc_show_xy_var.get()),
+            "ttc_show_boxes_drone": bool(self.run3_ttc_show_drone_var.get()),
             "ttc_show_boxes_video": bool(self.run3_ttc_show_video_var.get()),
             "ttc_min_rel_speed_ms": num(self.run3_ttc_min_rel_speed_var, 0.5),
             "ttc_pair_radius_m": num(self.run3_ttc_pair_radius_var, 20.0),
@@ -10031,17 +10139,28 @@ class Run1App:
 
     TOPVIEW_PALETTE = [(255, 160, 40), (80, 200, 80), (60, 60, 255), (200, 120, 255), (0, 200, 255), (255, 255, 80), (180, 180, 255), (60, 220, 160)]
 
-    def _run3_topview_scene(self, tracks, c, video_path, display, max_px=1280, allow_empty=False):
+    def _run3_drone_picture(self, source):
+        """The drone / top-view picture of the Align, (path, frame) -> BGR array or None (cached)."""
+        if not source:
+            return None
+        cache = getattr(self, "_drone_pic_cache", None)
+        if cache is None or cache[0] != tuple(source):
+            cache = (tuple(source), read_picture_any(source[0], source[1]))
+            self._drone_pic_cache = cache
+        return cache[1]
+
+    def _run3_topview_scene(self, tracks, c, video_path, display, max_px=1280, allow_empty=False, drone=False):
         """What the X-Y picture and the X-Y video share: the canvas (same shape as the video), the metre grid, the zones (drawn like in the
         normal video: same switches, same opacity) and the observed points per frame. Returns a dict or None when there is nothing to draw."""
         dsp = dict(display or {})
+        pref = "dr_" if drone else "xy_"                                  # the X-Y video / the X-Y-on-drone video each have their own switches
 
         def flag(key, default):
-            v = dsp.get("xy_" + key, dsp.get(key, default))                # the X-Y twin first, then the normal-video switch of the same name
+            v = dsp.get(pref + key, dsp.get("xy_" + key, dsp.get(key, default)))      # its own twin first, then the X-Y one, then the normal-video switch of the same name
             return v if isinstance(v, bool) else str(v).strip().lower() in ("1", "true", "yes")
 
         try:
-            zone_alpha = max(0.0, min(1.0, float(dsp.get("xy_zone_overlay_opacity", dsp.get("zone_overlay_opacity", 45))) / 100.0))
+            zone_alpha = max(0.0, min(1.0, float(dsp.get(pref + "zone_overlay_opacity", dsp.get("xy_zone_overlay_opacity", dsp.get("zone_overlay_opacity", 45)))) / 100.0))
         except (TypeError, ValueError):
             zone_alpha = 0.45
         per_frame = defaultdict(list)
@@ -10062,38 +10181,53 @@ class Run1App:
             all_pts.extend(map(tuple, zone_m[-1][1]))
         if not per_frame and not (allow_empty and zone_m):
             return None
-        aspect = None
-        if video_path and os.path.isfile(video_path):
-            cap0 = cv2.VideoCapture(video_path)
-            vw, vh = cap0.get(cv2.CAP_PROP_FRAME_WIDTH), cap0.get(cv2.CAP_PROP_FRAME_HEIGHT)
-            cap0.release()
-            if vw > 0 and vh > 0:
-                aspect = vw / vh
-        # the picture is centred on the study area (the zones, with room around them for vehicles that are about to enter); a vehicle far
-        # away does not move it. Without zones: all the points.
-        zone_pts = [tuple(q) for _z, pts_ in zone_m for q in pts_]
-        cv = topview_canvas(zone_pts, max_px, margin_m=6.0, aspect=aspect) if len(zone_pts) >= 3 else topview_canvas(all_pts, max_px, aspect=aspect)
-        W, H = cv["w"], cv["h"]
-        base = np.full((H, W, 3), 38, np.uint8)
-        step = 5.0 if max(W, H) / cv["scale"] <= 80 else 10.0
-        grid = base.copy()
-        labels = []
-        x = math.ceil(cv["xmin"] / step) * step
-        while (x - cv["xmin"]) * cv["scale"] < W:
-            px = int(round((x - cv["xmin"]) * cv["scale"]))
-            cv2.line(grid, (px, 0), (px, H - 1), (255, 255, 255), 1)
-            labels.append((f"{x:g}", (px + 2, H - 4)))
-            x += step
-        y = math.ceil(cv["ymin"] / step) * step
-        while (y - cv["ymin"]) * cv["scale"] < H:
-            py = int(round((y - cv["ymin"]) * cv["scale"]))
-            cv2.line(grid, (0, py), (W - 1, py), (255, 255, 255), 1)
-            labels.append((f"{y:g}", (2, py - 3)))
-            y += step
-        if flag("show_grid", True):
-            base = cv2.addWeighted(grid, 0.22, base, 0.78, 0)
-            for text_, org_ in labels:
-                cv2.putText(base, text_, org_, cv2.FONT_HERSHEY_SIMPLEX, 0.4, (235, 235, 235), 1, cv2.LINE_AA)
+        if drone:
+            cfg_al, pic = c.get("align"), self._run3_drone_picture(c.get("align_drone"))
+            if cfg_al is None or pic is None:
+                return None                                              # needs the Align (video pixels -> the drone's plane) and its picture
+            f_ = min(1.0, max_px / float(max(pic.shape[:2])))
+            W, H = int(round(pic.shape[1] * f_)), int(round(pic.shape[0] * f_))
+            base = cv2.resize(pic, (W, H), interpolation=cv2.INTER_AREA)
+            cv = {"w": W, "h": H, "scale": None}
+
+            def to_px(pts_m, _cfg=cfg_al, _f=f_):
+                return align_plane_to_drone(_cfg, np.asarray(pts_m, dtype=float).reshape(-1, 2)) * _f
+        else:
+            aspect = None
+            if video_path and os.path.isfile(video_path):
+                cap0 = cv2.VideoCapture(video_path)
+                vw, vh = cap0.get(cv2.CAP_PROP_FRAME_WIDTH), cap0.get(cv2.CAP_PROP_FRAME_HEIGHT)
+                cap0.release()
+                if vw > 0 and vh > 0:
+                    aspect = vw / vh
+            # the picture is centred on the study area (the zones, with room around them for vehicles that are about to enter); a vehicle far
+            # away does not move it. Without zones: all the points.
+            zone_pts = [tuple(q) for _z, pts_ in zone_m for q in pts_]
+            cv = topview_canvas(zone_pts, max_px, margin_m=6.0, aspect=aspect) if len(zone_pts) >= 3 else topview_canvas(all_pts, max_px, aspect=aspect)
+            W, H = cv["w"], cv["h"]
+            base = np.full((H, W, 3), 38, np.uint8)
+
+            def to_px(pts_m, _cv=cv):
+                return topview_px(_cv, pts_m)
+            step = 5.0 if max(W, H) / cv["scale"] <= 80 else 10.0
+            grid = base.copy()
+            labels = []
+            x = math.ceil(cv["xmin"] / step) * step
+            while (x - cv["xmin"]) * cv["scale"] < W:
+                px = int(round((x - cv["xmin"]) * cv["scale"]))
+                cv2.line(grid, (px, 0), (px, H - 1), (255, 255, 255), 1)
+                labels.append((f"{x:g}", (px + 2, H - 4)))
+                x += step
+            y = math.ceil(cv["ymin"] / step) * step
+            while (y - cv["ymin"]) * cv["scale"] < H:
+                py = int(round((y - cv["ymin"]) * cv["scale"]))
+                cv2.line(grid, (0, py), (W - 1, py), (255, 255, 255), 1)
+                labels.append((f"{y:g}", (2, py - 3)))
+                y += step
+            if flag("show_grid", True):
+                base = cv2.addWeighted(grid, 0.22, base, 0.78, 0)
+                for text_, org_ in labels:
+                    cv2.putText(base, text_, org_, cv2.FONT_HERSHEY_SIMPLEX, 0.4, (235, 235, 235), 1, cv2.LINE_AA)
         if flag("show_zone_boundary", True) or flag("show_zone_label", True):
             zlayer = base.copy()
             meta_all = getattr(self, "zone_meta", {})
@@ -10105,7 +10239,7 @@ class Run1App:
                         zcol = (0, 200, 0)
                 except Exception:
                     zcol = (0, 200, 0)
-                q = np.round(topview_px(cv, pts)).astype(np.int32).reshape(-1, 1, 2)
+                q = np.round(to_px(pts)).astype(np.int32).reshape(-1, 1, 2)
                 if flag("show_zone_boundary", True):
                     cv2.polylines(zlayer, [q], True, zcol, 1, cv2.LINE_AA)
                 if flag("show_zone_label", True) and meta.get("show_label", True):
@@ -10116,16 +10250,18 @@ class Run1App:
             base = cv2.addWeighted(zlayer, max(zone_alpha, 0.35), base, 1.0 - max(zone_alpha, 0.35), 0)
         if flag("show_ref_lines", True):                                  # the reference lines of Gap Acceptance / Headway, as in the normal video
             for label, p1, p2 in self._run3_display_ref_lines(c):
-                q = np.round(topview_px(cv, self._run3_to_metric(np.array([p1, p2], dtype=float), c))).astype(int)
+                q = np.round(to_px(self._run3_to_metric(np.array([p1, p2], dtype=float), c))).astype(int)
                 a_, b_ = (int(q[0][0]), int(q[0][1])), (int(q[1][0]), int(q[1][1]))
                 cv2.line(base, a_, b_, (255, 255, 255), 3, cv2.LINE_AA)
                 cv2.circle(base, a_, 5, (255, 255, 255), -1, cv2.LINE_AA)
                 cv2.circle(base, b_, 5, (255, 255, 255), -1, cv2.LINE_AA)
                 cv2.putText(base, label, ((a_[0] + b_[0]) // 2 + 6, max(14, (a_[1] + b_[1]) // 2 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
-        cv2.putText(base, f"X-Y plane in metres (x right, y down) · {cv['scale']:.1f} px/m · {self._run3_calibration_mode(c)}", (6, 16),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1, cv2.LINE_AA)
-        mode = str(dsp.get("outside_zone_xy", "show") or "show")
-        return {"cv": cv, "base": base, "W": W, "H": H, "per_frame": per_frame, "flag": flag, "dsp": dsp, "mode": mode, "zones": bool(zone_m), "zone_m": zone_m}
+        title = (f"X-Y on the drone picture · {self._run3_calibration_mode(c)}" if drone
+                 else f"X-Y plane in metres (x right, y down) · {cv['scale']:.1f} px/m · {self._run3_calibration_mode(c)}")
+        cv2.putText(base, title, (6, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1, cv2.LINE_AA)
+        mode = str((dsp.get("outside_zone_dr", dsp.get("outside_zone_xy", "show")) if drone else dsp.get("outside_zone_xy", "show")) or "show")
+        return {"cv": cv, "base": base, "W": W, "H": H, "per_frame": per_frame, "flag": flag, "dsp": dsp, "mode": mode, "zones": bool(zone_m), "zone_m": zone_m,
+                "to_px": to_px, "pref": pref}
 
     def preview_xy_plane(self):
         """A look at the X-Y plane BEFORE a run: the zones (and the metre grid) drawn with the calibration that is set now (Align / Perspective /
@@ -10216,19 +10352,25 @@ class Run1App:
             f.write(buf.tobytes())
         return out_path
 
-    def _run3_write_topview_video(self, tracks, c, output_dir, video_path=None, max_px=1280, display=None):
+    def _run3_write_topview_video(self, tracks, c, output_dir, video_path=None, max_px=1280, display=None, drone=False):
         """Tracking_Topview.mp4: the X-Y plane in metres, same shape as the video, one picture per processed frame: the zones, every vehicle as
         its REFERENCE POINT (yellow = in a zone, red ring = in none), the labels and the trajectory as set for the normal video
         (ID / Class / Conf / Zone / Speed, with or without their prefix, trajectory length)."""
-        scene = self._run3_topview_scene(tracks, c, video_path, display, max_px)
+        scene = self._run3_topview_scene(tracks, c, video_path, display, max_px, drone=drone)
         if scene is None:
             return None
         cv, base, W, H, per_frame, flag, dsp = scene["cv"], scene["base"], scene["W"], scene["H"], scene["per_frame"], scene["flag"], scene["dsp"]
-        xy_mode, zones_exist = scene["mode"], scene["zones"]
+        xy_mode, zones_exist, to_px, pref = scene["mode"], scene["zones"], scene["to_px"], scene["pref"]
         try:
-            trail_n = max(1, int(float(dsp.get("xy_trail_length", dsp.get("trail_length", 30)))))
+            trail_n = max(1, int(float(dsp.get(pref + "trail_length", dsp.get("xy_trail_length", dsp.get("trail_length", 30))))))
         except (TypeError, ValueError):
             trail_n = 30
+        kind = "drone" if drone else "xy"
+        try:                                                              # the part of the clip to record (blank = the whole analysed part)
+            rec_from = parse_clock_time(str(dsp.get(kind + "_start_s", "") or ""))
+            rec_to = parse_clock_time(str(dsp.get(kind + "_end_s", "") or ""))
+        except Exception:
+            rec_from = rec_to = None
         frames = sorted(per_frame)
         times = sorted({per_frame[f][0][1] for f in frames})
         dts = np.diff(times)
@@ -10236,30 +10378,33 @@ class Run1App:
         # one picture per processed frame, played at the rate the frames were sampled (60 fps video -> 60 fps here),
         # so the Topview video lasts as long as the analysed part of the real video
         fps_out = float(min(120.0, max(1.0, 1.0 / float(np.median(dts))))) if len(dts) else 30.0
-        out_path = os.path.join(output_dir, "Tracking_Topview.mp4")
+        out_name = "Tracking_Topview_Drone.mp4" if drone else "Tracking_Topview.mp4"
+        out_path = os.path.join(output_dir, out_name)
         writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*"mp4v"), fps_out, (W, H))
         if not writer.isOpened():
-            raise RuntimeError("Unable to create Tracking_Topview.mp4")
+            raise RuntimeError("Unable to create " + out_name)
         trails = defaultdict(deque)
         speed_hist = defaultdict(deque)
-        shapes = getattr(self, "_run3_ttc_shapes", None) if (c.get("ttc_enabled") and c.get("ttc_show_boxes_xy")) else None
-        pet_shapes = getattr(self, "_run3_pet_shapes", None) if (c.get("pet_enabled") and c.get("pet_show_point_xy")) else None
+        shapes = getattr(self, "_run3_ttc_shapes", None) if (c.get("ttc_enabled") and c.get("ttc_show_boxes_" + kind)) else None
+        pet_shapes = getattr(self, "_run3_pet_shapes", None) if (c.get("pet_enabled") and c.get("pet_show_point_" + kind)) else None
         try:
             for fr in frames:
-                img = base.copy()
                 now = per_frame[fr][0][1]
+                if (rec_from is not None and now < rec_from) or (rec_to is not None and now > rec_to):
+                    continue                                              # outside the part to record
+                img = base.copy()
                 sh = shapes.get(fr) if shapes else None
                 if sh and (sh["rects"] or sh.get("marks")):
-                    img = self._run3_draw_ttc_boxes(img, sh, lambda q: topview_px(cv, q))
+                    img = self._run3_draw_ttc_boxes(img, sh, to_px)
                 pm = pet_shapes.get(fr) if pet_shapes else None
                 if pm:
-                    img = self._run3_draw_pet_marks(img, pm, lambda q: topview_px(cv, q))
+                    img = self._run3_draw_pet_marks(img, pm, to_px)
                 marks = []
                 for tid, t, m, rec in per_frame[fr]:
                     plan = outside_zone_plan(xy_mode, str(rec.get("zone", "")).strip() != "", zones_exist)
                     if not plan["point"]:
                         continue                                  # outside every zone and set to be hidden
-                    pt = topview_px(cv, [m])[0]
+                    pt = to_px([m])[0]
                     trails[tid].append(tuple(pt))
                     while len(trails[tid]) > trail_n:
                         trails[tid].popleft()
@@ -11883,12 +12028,23 @@ class Run1App:
             topview_rows = self._run3_topview_rows(tracks, c)
             outputs["topview_records"] = write_csv("Detection_Records_Topview.csv", self.TOPVIEW_FIELDS, topview_rows)
             summary["diagnostics"]["topview"] = {"records": len(topview_rows), "calibration_mode": self._run3_calibration_mode(c)}
-            if c.get("topview_video") and topview_rows:
+            want_xy = bool((settings or {}).get("xy_video", c.get("topview_video")))
+            want_drone = bool((settings or {}).get("drone_video", c.get("drone_video")))
+            if want_xy and topview_rows:
                 status("Run 3 — drawing the Topview video...")
                 tv = self._run3_write_topview_video(tracks, c, output_dir, (settings or {}).get("video"), display=settings)
                 if tv:
                     outputs["topview_video"] = tv
                     summary["diagnostics"]["topview"]["video"] = tv
+            if want_drone and topview_rows:
+                status("Run 3 — drawing the X-Y video on the drone picture...")
+                dv = self._run3_write_topview_video(tracks, c, output_dir, (settings or {}).get("video"), display=settings, drone=True)
+                if dv:
+                    outputs["topview_drone_video"] = dv
+                    summary["diagnostics"]["topview"]["drone_video"] = dv
+                else:
+                    summary["diagnostics"]["topview"]["drone_video"] = "not made: needs the Align result (video -> drone picture) with its picture file"
+                    log.warning("X-Y on drone video not made: the Align result or its picture is missing")
             draw_ttc = bool(c.get("ttc_enabled") and c.get("ttc_show_boxes_video"))
             draw_pet = bool(c.get("pet_enabled") and c.get("pet_show_point_video"))
             if draw_ttc or draw_pet:
