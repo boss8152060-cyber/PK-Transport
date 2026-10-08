@@ -420,6 +420,8 @@ DEFAULT_SETTINGS = {
     "show_label_zone": True,
     "show_label_speed": True,
     "show_bbox": True,
+    "box_smooth_pct": "40",                 # the drawn box / trail / reference point of the normal video follow an exponential average of the detections (0 = off, 90 = very steady); display only, nothing recorded changes
+    "zone_confirm_frames": "1",             # a vehicle changes zone only after its point has been in the new zone / in no zone for this many frames in a row (1 = at once; 3 - 5 stops the box blinking on a zone border)
     "show_ref_lines": True,                 # the reference line of every stream Gap Acceptance / Headway uses (drawn Line or shared zone edge); normal video
     "outside_zone_normal": "dot",          # vehicles outside every zone in the normal video: dot (point only) | hide | show
     "outside_zone_xy": "show",              # the same for the X-Y video and picture
@@ -544,6 +546,8 @@ RUN3_DEFAULTS = {
     "critical_gap_by_subject_class": True,   # Critical Gap: one estimate per class of the WAITING driver (off = all classes together)
     "critical_gap_by_lag_class": False,      # ... and per class of the vehicle BEHIND the gap (the one that arrives; the Lag vehicle). Off = not split by it
     "critical_gap_min_drivers": "30",        # Critical_Gap.csv flags a group with fewer drivers having both a rejected and an accepted gap; blank = no flag (30 = a rule of thumb, no source)
+    "traj_smooth_method": "median",        # Run 3: the positions (pixel and metre) are smoothed before every indicator: none / mean / median / median_mean (SMOOTH_METHODS)
+    "traj_smooth_window_s": "0.3",         # ... over this many seconds (centred window; the Detection_Records.csv stays raw)
     "pet_area_shape": "box",               # the conflict area: "box" = where the two vehicle RECTANGLES (class length x width, as TTC) cross (a parallelogram) / "circle" = a circle (W_A + W_B) / 2 around the crossing
     "pet_use_area": True,                  # conflict AREA = circle around the crossing point, radius (W_A + W_B) / 2; off = the crossing point only
     "pet_min_speed_kmh": "",                # a vehicle slower than this while passing the crossing point skips the pair; blank = no limit
@@ -948,6 +952,37 @@ def rect_polygon(center, velocity, size, margin=0.0):
     hl, hw = size[0] / 2.0 + margin, size[1] / 2.0 + margin
     return np.array([(center[0] + sx * hl * h[0] + sy * hw * n[0], center[1] + sx * hl * h[1] + sy * hw * n[1])
                      for sx, sy in ((1, 1), (1, -1), (-1, -1), (-1, 1))])
+
+
+SMOOTH_METHODS = ("none", "mean", "median", "median_mean")
+
+
+def smooth_positions(times, pts, window_s, method="median_mean"):
+    """A vehicle's positions (N x 2) made steadier: every position becomes the median and/or the mean of the positions within +-window_s/2 of its time
+    (a window in SECONDS, so a clip with skipped frames smooths the same way; it shrinks at the two ends). `method`: "none", "mean", "median" (kills one-frame
+    jumps of the box), "median_mean" (the median first, then the mean: also takes out the small wobble). A straight path at constant speed is not changed
+    (except for the shrunk windows at the ends, which are centred on the sample). Returns a new N x 2 array."""
+    P = np.asarray(pts, dtype=float).reshape(-1, 2).copy()
+    T = np.asarray(times, dtype=float)
+    n = len(P)
+    if n < 3 or method == "none" or method not in SMOOTH_METHODS or not window_s or float(window_s) <= 0:
+        return P
+    half = float(window_s) / 2.0
+    lo = np.searchsorted(T, T - half, side="left")
+    hi = np.searchsorted(T, T + half, side="right")
+
+    def window(A, i):
+        # symmetric around the sample: at the ends the window is cut to the shorter side so that the average is not pulled to the inside
+        a, b = lo[i], hi[i]
+        k = min(i - a, b - 1 - i)
+        return A[i - k:i + k + 1]
+    out = P
+    if method in ("median", "median_mean"):
+        out = np.array([np.median(window(P, i), axis=0) for i in range(n)])
+    if method in ("mean", "median_mean"):
+        src = out
+        out = np.array([window(src, i).mean(axis=0) for i in range(n)])
+    return out
 
 
 def footprint_offset(v, size, anchor, right_u=(1.0, 0.0), down_u=(0.0, 1.0)):
@@ -4237,6 +4272,8 @@ class Run1App:
         self.show_label_zone_var = tk.BooleanVar(value=DEFAULT_SETTINGS["show_label_zone"])
         self.show_label_speed_var = tk.BooleanVar(value=DEFAULT_SETTINGS["show_label_speed"])
         self.show_bbox_var = tk.BooleanVar(value=DEFAULT_SETTINGS["show_bbox"])
+        self.box_smooth_pct_var = tk.StringVar(value=DEFAULT_SETTINGS["box_smooth_pct"])
+        self.zone_confirm_frames_var = tk.StringVar(value=DEFAULT_SETTINGS["zone_confirm_frames"])
         self.show_ref_lines_var = tk.BooleanVar(value=DEFAULT_SETTINGS["show_ref_lines"])
         self.outside_zone_normal_var = tk.StringVar(value=DEFAULT_SETTINGS["outside_zone_normal"])
         self.outside_zone_xy_var = tk.StringVar(value=DEFAULT_SETTINGS["outside_zone_xy"])
@@ -4307,6 +4344,8 @@ class Run1App:
         self.run3_write_detail_var = tk.BooleanVar(value=RUN3_DEFAULTS["write_detail_files"])
         self.run3_pet_use_area_var = tk.BooleanVar(value=RUN3_DEFAULTS["pet_use_area"])
         self.run3_pet_area_shape_var = tk.StringVar(value=RUN3_DEFAULTS["pet_area_shape"])
+        self.run3_traj_smooth_method_var = tk.StringVar(value=RUN3_DEFAULTS["traj_smooth_method"])
+        self.run3_traj_smooth_window_var = tk.StringVar(value=RUN3_DEFAULTS["traj_smooth_window_s"])
         self.run3_ttc_include_rear_var = tk.BooleanVar(value=RUN3_DEFAULTS["ttc_include_rear_end"])
         self.run3_ttc_include_lane_var = tk.BooleanVar(value=RUN3_DEFAULTS["ttc_include_lane_change"])
         self.run3_ttc_include_cross_var = tk.BooleanVar(value=RUN3_DEFAULTS["ttc_include_crossing"])
@@ -4674,6 +4713,24 @@ class Run1App:
         self.trajectory_offset_spin.grid(row=0, column=3, sticky="w", pady=4)
         ttk.Label(box, text="ใช้จุดเดียวบนกรอบรถตัดสินโซน (point-in-polygon); Center ไม่ใช้ค่าเลื่อน", foreground=gray).grid(row=1, column=0, columnspan=4, sticky="w")
         self.update_trajectory_position_controls()
+
+        sm = self.section("ทำให้เส้นทางนิ่ง (ลดการแกว่งของกรอบ)")
+        ttk.Label(sm, text="กรอบ/เส้นทางในวิดีโอปกติ — ความนิ่ง % (0 = ปิด)").grid(row=0, column=0, sticky="w", pady=3)
+        ttk.Spinbox(sm, from_=0, to=90, increment=5, textvariable=self.box_smooth_pct_var, width=7).grid(row=0, column=1, sticky="w", padx=(6, 12))
+        ttk.Label(sm, text="แสดงผลเท่านั้น (ข้อมูลที่บันทึกไม่เปลี่ยน) — ยิ่งมากยิ่งนิ่งแต่ตามรถช้าลง", foreground="#666666").grid(row=0, column=2, sticky="w")
+        ttk.Label(sm, text="ตำแหน่งรถที่ใช้คำนวณตัวชี้วัด (Run 3)").grid(row=1, column=0, sticky="w", pady=3)
+        SMOOTH_NAMES = {"none": "ไม่ปรับ", "mean": "ค่าเฉลี่ย", "median": "ค่ากลาง (กันกรอบกระโดดครั้งเดียว)", "median_mean": "ค่ากลางแล้วเฉลี่ย (นิ่งที่สุด)"}
+        shown_sm = tk.StringVar(value=SMOOTH_NAMES.get(self.run3_traj_smooth_method_var.get(), SMOOTH_NAMES["median_mean"]))
+        cb_sm = ttk.Combobox(sm, textvariable=shown_sm, values=list(SMOOTH_NAMES.values()), state="readonly", width=34)
+        cb_sm.grid(row=1, column=1, columnspan=2, sticky="w", padx=(6, 12))
+        cb_sm.bind("<<ComboboxSelected>>", lambda e: self.run3_traj_smooth_method_var.set(next((k for k, t in SMOOTH_NAMES.items() if t == shown_sm.get()), "median_mean")))
+        self.run3_traj_smooth_method_var.trace_add("write", lambda *_: shown_sm.set(SMOOTH_NAMES.get(self.run3_traj_smooth_method_var.get(), SMOOTH_NAMES["median_mean"])))
+        ttk.Label(sm, text="ช่วงเวลาเฉลี่ย (วินาที)").grid(row=2, column=0, sticky="w", pady=3)
+        ttk.Entry(sm, textvariable=self.run3_traj_smooth_window_var, width=8).grid(row=2, column=1, sticky="w", padx=(6, 12))
+        ttk.Label(sm, text="ใช้กับทุกตัวชี้วัดและผัง X–Y ก่อนคำนวณ (ไฟล์ Detection_Records.csv ยังเป็นค่าดิบ)", foreground="#666666").grid(row=2, column=2, sticky="w")
+        ttk.Label(sm, text="ยืนยันโซนเมื่ออยู่ติดกันกี่เฟรม").grid(row=3, column=0, sticky="w", pady=3)
+        ttk.Spinbox(sm, from_=1, to=30, increment=1, textvariable=self.zone_confirm_frames_var, width=7).grid(row=3, column=1, sticky="w", padx=(6, 12))
+        ttk.Label(sm, text="1 = ทันที; 3–5 ช่วยไม่ให้กรอบกระพริบตรงขอบโซน (เวลาเข้าโซนช้าลงเล็กน้อย)", foreground="#666666").grid(row=3, column=2, sticky="w")
 
         geo = self.section("ความกว้างถนน (m) — ใช้เป็นตัวหารของ LDP")
         ttk.Label(geo, text="ฝั่งทางเข้า–ออก (Zone 2-3-4)", foreground="#555555").grid(row=0, column=0, columnspan=4, sticky="w")
@@ -6325,6 +6382,8 @@ class Run1App:
             "show_label_zone": self.show_label_zone_var.get(),
             "show_label_speed": self.show_label_speed_var.get(),
             "show_bbox": self.show_bbox_var.get(),
+            "box_smooth_pct": self.box_smooth_pct_var.get(),
+            "zone_confirm_frames": self.zone_confirm_frames_var.get(),
             "show_ref_lines": self.show_ref_lines_var.get(),
             "outside_zone_normal": self.outside_zone_normal_var.get(),
             "outside_zone_xy": self.outside_zone_xy_var.get(),
@@ -6384,6 +6443,8 @@ class Run1App:
                 "write_detail_files": self.run3_write_detail_var.get(),
                 "pet_use_area": self.run3_pet_use_area_var.get(),
                 "pet_area_shape": self.run3_pet_area_shape_var.get(),
+                "traj_smooth_method": self.run3_traj_smooth_method_var.get(),
+                "traj_smooth_window_s": self.run3_traj_smooth_window_var.get(),
                 "ttc_include_rear_end": self.run3_ttc_include_rear_var.get(),
                 "ttc_include_lane_change": self.run3_ttc_include_lane_var.get(),
                 "ttc_include_crossing": self.run3_ttc_include_cross_var.get(),
@@ -6515,6 +6576,8 @@ class Run1App:
             ("show_label_zone", self.show_label_zone_var),
             ("show_label_speed", self.show_label_speed_var),
             ("show_bbox", self.show_bbox_var),
+            ("box_smooth_pct", self.box_smooth_pct_var),
+            ("zone_confirm_frames", self.zone_confirm_frames_var),
             ("show_ref_lines", self.show_ref_lines_var),
             ("outside_zone_normal", self.outside_zone_normal_var),
             ("outside_zone_xy", self.outside_zone_xy_var),
@@ -6578,6 +6641,8 @@ class Run1App:
                 ("write_detail_files", self.run3_write_detail_var),
                 ("pet_use_area", self.run3_pet_use_area_var),
                 ("pet_area_shape", self.run3_pet_area_shape_var),
+                ("traj_smooth_method", self.run3_traj_smooth_method_var),
+                ("traj_smooth_window_s", self.run3_traj_smooth_window_var),
                 ("ttc_include_rear_end", self.run3_ttc_include_rear_var),
                 ("ttc_include_lane_change", self.run3_ttc_include_lane_var),
                 ("ttc_include_crossing", self.run3_ttc_include_cross_var),
@@ -8345,7 +8410,15 @@ class Run1App:
             zone_assignment_summary = defaultdict(lambda: defaultdict(int))
             trajectory_position = settings.get("trajectory_position", self.trajectory_position_var.get())
             trajectory_offset = float(settings.get("trajectory_offset", self.trajectory_offset_var.get() or 0))
-            zone_confirmation_frames = 1
+            try:
+                zone_confirmation_frames = max(1, int(float(settings.get("zone_confirm_frames", 1) or 1)))
+            except (TypeError, ValueError):
+                zone_confirmation_frames = 1
+            try:
+                box_smooth_alpha = 1.0 - max(0.0, min(90.0, float(settings.get("box_smooth_pct", 0) or 0))) / 100.0
+            except (TypeError, ValueError):
+                box_smooth_alpha = 1.0
+            box_ema = {}                                    # track id -> (last frame, smoothed box) for the drawn box / trail
             zone_entry_count = defaultdict(int)
             zone_exit_count = defaultdict(int)
             line_cross_count = defaultdict(int)
@@ -8938,6 +9011,17 @@ class Run1App:
                                         old = active_tracks.pop(old_id)
                                         recent_lost_tracks.append(old)
 
+                            # what is DRAWN (box, label place, trail, decision point) follows an exponential average of the box of the same vehicle, so that a
+                            # box that flickers from frame to frame does not make the picture sway; nothing recorded in the CSV files changes
+                            dx1, dy1, dx2, dy2 = x1, y1, x2, y2
+                            if box_smooth_alpha < 1.0 and track_id >= 0:
+                                prev_ema = box_ema.get(track_id)
+                                cur_box = (float(x1), float(y1), float(x2), float(y2))
+                                if prev_ema is not None and frame_index - prev_ema[0] <= 5:
+                                    cur_box = tuple(box_smooth_alpha * a_ + (1.0 - box_smooth_alpha) * b_ for a_, b_ in zip(cur_box, prev_ema[1]))
+                                box_ema[track_id] = (frame_index, cur_box)
+                                dx1, dy1, dx2, dy2 = (int(round(v_)) for v_ in cur_box)
+
                             if track_id >= 0:
 
                                 if track_id not in trails:
@@ -8947,7 +9031,7 @@ class Run1App:
                                 # Trajectory Position used for Zone assignment.
                                 # It no longer uses the geometric bbox center.
                                 trajectory_point = self.get_zone_reference_point(
-                                    x1, y1, x2, y2
+                                    dx1, dy1, dx2, dy2
                                 )
                                 trails[track_id].append(trajectory_point)
 
@@ -8966,7 +9050,7 @@ class Run1App:
                             if render_needed and rt.get("show_decision_point") and plan["point"]:
                                 # The point that decides the zone: filled yellow = inside a zone, red ring = in no zone
                                 # (such a vehicle is not drawn at all, so this is the only way to see why).
-                                dpx, dpy = self.get_zone_reference_point(x1, y1, x2, y2)
+                                dpx, dpy = self.get_zone_reference_point(dx1, dy1, dx2, dy2)
                                 dpx, dpy = int(round(dpx)), int(round(dpy))
                                 dr = max(5, int(round(0.004 * max(frame.shape[0], frame.shape[1]))))
                                 cv2.circle(frame, (dpx, dpy), dr + 2, (255, 255, 255), -1)
@@ -8979,8 +9063,8 @@ class Run1App:
                                 if rt.get("show_bbox", True):
                                     cv2.rectangle(
                                         frame,
-                                        (x1, y1),
-                                        (x2, y2),
+                                        (dx1, dy1),
+                                        (dx2, dy2),
                                         (0, 255, 0),
                                         2
                                     )
@@ -9027,9 +9111,9 @@ class Run1App:
                                         parts.append(f"Speed {value}" if rt.get("show_prefix_speed", False) else value)
                                     label = " | ".join(parts)
                                     if label:
-                                        label_y = max(y1 - 10, 20)
+                                        label_y = max(dy1 - 10, 20)
                                         cv2.putText(
-                                            frame, label, (x1, label_y),
+                                            frame, label, (dx1, label_y),
                                             cv2.FONT_HERSHEY_SIMPLEX, 0.55,
                                             (0, 255, 0), 2, cv2.LINE_AA
                                         )
@@ -9921,6 +10005,8 @@ class Run1App:
             "write_detail_files": bool(self.run3_write_detail_var.get()),
             "pet_use_area": bool(self.run3_pet_use_area_var.get()),
             "pet_area_shape": ("circle" if str(self.run3_pet_area_shape_var.get()).strip() == "circle" else "box"),
+            "traj_smooth_method": (str(self.run3_traj_smooth_method_var.get()).strip() if str(self.run3_traj_smooth_method_var.get()).strip() in SMOOTH_METHODS else "none"),
+            "traj_smooth_window_s": max(0.0, num(self.run3_traj_smooth_window_var, 0.3) or 0.0),
             "anchor": self._anchor_fraction(self.trajectory_position_var.get(), self.trajectory_offset_var.get()),
             "ttc_include_rear_end": bool(self.run3_ttc_include_rear_var.get()),
             "ttc_include_lane_change": bool(self.run3_ttc_include_lane_var.get()),
@@ -10620,6 +10706,27 @@ class Run1App:
         self._run3_zone_cal_info = {}
         if c.get("zone_calibrations"):
             self._run3_apply_zone_calibrations(rows_all, c)
+
+    def _run3_smooth_tracks(self, tracks, c):
+        """Make every vehicle's pixel positions steadier (smooth_positions over `traj_smooth_window_s` seconds): the reference point and the box centre; the metric
+        positions are made from them afterwards, so that every indicator and the X-Y pictures use the same calmer path (a box that flickers from frame to frame
+        no longer makes the trajectory sway). Zone labels stay as they were recorded. Returns the number of vehicles smoothed."""
+        method, window = c.get("traj_smooth_method", "none"), float(c.get("traj_smooth_window_s") or 0.0)
+        if method == "none" or window <= 0:
+            return 0
+        done = 0
+        for rows in tracks.values():
+            if len(rows) < 3:
+                continue
+            for key in ("_point", "_center"):
+                idx = [i for i, r in enumerate(rows) if r.get(key) is not None and r.get("_timestamp") is not None]
+                if len(idx) < 3:
+                    continue
+                sm = smooth_positions([rows[i]["_timestamp"] for i in idx], [rows[i][key] for i in idx], window, method)
+                for j, i in enumerate(idx):
+                    rows[i][key] = (float(sm[j, 0]), float(sm[j, 1]))
+            done += 1
+        return done
 
     @staticmethod
     def _run3_stats(values):
@@ -11898,6 +12005,7 @@ class Run1App:
         detection_rows, id_rows, zone_rows, det_path, id_path, zone_path = self._run3_load_inputs(output_dir, run_name)
         tracks, summaries = self._run3_build_tracks(detection_rows, id_rows)
         duplicate_report = self._run3_remove_duplicate_tracks(tracks)
+        self._run3_smooth_tracks(tracks, c)          # the pixel positions first: the metres (also of zones with their own calibration) are then made from the steadier path
         self._run3_attach_metric(tracks, c)
         outputs = {}
         mapping = {}; mapping_parse_error = ""

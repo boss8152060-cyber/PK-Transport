@@ -546,6 +546,16 @@ def scene3(app):
         check("Gap Acceptance speeds of the subject and stream vehicles are reported",
               acc["Subject_Speed_At_Decision_kmh"] != "" and acc["Lead_Speed_At_Gap_Start_kmh"] != "")
 
+    # trajectory smoothing (median over 0.3 s): the deliberate one-frame jitter of the stream vehicles is gone, so the rejected gap is the true 1.0 s
+    app.run3_traj_smooth_method_var.set("median")
+    out_s, _ = run_scene(app, veh)
+    app.run3_traj_smooth_method_var.set("none")
+    gap_s = read_csv(os.path.join(out_s, "Gap_Acceptance.csv"))
+    by_s = {r["Gap_Role"]: r for r in gap_s}
+    check("trajectory smoothing: still one rejected + one accepted gap, the rejected one is the true 1.0 s (the jitter artifact 0.92 s is gone)",
+          sorted(by_s) == ["Accepted", "Rejected"] and abs(float(by_s["Rejected"]["Available_Gap_s"]) - 1.0) < 0.03,
+          str([(r["Gap_Role"], r["Available_Gap_s"]) for r in gap_s]))
+
 
 def scene4(app):
     """Gap Acceptance: subject 1-3-6-7 meets TWO streams at once (2-3-4 on Line 1, 5-6-7 on Line 2).
@@ -695,6 +705,7 @@ def main():
     app.run3_write_detail_var.set(True)           # Lateral_Clearance.csv (every sample), TTC_Detail.csv, TTC_Frames.csv are checked below (off by default)
     app.run3_lc_max_lateral_var.set("0")          # the scene's D-E pair is 4.1 m apart sideways; the default limit (3.5 m) is tested below
     app.run3_site_id_var.set("8")
+    app.run3_traj_smooth_method_var.set("none")      # the scenes have known raw positions (some with deliberate jitter): trajectory smoothing is tested on its own in scene 3
     app.run3_ref_line_source_var.set("drawn")        # the scenes draw their own Lines; the zone-edge source (default) is unit-tested (tests/test_gap_stages.py, test_headway.py)
     app.run3_ppm_var.set(str(PPM))
     app.run3_perspective_enabled_var.set(False)
