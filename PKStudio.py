@@ -4096,6 +4096,30 @@ class ClipListPanel(ttk.Frame):
                     c[ranges[key][0]] = c[ranges[key][1]] = ""
         self.refresh()
 
+    # ---- the project (settings + this list) ----
+    def get_project(self):
+        """Everything of the list that belongs in a project file: the clips (video, folder in the output, time range, what to record, continuation) and its two ticks."""
+        return {"clips": [dict(c) for c in self.clips], "keep_levels": self._levels(), "skip_done": bool(self.skip_done_var.get())}
+
+    def set_project(self, project):
+        """Put a saved list back (a clip that is not there any more is kept, so that the list can be fixed); returns the videos that are missing on this computer."""
+        clips = []
+        for c in (project or {}).get("clips", []) or []:
+            if not isinstance(c, dict) or not c.get("video"):
+                continue
+            item = self._new_clip(str(c["video"]), str(c.get("rel_dir", "") or ""))
+            item.update({k: c[k] for k in self.bt.PLAN_KEYS if k in c})
+            clips.append(item)
+        self.clips = clips
+        try:
+            self.keep_levels_var.set(int((project or {}).get("keep_levels", 0) or 0))
+        except (TypeError, ValueError):
+            pass
+        if "skip_done" in (project or {}):
+            self.skip_done_var.set(bool(project["skip_done"]))
+        self.refresh()
+        return [c["video"] for c in clips if not os.path.isfile(c["video"])]
+
     # ---- list file ----
     def save_plan(self):
         if not self.clips:
@@ -4480,8 +4504,8 @@ class Run1App:
         ttk.Label(header, text="PK Studio", font=("Segoe UI", 16, "bold")).grid(row=0, column=0, sticky="w")
         ttk.Label(header, text="ตรวจจับและติดตามรถ แล้ววิเคราะห์ตัวชี้วัดความปลอดภัยจราจร (LDP · Lateral Clearance · Gap Acceptance · TTC · PET · Speed)",
                   foreground="#555555").grid(row=1, column=0, sticky="w")
-        ttk.Button(header, text="โหลดการตั้งค่า", command=self.load_settings).grid(row=0, column=1, rowspan=2, padx=4)
-        ttk.Button(header, text="บันทึกการตั้งค่า", command=self.save_settings).grid(row=0, column=2, rowspan=2, padx=4)
+        ttk.Button(header, text="เปิดโปรเจกต์…", command=self.load_settings).grid(row=0, column=1, rowspan=2, padx=4)
+        ttk.Button(header, text="บันทึกโปรเจกต์…", command=self.save_settings).grid(row=0, column=2, rowspan=2, padx=4)
 
         self._page_canvases = []
         self.notebook = ttk.Notebook(main)
@@ -6531,29 +6555,43 @@ class Run1App:
             },
         }
 
+    def get_project(self):
+        """The whole project: every setting + the Zone / Line geometry + the list of clips with their time ranges and what to record of each (a file from before
+        projects existed has no list: loading it leaves the list as it is)."""
+        data = self.get_settings()
+        panel = getattr(self, "clips_panel", None)
+        if panel is not None:
+            data["project"] = panel.get_project()
+        data["project_version"] = 1
+        return data
+
     def save_settings(self):
+        """Save the project (everything that can be adjusted, the chosen videos included)."""
         path = filedialog.asksaveasfilename(
-            title="Save Run 1 Settings",
+            title="บันทึกโปรเจกต์ (การตั้งค่าทั้งหมด + โซน/Line + รายการคลิป)",
             defaultextension=".json",
-            filetypes=[("PK Studio Settings", "*.json"), ("All Files", "*.*")],
-            initialfile=self.run_name_var.get() + "_settings.json"
+            filetypes=[("PK Studio Project", "*.json"), ("All Files", "*.*")],
+            initialfile=self.run_name_var.get() + "_project.json"
         )
         if not path:
             return
 
         try:
-            settings = self._json_safe(self.get_settings())
+            project = self._json_safe(self.get_project())
             with open(path, "w", encoding="utf-8") as f:
-                json.dump(settings, f, indent=4, ensure_ascii=False, allow_nan=False)
-            self.status_var.set(f"Settings saved: {os.path.basename(path)}")
-            messagebox.showinfo("Settings Saved", f"Settings and Zone geometry saved successfully.\n\n{path}")
+                json.dump(project, f, indent=4, ensure_ascii=False, allow_nan=False)
+            n = len((project.get("project") or {}).get("clips", []))
+            self.status_var.set(f"บันทึกโปรเจกต์แล้ว: {os.path.basename(path)}")
+            messagebox.showinfo("บันทึกโปรเจกต์แล้ว",
+                                f"บันทึกการตั้งค่าทั้งหมด โซน/Line (ฝังในไฟล์) และรายการคลิป {n} คลิป (ช่วงเวลา + ตัวเลือกบันทึกวิดีโอ) แล้ว\n\n{path}")
         except Exception as e:
-            messagebox.showerror("Save Error", f"Could not save settings:\n\n{e}")
+            messagebox.showerror("Save Error", f"Could not save the project:\n\n{e}")
 
     def load_settings(self):
+        """Open a project file (or a settings file from before projects existed)."""
         path = filedialog.askopenfilename(
-            title="Load Run 1 Settings",
-            filetypes=[("PK Studio Settings", "*.json"), ("JSON files", "*.json"), ("All Files", "*.*")]
+            title="เปิดโปรเจกต์",
+            filetypes=[("PK Studio Project", "*.json"), ("JSON files", "*.json"), ("All Files", "*.*")]
         )
         if not path:
             return
@@ -6564,9 +6602,15 @@ class Run1App:
             if not isinstance(settings, dict):
                 raise ValueError("Settings file must contain a JSON object.")
 
-            self.set_settings(settings)
-            self.status_var.set(f"Settings loaded: {os.path.basename(path)}")
-            messagebox.showinfo("Settings Loaded", "All settings, including Zone geometry, were loaded successfully.")
+            missing = self.set_settings(settings) or []
+            self.status_var.set(f"เปิดโปรเจกต์แล้ว: {os.path.basename(path)}")
+            n = len((settings.get("project") or {}).get("clips", []))
+            msg = "โหลดการตั้งค่าทั้งหมดและโซน/Line แล้ว" + (f" พร้อมรายการคลิป {n} คลิป" if n else " (ไฟล์นี้เก่า ไม่มีรายการคลิป — รายการคลิปเดิมไม่เปลี่ยน)")
+            if missing:
+                msg += "\n\nไม่พบไฟล์วิดีโอเหล่านี้ในเครื่องนี้ (ยังอยู่ในรายการ ลบหรือเลือกใหม่ได้):\n" + "\n".join(missing[:12]) + ("\n..." if len(missing) > 12 else "")
+                messagebox.showwarning("เปิดโปรเจกต์", msg)
+            else:
+                messagebox.showinfo("เปิดโปรเจกต์", msg)
         except Exception as e:
             messagebox.showerror("Load Error", f"Could not load settings:\n\n{e}")
 
@@ -6827,6 +6871,11 @@ class Run1App:
 
         self.refresh_measurement_status()
         self.update_trajectory_position_controls()
+        # the project part: the list of clips (a settings file from before projects has none: the list is left as it is)
+        proj = settings.get("project")
+        if isinstance(proj, dict) and getattr(self, "clips_panel", None) is not None:
+            return self.clips_panel.set_project(proj)
+        return []
 
     # ========================================================
     # VALIDATION
