@@ -94,8 +94,27 @@ while time.time() < end and not seen:
 check("UI queue: callback posted by a worker thread runs on the main thread", seen == [True] and app.status_var.get() == "from worker", str(seen))
 check("default paths are relative to the program folder", m.DEFAULT_MODEL.endswith(os.path.join("Input", "Model", "best.pt")), m.DEFAULT_MODEL)
 
-# --- window layout: four steps + a run bar with the ready-to-run list ---
-check("four steps in order", [app.notebook.tab(i, "text") for i in range(4)] == ["① คลิปวิดีโอ", "② ทางแยก", "③ ตัวชี้วัด", "④ ตรวจจับและติดตาม"])
+# --- window layout: five steps + a run bar with the ready-to-run list ---
+check("five steps in order", [app.notebook.tab(i, "text") for i in range(5)] == ["① คลิปวิดีโอ", "② ทางแยก", "③ ตัวชี้วัด", "④ การแสดงผลและไฟล์", "⑤ ตรวจจับและติดตาม"])
+_ind = app._indicator_nb
+check("the indicators have a page each, with ● / ○ for on / off", [_ind.tab(i, "text").lstrip("●○ ") for i in range(len(_ind.tabs()))] == ["LDP", "Lateral Clearance", "Gap + Headway", "TTC", "PET", "Speed", "เกณฑ์ความเสี่ยง"]
+      and _ind.tab(0, "text").startswith("● ") and len(_ind.tabs()) == 7, str([_ind.tab(i, "text") for i in range(len(_ind.tabs()))]))
+app.run3_pet_enabled_var.set(False)
+check("an indicator that is switched off shows ○ on its page", _ind.tab(4, "text").startswith("○ "))
+app.run3_pet_enabled_var.set(True)
+# the groups fold: the title stays, the contents go; the tracker group starts folded; "ย่อทั้งหมด / ขยายทั้งหมด" act on a whole page
+_site = [v for k, v in app._sections.items()][1]                      # the groups of tab 2
+app.root.update()
+_f, _set_open, _c = _site[0]
+_h_open = _f.winfo_height()
+_set_open(False)
+app.root.update()
+check("a folded group is shorter and still shows its title", 1 < _f.winfo_height() < _h_open, f"{_h_open} -> {_f.winfo_height()}")
+_set_open(True)
+app.root.update()
+check("... and unfolds again", _f.winfo_height() == _h_open, f"{_f.winfo_height()}")
+_tracker = [v for k, v in app._sections.items()][-1][-1]
+check("the tracker group starts folded", _tracker[2] is True and _tracker[0].winfo_height() < 80, str(_tracker[0].winfo_height()))
 app.refresh_checklist()
 check("run bar lists model / clips / zones / lines / widths / output", set(app.check_labels) == {"model", "clips", "zones", "lines", "widths", "output"})
 check("no clips yet: the START text has no count", app.start_button.cget("text") == "▶ เริ่มวิเคราะห์", app.start_button.cget("text"))

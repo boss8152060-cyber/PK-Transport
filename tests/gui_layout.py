@@ -62,9 +62,13 @@ root = tk.Tk()
 root.withdraw()
 app = m.Run1App(root)
 root.deiconify()
-for i in range(4):
+for i in range(5):
     app.notebook.select(i)
     root.update()
+    nb_ = getattr(app, "_subnotebooks", {}).get(i)
+    for j in range(len(nb_.tabs()) if nb_ is not None else 0):        # the pages of the indicator notebook
+        nb_.select(j)
+        root.update()
 bad = []
 walk(app.root, bad)
 check("main window: no two widgets share a grid cell", not bad, "; ".join(bad[:5]))

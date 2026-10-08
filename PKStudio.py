@@ -3975,12 +3975,13 @@ class ClipListPanel(ttk.Frame):
 
         act = ttk.Frame(self)
         act.grid(row=2, column=0, sticky="ew", pady=(4, 2))
-        ttk.Button(act, text="ดูวิดีโอ / กำหนดช่วงเวลา…", command=self.edit_selected).pack(side="left", padx=2)
-        ttk.Button(act, text="ต่อจากคลิปก่อน (ติ๊ก/เอาออก)", command=self.toggle_continue).pack(side="left", padx=2)
-        ttk.Button(act, text="ลบที่เลือก", command=self.remove_selected).pack(side="left", padx=2)
-        ttk.Button(act, text="ล้างรายการ", command=self.clear).pack(side="left", padx=2)
-        ttk.Button(act, text="ทุกคลิป: ไม่บันทึกวิดีโอ (ทั้ง 3)", command=lambda: self.set_all_record(False, ("save_video", "xy_video", "drone_video"))).pack(side="right", padx=2)
-        ttk.Button(act, text="ทุกคลิป: บันทึกตลอดช่วงที่วิเคราะห์ (ทั้ง 3)", command=lambda: self.set_all_record(True, ("save_video", "xy_video", "drone_video"))).pack(side="right", padx=2)
+        for i, (text, command) in enumerate((("ดูวิดีโอ / กำหนดช่วงเวลา…", self.edit_selected), ("ต่อจากคลิปก่อน (ติ๊ก/เอาออก)", self.toggle_continue),
+                                             ("ลบที่เลือก", self.remove_selected), ("ล้างรายการ", self.clear))):
+            ttk.Button(act, text=text, command=command).grid(row=0, column=i, padx=2, pady=1, sticky="w")
+        ttk.Button(act, text="ทุกคลิป: บันทึกตลอดช่วงที่วิเคราะห์ (ทั้ง 3 วิดีโอ)",
+                   command=lambda: self.set_all_record(True, ("save_video", "xy_video", "drone_video"))).grid(row=1, column=0, columnspan=2, padx=2, pady=1, sticky="w")
+        ttk.Button(act, text="ทุกคลิป: ไม่บันทึกวิดีโอ (ทั้ง 3)",
+                   command=lambda: self.set_all_record(False, ("save_video", "xy_video", "drone_video"))).grid(row=1, column=2, columnspan=2, padx=2, pady=1, sticky="w")
 
         out = ttk.Frame(self)
         out.grid(row=3, column=0, sticky="ew", pady=(6, 0))
@@ -3991,13 +3992,26 @@ class ClipListPanel(ttk.Frame):
         opts = ttk.Frame(self)
         opts.grid(row=4, column=0, sticky="w", pady=(4, 0))
         ttk.Checkbutton(opts, text="ข้ามคลิปที่วิเคราะห์เสร็จแล้ว (ดูจากโฟลเดอร์ผลลัพธ์ของคลิปนั้น)", variable=self.skip_done_var).pack(side="left")
-        ttk.Label(self, foreground="#555555", justify="left",
+        link = ttk.Label(self, text="▸ คำแนะนำการใช้งานรายการคลิป", foreground="#1f4e79", cursor="hand2")
+        link.grid(row=5, column=0, sticky="w", pady=(6, 0))
+        tips = ttk.Label(self, foreground="#555555", justify="left",
                   text="• ดับเบิลคลิกที่คลิปเพื่อเปิดดูวิดีโอและตั้งช่วงเวลา/การบันทึกวิดีโอ (เลือกหลายคลิปแล้วตั้งครั้งเดียวได้) — คลิปเดียวก็ใช้รายการนี้\n"
                        "• คลิปที่เป็นส่วนต่อเนื่องของคลิปก่อนหน้า (เช่น โดรนแบ่งไฟล์) → เลือกคลิปแล้วกด \"ต่อจากคลิปก่อน\": การติดตามต่อเนื่อง รถคันเดิมได้ ID เดิมข้ามรอยตัด เลขใหม่นับต่อกัน — แต่ช่วงวิเคราะห์ การบันทึกวิดีโอ และ CSV ยังแยกต่อคลิป\n"
                        "• เลข ID ต่อจากคลิปก่อนหน้าในโฟลเดอร์เดียวกันเสมอ (ไม่ซ้ำกันทั้งชุด)\n"
                        "• คลิปที่เพิ่มเข้ามาตั้งเป็น \"ไม่บันทึกวิดีโอ\" ไว้ก่อน — ต้องการบันทึกให้กดปุ่ม \"ทุกคลิป: บันทึกตลอดช่วงที่วิเคราะห์\" หรือตั้งเป็นรายคลิป\n"
                        "• ผลลัพธ์สร้างโครงสร้างโฟลเดอร์ตามที่นำเข้า: โฟลเดอร์ผลลัพธ์ / ...โฟลเดอร์ต้นฉบับ... / ชื่อคลิป / (โฟลเดอร์ที่มีแล้วใช้อันเดิม)\n"
-                       "• เวลาใน CSV เป็นเวลาของวิดีโอต้นฉบับ (เริ่มวิเคราะห์ที่นาที 2 → เวลาแรกใน CSV ≈ 120 วินาที)").grid(row=5, column=0, sticky="w", pady=(6, 0))
+                       "• เวลาใน CSV เป็นเวลาของวิดีโอต้นฉบับ (เริ่มวิเคราะห์ที่นาที 2 → เวลาแรกใน CSV ≈ 120 วินาที)")
+        tips.grid(row=6, column=0, sticky="w")
+        tips.grid_remove()
+
+        def toggle_tips(_e=None):
+            if tips.winfo_viewable():
+                tips.grid_remove()
+                link.config(text="▸ คำแนะนำการใช้งานรายการคลิป")
+            else:
+                tips.grid()
+                link.config(text="▾ คำแนะนำการใช้งานรายการคลิป")
+        link.bind("<Button-1>", toggle_tips)
 
     # ---- list ----
     def _levels(self):
@@ -4508,15 +4522,27 @@ class Run1App:
         ttk.Button(header, text="บันทึกโปรเจกต์…", command=self.save_settings).grid(row=0, column=2, rowspan=2, padx=4)
 
         self._page_canvases = []
+        self._sub_canvases = {}
+        self._subnotebooks = {}
+        self._sections = {}
         self.notebook = ttk.Notebook(main)
         self.notebook.grid(row=1, column=0, sticky="nsew")
-        for title, builder in (("① คลิปวิดีโอ", self.build_clips_tab), ("② ทางแยก", self.build_site_tab),
-                               ("③ ตัวชี้วัด", self.build_indicator_tab), ("④ ตรวจจับและติดตาม", self.build_detect_tab)):
-            outer, page = self._scroll_page()
-            self.notebook.add(outer, text=title)
-            self._page = page
-            self._flow_row = 0
-            builder()
+        for title, builder, scrolls in (("① คลิปวิดีโอ", self.build_clips_tab, True), ("② ทางแยก", self.build_site_tab, True),
+                                        ("③ ตัวชี้วัด", self.build_indicator_tab, False), ("④ การแสดงผลและไฟล์", self.build_output_tab, True),
+                                        ("⑤ ตรวจจับและติดตาม", self.build_detect_tab, True)):
+            if scrolls:
+                outer, page = self._scroll_page()
+                self.notebook.add(outer, text=title)
+                self._page = page
+                self._flow_row = 1
+                self._page_toolbar(page)
+                builder()
+                self._apply_collapsed(page)
+            else:                                                       # the indicators: a page of their own for every indicator
+                outer = ttk.Frame(self.notebook)
+                self.notebook.add(outer, text=title)
+                self._page_canvases.append(None)
+                builder(outer)
         self.root.bind_all("<MouseWheel>", self.on_mousewheel)
 
         # ---------------- run bar (always visible) ----------------
@@ -4545,9 +4571,9 @@ class Run1App:
         self.refresh_checklist()
 
     # ---------------- helpers ----------------
-    def _scroll_page(self):
-        """A scrollable page for one tab -> (outer frame to add to the notebook, inner frame to fill)."""
-        outer = ttk.Frame(self.notebook)
+    def _scroll_page(self, parent=None):
+        """A scrollable page for one tab (or for one tab of a sub-notebook: `parent`) -> (outer frame to add to the notebook, inner frame to fill)."""
+        outer = ttk.Frame(parent if parent is not None else self.notebook)
         canvas = tk.Canvas(outer, highlightthickness=0)
         scroll = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
         inner = ttk.Frame(canvas, padding=(6, 6, 10, 16))
@@ -4558,25 +4584,69 @@ class Run1App:
         canvas.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
         inner.columnconfigure(0, weight=1)
-        self._page_canvases.append(canvas)
+        if parent is None:
+            self._page_canvases.append(canvas)
+        else:
+            self._sub_canvases.setdefault(str(parent), []).append(canvas)
         return outer, inner
 
     def on_mousewheel(self, event):
         try:
-            canvas = self._page_canvases[self.notebook.index(self.notebook.select())]
-        except (tk.TclError, IndexError, AttributeError):
+            tab = self.notebook.index(self.notebook.select())
+            canvas = self._page_canvases[tab]
+            if canvas is None:                                           # a tab with a notebook of its own (the indicators): the page of the tab that is open
+                nb = self._subnotebooks[tab]
+                canvas = self._sub_canvases[str(nb)][nb.index(nb.select())]
+        except (tk.TclError, IndexError, AttributeError, KeyError):
             return
         if event.delta:
             canvas.yview_scroll(int(-event.delta / 120), "units")
 
-    def section(self, title, column=0, row=0):
-        """A titled group on the current page; groups are stacked top to bottom in the order they are built."""
-        frame = ttk.LabelFrame(self._page, text=title, padding=10)
+    def section(self, title, column=0, row=0, collapsed=False):
+        """A titled group on the current page; groups are stacked top to bottom in the order they are built. Click the title to fold / unfold it
+        (`collapsed` = folded at the start); the page's "ย่อทั้งหมด / ขยายทั้งหมด" buttons fold / unfold all of them."""
+        header = ttk.Label(self._page, text="", cursor="hand2", font=("Segoe UI", 10, "bold"), foreground="#1f4e79")
+        frame = ttk.LabelFrame(self._page, labelwidget=header, padding=10)
         frame.grid(row=self._flow_row, column=0, sticky="ew", padx=5, pady=5)
         self._flow_row += 1
         if getattr(self, "_stretch_entries", False):
             frame.columnconfigure(1, weight=1)       # long entries (paths, model) take the free width
+        state = {"open": True, "hidden": []}
+        spacer = ttk.Frame(frame, height=6)                           # a folded group still needs one child to keep its height (the title shows)
+
+        def set_open(opened):
+            if bool(opened) == state["open"]:
+                return
+            state["open"] = bool(opened)
+            if not state["open"]:
+                state["hidden"] = [w for w in frame.winfo_children() if w.winfo_manager() == "grid" and w is not spacer]
+                for w in state["hidden"]:
+                    w.grid_remove()
+                spacer.grid(row=99, column=0, sticky="ew")
+            else:
+                spacer.grid_remove()
+                for w in state["hidden"]:
+                    w.grid()
+            header.config(text=("▾ " if state["open"] else "▸ ") + title)
+        header.config(text="▾ " + title)
+        header.bind("<Button-1>", lambda e: set_open(not state["open"]))
+        frame.set_open = set_open
+        self._sections.setdefault(str(self._page), []).append((frame, set_open, collapsed))
         return frame
+
+    def _page_toolbar(self, page):
+        """The small bar at the top of a page: fold / unfold every group of it."""
+        bar = ttk.Frame(page)
+        bar.grid(row=0, column=0, sticky="e", padx=8, pady=(2, 0))
+        ttk.Label(bar, text="คลิกชื่อกลุ่มเพื่อย่อ/ขยาย", foreground="#777777").pack(side="left", padx=(0, 10))
+        ttk.Button(bar, text="ย่อทั้งหมด", width=11, command=lambda: [f[1](False) for f in self._sections.get(str(page), [])]).pack(side="left", padx=2)
+        ttk.Button(bar, text="ขยายทั้งหมด", width=11, command=lambda: [f[1](True) for f in self._sections.get(str(page), [])]).pack(side="left", padx=2)
+
+    def _apply_collapsed(self, page):
+        """Fold the groups of a page that start folded (after the page is built)."""
+        for _frame, set_open, collapsed in self._sections.get(str(page), []):
+            if collapsed:
+                set_open(False)
 
     def refresh_checklist(self):
         """The ready-to-run list above the START button (re-checked every second)."""
@@ -4635,7 +4705,9 @@ class Run1App:
         self.clips_panel = ClipListPanel(box, self)
         self.clips_panel.grid(row=0, column=0, sticky="nsew")
 
-        box = self.section("การแสดงผลและไฟล์ที่บันทึก")
+    # ---------------- tab 4: what is drawn and which files are saved ----------------
+    def build_output_tab(self):
+        box = self.section("การแสดงผลและวิดีโอที่บันทึก")
         gray = "#666666"
         xyv = self.xy_vars
 
@@ -4672,7 +4744,7 @@ class Run1App:
                 ttk.Label(fr, text=text, foreground=gray).pack(side="left")
             if combo is not None:
                 shown = tk.StringVar(value=OUTSIDE.get(combo.get(), OUTSIDE["dot"]))
-                cb = ttk.Combobox(fr, textvariable=shown, values=list(OUTSIDE.values()), state="readonly", width=30)
+                cb = ttk.Combobox(fr, textvariable=shown, values=list(OUTSIDE.values()), state="readonly", width=27)
                 cb.pack(side="left")
                 cb.bind("<<ComboboxSelected>>", lambda e, v=combo, sv=shown: v.set(next((k for k, t in OUTSIDE.items() if t == sv.get()), "dot")))
                 combo.trace_add("write", lambda *_, v=combo, sv=shown: sv.set(OUTSIDE.get(v.get(), OUTSIDE["dot"])))
@@ -4696,22 +4768,22 @@ class Run1App:
 
         def trow(label, normal, xy, drone="same"):
             r = row[0]
-            ttk.Label(box, text=label).grid(row=r, column=0, sticky="w", pady=2)
+            ttk.Label(box, text=label, justify="left").grid(row=r, column=0, sticky="w", pady=2, padx=(0, 10))
             cell(1, r, **normal)
             cell(2, r, **xy)
             cell(3, r, **(drone_of(xy) if drone == "same" else drone))
             row[0] += 1
 
-        trow("สร้างวิดีโอ", dict(text="เลือกต่อคลิปในรายการด้านบน"), dict(text="เลือกต่อคลิปในรายการด้านบน"),
-             dict(text="เลือกต่อคลิปในรายการด้านบน (ต้อง \"จัดแนว…\" กับภาพโดรนไว้ก่อน)"))
+        trow("สร้างวิดีโอ\n(เลือกต่อคลิปในหน้า ①)", dict(text="เลือกในรายการคลิป"), dict(text="เลือกในรายการคลิป"),
+             dict(text="เลือกในรายการคลิป (ต้องจัดแนวกับภาพโดรน)"))
         trow("เส้นทางรถ (Trajectory)", dict(items=[("แสดง", self.draw_trail_var)], spin=("ความยาว", self.trail_length_var, 1, 300, 1)),
              dict(items=[("แสดง", xyv["xy_draw_trail"])], spin=("ความยาว", xyv["xy_trail_length"], 1, 300, 1)))
         trow("Zone", dict(items=[("กรอบ", self.show_zone_boundary_var), ("ชื่อ", self.show_zone_label_var), ("คำว่า Zone", self.show_zone_label_prefix_var)]),
              dict(items=[("กรอบ", xyv["xy_show_zone_boundary"]), ("ชื่อ", xyv["xy_show_zone_label"]), ("คำว่า Zone", xyv["xy_show_zone_label_prefix"])]))
         trow("ความจางของ Zone %", dict(spin=("0 = ไม่เห็น, 100 = ชัดสุด", self.zone_overlay_opacity_var, 0, 100, 5)),
              dict(spin=("0 = ไม่เห็น, 100 = ชัดสุด", xyv["xy_zone_overlay_opacity"], 0, 100, 5)))
-        trow("จุดตำแหน่งรถ", dict(items=[("จุดที่ตัดสินโซน (เหลือง = ในโซน, วงแดง = ไม่อยู่โซน)", self.draw_center_var)]),
-             dict(items=[("จุดรถ (เหลือง = ในโซน, วงแดง = ไม่อยู่โซน)", xyv["xy_show_point"])]))
+        trow("จุดตำแหน่งรถ\n(เหลือง = ในโซน · วงแดง = นอกโซน)", dict(items=[("แสดงจุด", self.draw_center_var)]),
+             dict(items=[("แสดงจุด", xyv["xy_show_point"])]))
         trow("รถที่อยู่นอกโซน", dict(combo=self.outside_zone_normal_var), dict(combo=self.outside_zone_xy_var))
         trow("ป้ายบนตัวรถ", dict(items=[("ID", self.show_label_id_var), ("Class", self.show_label_class_var), ("Conf", self.show_label_conf_var),
                                        ("Zone", self.show_label_zone_var), ("Speed", self.show_label_speed_var)]),
@@ -4721,19 +4793,21 @@ class Run1App:
                                               ("Zone", self.show_prefix_zone_var), ("Speed", self.show_prefix_speed_var)]),
              dict(items=[("ID", xyv["xy_show_prefix_id"]), ("Class", xyv["xy_show_prefix_class"]), ("Conf", xyv["xy_show_prefix_conf"]),
                          ("Zone", xyv["xy_show_prefix_zone"]), ("Speed", xyv["xy_show_prefix_speed"])]))
-        trow("กรอบวัตถุ (bbox)", dict(items=[("แสดง", self.show_bbox_var)]), dict(text="— (ผังเมตรไม่มีกรอบภาพ ดูสี่เหลี่ยมรถของ TTC)"), dict(text="—"))
-        trow("เส้นอ้างอิง (Gap Acceptance / Headway)", dict(items=[("แสดง (เส้นที่ใช้จริง: Line ที่วาดหรือขอบโซนที่ติดกัน)", self.show_ref_lines_var)]),
+        trow("กรอบวัตถุ (bbox)", dict(items=[("แสดง", self.show_bbox_var)]), dict(text="— (ดูสี่เหลี่ยมรถของ TTC)"), dict(text="—"))
+        trow("เส้นอ้างอิง Gap / Headway\n(เส้นที่ใช้จริง: Line หรือขอบโซน)", dict(items=[("แสดง", self.show_ref_lines_var)]),
              dict(items=[("แสดง", xyv["xy_show_ref_lines"])]))
-        trow("จุดที่คาดว่าจะชน (TTC)", dict(items=[("แสดง (วาดเพิ่มหลังคำนวณ TTC เสร็จ ใช้เวลาเพิ่ม)", self.run3_ttc_show_video_var)]),
-             dict(items=[("แสดง (กากบาท = จุดที่เส้นทางตรงของสองคันตัดกัน + ค่า TTC)", self.run3_ttc_show_xy_var)]))
-        trow("จุดตัดของเส้นทาง (PET)", dict(items=[("แสดง (วาดเพิ่มหลังคำนวณ PET เสร็จ ใช้เวลาเพิ่ม)", self.run3_pet_show_video_var)]),
-             dict(items=[("แสดง (กากบาทสีม่วง = จุดที่เส้นทางจริงของสองคันตัดกัน + ค่า PET)", self.run3_pet_show_xy_var)]))
+        trow("จุดที่คาดว่าจะชน (TTC)\n(กากบาท + ค่า TTC)", dict(items=[("แสดง (วาดหลังรัน เพิ่มเวลา)", self.run3_ttc_show_video_var)]),
+             dict(items=[("แสดง", self.run3_ttc_show_xy_var)]))
+        trow("จุดตัดเส้นทาง (PET)\n(กากบาทม่วง + ค่า PET)", dict(items=[("แสดง (วาดหลังรัน เพิ่มเวลา)", self.run3_pet_show_video_var)]),
+             dict(items=[("แสดง", self.run3_pet_show_xy_var)]))
         trow("ข้อความที่มุม/ล่างภาพ", dict(items=[("Frame / FPS / เวลา / ETA", self.show_info_text_var)]), dict(items=[("t = … s  frame …", xyv["xy_show_time"])]))
-        trow("ตารางเมตร", dict(text="—"), dict(items=[("เส้นตารางและตัวเลข", xyv["xy_show_grid"])]), dict(text="— (ใช้ภาพโดรนเป็นพื้น)"))
+        trow("ตารางเมตร", dict(text="—"), dict(items=[("เส้นตาราง + ตัวเลข", xyv["xy_show_grid"])]), dict(text="— (ภาพโดรนเป็นพื้น)"))
         ttk.Label(box, text="จุดชน/สี่เหลี่ยมของ TTC ต้องเปิดตัวชี้วัด TTC;  แต่ละวิดีโอตั้งได้เป็นอิสระ (เช่น วิดีโอปกติโชว์ Speed แต่ X–Y ไม่โชว์)", foreground=gray).grid(
             row=row[0], column=0, columnspan=4, sticky="w", pady=(4, 0))
 
         csvb = self.section("ไฟล์ CSV ผลลัพธ์ที่บันทึก")
+        csvb.columnconfigure(0, weight=1)
+        csvb.columnconfigure(1, weight=1)
         ttk.Label(csvb, text="ติ๊ก = บันทึก  ไม่ติ๊ก = ไม่บันทึกไฟล์นั้น   (ไฟล์ของตัวชี้วัดที่ปิดอยู่ในหน้า ③ ไม่ถูกสร้างอยู่แล้ว จึงเป็นสีเทา)", foreground=gray).grid(
             row=0, column=0, columnspan=3, sticky="w", pady=(0, 4))
         enabled_var = {"ldp": self.run3_ldp_enabled_var, "lc": self.run3_lc_enabled_var, "gap": self.run3_gap_enabled_var, "headway": self.run3_headway_enabled_var,
@@ -4825,7 +4899,7 @@ class Run1App:
         ttk.Label(cal, text="Road direction angle (deg) — ใช้เมื่อไม่มี Perspective").grid(row=r, column=0, columnspan=2, sticky="w", pady=4)
         ttk.Entry(cal, textvariable=self.run3_lateral_axis_angle_var, width=18).grid(row=r, column=2, sticky="w", pady=4)
         r += 1
-        ttk.Label(cal, text="วิดีโอและภาพ X–Y: เปิด/ปิดและเลือกสิ่งที่วาดที่หน้า ①").grid(row=r, column=0, columnspan=2, sticky="w", pady=2)
+        ttk.Label(cal, text="วิดีโอและภาพ X–Y: เปิด/ปิดและเลือกสิ่งที่วาดที่หน้า ④ (การแสดงผลและไฟล์)").grid(row=r, column=0, columnspan=2, sticky="w", pady=2)
         ttk.Label(cal, text="วาดจากพิกัดเมตรเดียวกับที่ตัวชี้วัดใช้ (ไฟล์ Detection_Records_Topview.csv เขียนทุกครั้ง)", foreground=gray).grid(row=r, column=2, columnspan=2, sticky="w", pady=2)
         r += 1
         alignf = ttk.LabelFrame(cal, text="จัดแนวกับภาพโดรน (Align) — แปลงพิกัดวิดีโอให้ตรงกับผังจริงของโดรน (ภาพโดรนใช้เฉพาะตอนจัดแนว)", padding=4)
@@ -4873,7 +4947,7 @@ class Run1App:
             ttk.Entry(dims, textvariable=self.run3_length_vars[name], width=7).grid(row=2, column=i, sticky="w", padx=4, pady=1)
         ttk.Label(dims, text="ค่าเริ่มต้นของโปรแกรม ควรตรวจกับแต่ละพื้นที่ (ไม่ใช่ค่าจากเอกสารอ้างอิง)", foreground=gray).grid(row=3, column=0, columnspan=9, sticky="w", pady=(6, 0))
 
-    # ---------------- tab 3: indicators ----------------
+    # ---------------- tab 3: indicators (a page for each) ----------------
     def _indicator_box(self, title, enabled_var, note=None):
         """A group per indicator; the tick in its title switches the indicator on or off."""
         label = ttk.Checkbutton(self._page, text=title, variable=enabled_var)
@@ -4902,14 +4976,41 @@ class Run1App:
         ttk.Label(box, text=label).grid(row=row, column=col, columnspan=span, sticky="w", pady=2)
         ttk.Entry(box, textvariable=var, width=width).grid(row=row, column=col + span, sticky="w", pady=2, padx=(4, 0))
 
-    def build_indicator_tab(self):
-        gray = "#666666"
-        ttk.Label(self._page, text="ติ๊กหน้าชื่อตัวชี้วัดเพื่อเปิด/ปิด — ค่าอื่นเป็นค่าเริ่มต้นที่ใช้ได้เลย ปรับเมื่อจำเป็น", foreground=gray).grid(row=self._flow_row, column=0, sticky="w", padx=6)
-        self._flow_row += 1
-        ttk.Checkbutton(self._page, text="เขียนไฟล์ตรวจสอบเพิ่ม (Lateral_Clearance.csv ทุกตัวอย่าง, TTC_Detail.csv, TTC_Frames.csv) — ไฟล์ใหญ่ ปิดไว้ได้ถ้าไม่ได้ใช้",
-                        variable=self.run3_write_detail_var).grid(row=self._flow_row, column=0, sticky="w", padx=6)
-        self._flow_row += 1
+    def _indicator_page(self, nb, title):
+        """A new page of the indicator notebook; the groups built next go on it."""
+        outer, page = self._scroll_page(nb)
+        nb.add(outer, text=title)
+        self._page = page
+        self._flow_row = 0
+        return page
 
+    def build_indicator_tab(self, outer):
+        """One page per indicator (the tab shows ● when the indicator is on, ○ when it is off) + the risk limits."""
+        gray = "#666666"
+        top = ttk.Frame(outer)
+        top.pack(fill="x", padx=8, pady=(6, 0))
+        ttk.Label(top, text="เลือกแท็บของตัวชี้วัด แล้วติ๊กหน้าชื่อเพื่อเปิด/ปิด (● = เปิด, ○ = ปิด) — ค่าอื่นเป็นค่าเริ่มต้นที่ใช้ได้เลย ปรับเมื่อจำเป็น", foreground=gray).pack(anchor="w")
+        ttk.Checkbutton(top, text="เขียนไฟล์ตรวจสอบเพิ่ม (Lateral_Clearance.csv ทุกตัวอย่าง, TTC_Detail.csv, TTC_Frames.csv) — ไฟล์ใหญ่ ปิดไว้ได้ถ้าไม่ได้ใช้",
+                        variable=self.run3_write_detail_var).pack(anchor="w")
+        ttk.Label(outer, textvariable=self.run3_result_text, foreground="#444444").pack(side="bottom", anchor="w", padx=8, pady=(2, 4))
+        nb = ttk.Notebook(outer)
+        nb.pack(fill="both", expand=True, padx=2, pady=4)
+        self._subnotebooks[self.notebook.index("end") - 1] = nb
+        self._indicator_nb = nb
+        self._indicator_tab_marks = []
+
+        def mark(title, *vars_):
+            """The tab text follows the on / off tick(s) of its indicator(s)."""
+            index = nb.index("end") - 1
+
+            def refresh(*_):
+                nb.tab(index, text=("● " if any(bool(v.get()) for v in vars_) else "○ ") + title)
+            for v in vars_:
+                v.trace_add("write", refresh)
+            refresh()
+
+        self._indicator_page(nb, "LDP")
+        mark("LDP", self.run3_ldp_enabled_var)
         box = self._indicator_box("LDP", self.run3_ldp_enabled_var,
                                   "ΔY ÷ (W/2) × 100 — ΔY = ระยะตั้งฉากของเส้นทางรถจากเส้นอ้างอิง (จุดเข้า→จุดออกโซน) เฉพาะรถทางหลัก 2-3-4 (W_entry) และ 5-6-7 (W_opp) ทุกประเภทรถ")
         self._zone_checks(box, self.run3_ldp_zone_vars, 1, locked=LDP_LOCKED_ZONES)
@@ -4917,6 +5018,8 @@ class Run1App:
         ttk.Label(box, text="หมายเหตุ: เลือก Zone 1 ไม่ได้ — LDP คิดเฉพาะทางหลัก 2-3-4 และ 5-6-7 ซึ่งไม่ผ่านโซน 1 (ทางเชื่อม/ซอย)",
                   foreground="#666666").grid(row=3, column=0, columnspan=8, sticky="w", pady=2)
 
+        self._indicator_page(nb, "Lateral Clearance")
+        mark("Lateral Clearance", self.run3_lc_enabled_var)
         box = self._indicator_box("Lateral Clearance", self.run3_lc_enabled_var,
                                   "คู่รถทิศทางเดียวกันในโซนเดียวกัน วัดตั้งฉากกับทิศที่รถ A เคลื่อนที่เมื่อกรอบรถซ้อนกันตามแนวยาว (ถ้ามีจักรยานยนต์ในคู่ จักรยานยนต์คือ A)")
         self._zone_checks(box, self.run3_lc_zone_vars, 1)
@@ -4925,6 +5028,8 @@ class Run1App:
         self._entry_row(box, 4, "ช่วงเคียงข้างตามแนวยาว ±(m) — 0 = อัตโนมัติ (L_A+L_B)/2", self.run3_lc_along_limit_var)
         self._entry_row(box, 5, "ระยะด้านข้างไกลสุดที่ถือว่าเกี่ยวข้องกัน (m) — 0 = ไม่จำกัด", self.run3_lc_max_lateral_var)
 
+        self._indicator_page(nb, "Gap + Headway")
+        mark("Gap + Headway", self.run3_gap_enabled_var, self.run3_headway_enabled_var)
         box = self._indicator_box("Gap Acceptance", self.run3_gap_enabled_var,
                                   "รถที่รอ (ดูกระแสที่ต้องให้ทางตามตาราง) ยอมรับ/ปฏิเสธช่องว่างสองขั้น Access/Exit; Line เป็นตัวเลือก (ไม่มี Line ใช้เวลาเข้าโซนต้นทางของกระแสนั้น)")
         ttk.Label(box, text="รถที่รอ (Movement)").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=2)
@@ -4968,6 +5073,8 @@ class Run1App:
         self.run3_headway_text.grid(row=4, column=0, columnspan=8, sticky="ew", pady=(0, 2))
         self.run3_headway_text.insert("1.0", self.run3_headway_mapping_text)
 
+        self._indicator_page(nb, "TTC")
+        mark("TTC", self.run3_ttc_enabled_var)
         box = self._indicator_box("TTC", self.run3_ttc_enabled_var,
                                   "รถแต่ละคัน = สี่เหลี่ยม ยาว×กว้างตามชนิดรถ (หันตามทิศความเร็ว) — TTC = เวลาที่สี่เหลี่ยมสองอันจะแตะกัน ถ้าทั้งคู่วิ่งตรงด้วยเวกเตอร์ความเร็วของเฟรมนั้น (ไม่แตะ = ไม่มี TTC)   |   เลือกค่าต่ำสุดต่อเหตุการณ์   |   ชนิดแยกด้วยมุมระหว่างทิศวิ่ง (Yaibok et al. 2026)")
         self._zone_checks(box, self.run3_ttc_zone_vars, 1, "โซนที่จุดชนต้องอยู่")
@@ -4997,6 +5104,8 @@ class Run1App:
         ttk.Checkbutton(type_row, text="Lane change", variable=self.run3_ttc_include_lane_var).pack(side="left", padx=4)
         ttk.Checkbutton(type_row, text="Crossing (ตัดขวาง)", variable=self.run3_ttc_include_cross_var).pack(side="left", padx=4)
 
+        self._indicator_page(nb, "PET")
+        mark("PET", self.run3_pet_enabled_var)
         box = self._indicator_box("PET", self.run3_pet_enabled_var, "PET คำนวณแยกในแต่ละโซนที่ติ๊ก (ค่าเริ่มต้น Zone 3 / Zone 6)")
         self._zone_checks(box, self.run3_pet_zone_vars, 1)
         for i, (label, var) in enumerate((("PET threshold (s)", self.run3_pet_threshold_var),
@@ -5019,6 +5128,8 @@ class Run1App:
         ttk.Checkbutton(type_row, text="Lane change", variable=self.run3_pet_include_lane_var).pack(side="left", padx=4)
         ttk.Checkbutton(type_row, text="Crossing (ตัดขวาง)", variable=self.run3_pet_include_cross_var).pack(side="left", padx=4)
 
+        self._indicator_page(nb, "Speed")
+        mark("Speed", self.run3_speed_enabled_var)
         box = self._indicator_box("Speed (ทุกเฟรม)", self.run3_speed_enabled_var,
                                   "ความเร็วต่อโซน + ความเร็วภาพรวมตาม Movement (เช่น 2-3-4) — ความยาวเส้นทางเมตร ÷ เวลา")
         self._zone_checks(box, self.run3_speed_zone_vars, 1)
@@ -5026,6 +5137,7 @@ class Run1App:
         self._entry_row(box, 3, "ความเร็วสูงสุดที่สมเหตุสมผล (km/h, 0 = ปิด) — เกินนี้ติดธง Speed_Above_Max ในไฟล์ Speed.csv (ไม่ลบแถว)", self.run3_speed_max_var, span=6)
         self._entry_row(box, 4, "หน้าต่างความเร็วต่อเฟรม (s) — ความเร็วทุกเฟรมในตารางพิกัดเมตร ใช้ตำแหน่งในช่วง ± ครึ่งหนึ่งของค่านี้", self.run3_speed_frame_window_var)
 
+        self._indicator_page(nb, "เกณฑ์ความเสี่ยง")
         box = ttk.LabelFrame(self._page, text="เกณฑ์ระดับความเสี่ยง (ดัชนี + ความเร็ว) — ค่าตั้งต้นตามสไลด์สัมมนา / CROW 2009", padding=10)
         box.grid(row=self._flow_row, column=0, sticky="ew", padx=5, pady=5)
         self._flow_row += 1
@@ -5039,10 +5151,8 @@ class Run1App:
             self._entry_row(box, 1 + i, label, self.run3_risk_vars[key], width=18)
         ttk.Button(box, text="คืนค่าตามสไลด์", command=lambda: [v.set(RUN3_DEFAULTS[k]) for k, v in self.run3_risk_vars.items()]).grid(row=6, column=0, sticky="w", pady=(6, 0))
 
-        ttk.Label(self._page, textvariable=self.run3_result_text, foreground="#444444").grid(row=self._flow_row, column=0, sticky="w", padx=6, pady=(4, 0))
-        self._flow_row += 1
 
-    # ---------------- tab 4: detection and tracking ----------------
+    # ---------------- tab 5: detection and tracking ----------------
     def build_detect_tab(self):
         self._stretch_entries = True
         box = self.section("โมเดล")
@@ -6181,7 +6291,8 @@ class Run1App:
         frame = self.section(
             "การติดตามรถ (Tracker)",
             1,
-            2
+            2,
+            True
         )
 
         self.add_entry(
