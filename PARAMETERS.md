@@ -71,8 +71,8 @@
 | `ttc_pair_radius_m` | 20 | TTC | ประเมินเฉพาะคู่ที่ห่างกันไม่เกินค่านี้ (m); งานอ้างอิงมีระยะคัดกรองแต่ไม่ระบุค่า — 20 เป็นค่าที่เราเลือก ไม่มีที่มา | 10, 20, 30 |
 | `ttc_angle_rear_end_deg` | 30 | TTC ชนิดความขัดแย้ง | มุมระหว่างทิศวิ่งสองคัน < ค่านี้ = Rear-end (Yaibok et al. 2026, Fig. 8; Hydén/SSAM) | 20, 30, 45 |
 | `ttc_angle_crossing_deg` | 85 | TTC ชนิดความขัดแย้ง | > ค่านี้ = Crossing, ระหว่างกลาง = Lane change | 75, 85, 95 |
-| ความกว้างรถ (`vehicle_widths`) | Car 1.80, Motorcycle 0.80, Bus 2.50, Pickup 1.85, Sidecar 1.30, Truck 2.50, Van 1.90 m | Lateral Clearance, TTC | ขอบถึงขอบ = ระยะ − (W_A+W_B)/2 | ± 10 % |
-| ความยาวรถ (`vehicle_lengths`) | Car 4.50, Motorcycle 2.00, Bus 12.0, Pickup 5.30, Sidecar 2.20, Truck 8.0, Van 5.0 m | Lateral Clearance (กรอบซ้อนตามแนวยาว), TTC | | ± 10 % |
+| ความกว้างรถ (`vehicle_widths`) | Car 1.80, Motorcycle 0.80, Bus 2.50, Pickup 1.85, Sidecar 1.30, Truck 2.50, Van 1.95 m | Lateral Clearance, TTC (ความกว้างใช้กรองคู่รถ: ครึ่งความกว้างรวม + ค่าเผื่อ) | ตรวจกับเอกสารรถในไทย PKT 1.42.1: Pickup = Hilux Revo 1,855 mm ✓, Car ≈ Vios/Ativ 1.73 – Corolla Cross 1.83 ✓, Motorcycle = PCX160 0.742 / Wave110i 0.709 (+มือจับ/ผู้ขี่ → 0.80) ✓, Van = Toyota Commuter ไทย 1,950 mm (รุ่นเก่า 1,880) | ± 10 % |
+| ความยาวรถ (`vehicle_lengths`) | Car 4.50, Motorcycle 2.00, Bus 12.0, Pickup 5.30, Sidecar 2.20, Truck 8.0, Van 5.90 m | Lateral Clearance (กรอบซ้อนตามแนวยาว) | Pickup = Hilux Revo 5,290–5,315 ✓, Car ≈ 4.4–4.6 ✓, Motorcycle = PCX160 1,936 / Wave110i 1,870 (+ผู้ขี่ → 2.0) ✓, Van = Commuter ไทย 5,915 (รุ่นเก่า 5,380) — ถ้าไซต์มีรุ่นเก่าให้ตั้ง 5.4; Bus (12.0 = ขีดสูงสุดตามกฎหมาย รถเมล์จริงมัก 10–12), Truck (8.0 = 6 ล้อทั่วไป รถ 10 ล้อ 9–10) และ Sidecar ไม่มีค่าอ้างอิงที่ตรวจได้ — ตั้งตามไซต์ | ± 10 % |
 | `ZONE_FLICKER_MERGE_S` (ในโค้ด) | 0.10 s | ลำดับโซน/Movement | ตัดการกะพริบที่ขอบโซน | 0.05, 0.10, 0.20 (แก้ค่าคงที่ในโค้ด) |
 | `DUPLICATE_TRACK_IOU` / `_MIN_FRAMES` (ในโค้ด) | 0.70 / 10 เฟรม | ตัวกรองแทร็กซ้ำ | | 0.6–0.8 / 5–20 |
 | `track_buffer`, `match_threshold` | 30 / 0.80 | tracker (Run 1) | ID switch / track หลุด | ต้องรัน Run 1 ใหม่ทุกค่า (sensitivity.py ทำไม่ได้) |

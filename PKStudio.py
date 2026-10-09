@@ -617,10 +617,10 @@ RUN3_DEFAULTS = {
         "Pickup": "1.85",
         "Sidecar": "1.30",
         "Truck": "2.50",
-        "Van": "1.90",
+        "Van": "1.95",   # Toyota Commuter (Thai market) 1,950 mm; the older Hiace Commuter is 1,880 mm
     },
-    # V27: vehicle lengths for the TTC clear gap S. Implementation starter
-    # values — replace with the values adopted in Chapter 3.
+    # Vehicle lengths (m): Car / Pickup / Van / Motorcycle checked against Thai-market data sheets (PKT 1.42.1, see PARAMETERS.md); Bus / Truck / Sidecar
+    # vary a lot (legal maximum / typical) - set them for your site.
     "vehicle_lengths": {
         "Bus": "12.00",
         "Car": "4.50",
@@ -628,7 +628,7 @@ RUN3_DEFAULTS = {
         "Pickup": "5.30",
         "Sidecar": "2.20",
         "Truck": "8.00",
-        "Van": "5.00",
+        "Van": "5.90",   # Toyota Commuter (Thai market) 5,915 mm; the older Hiace Commuter is 5,380 mm - set what your site has
     },
 }
 
