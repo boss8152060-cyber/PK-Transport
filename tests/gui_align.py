@@ -77,6 +77,19 @@ dlg = app.open_align()
 root.update()
 check("the window opens on a frame of the video", dlg is not None and dlg.video_img is not None and dlg.video_img.shape[:2] == (CH, CW))
 check("a picture file with Thai letters in its name opens", dlg.load_drone(drone_file) and dlg.drone_img is not None)
+# another roadside video as the background (the clip list or a file): a different clip with its own brightness
+video2 = os.path.join(tmp, "clip2.mp4")
+vw2 = cv2.VideoWriter(video2, cv2.VideoWriter_fourcc(*"mp4v"), 10, (CW, CH))
+for _ in range(5):
+    vw2.write(np.full((CH, CW, 3), 200, np.uint8))
+vw2.release()
+before_mean = float(dlg.video_img.mean())
+check("Align: the window can change to another video", dlg.change_video(video2) is True and dlg.video_path == video2 and float(dlg.video_img.mean()) > before_mean + 50, f"{before_mean} -> {float(dlg.video_img.mean())}")
+check("Align: the chosen video is remembered for the next window (edit_video) and shown in the box", app.edit_video == video2 and dlg.vpath_var.get() == video2)
+check("Align: a file that is not a video is refused and nothing changes", dlg.change_video(os.path.join(tmp, "nothing.mp4")) is False and dlg.video_path == video2)
+app.video_var.set(video)
+check("Align: choosing another main video forgets the window's own choice", app._edit_video_path() == video)
+dlg.change_video(video)
 
 # 20 pairs on the ground (road markings): 5 x 4 grid
 gx, gy = np.linspace(4, 56, 5), np.linspace(3, 17, 4)

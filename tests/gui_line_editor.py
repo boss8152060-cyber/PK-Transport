@@ -73,6 +73,15 @@ def main():
     check("rows = the four conflicting streams", dlg.movements == ["2-3-4", "5-6-7", "5-6-3-1", "1-3-6-7"], str(dlg.movements))
     check("lines assigned Line 1..4", [dlg.assign[mv] for mv in dlg.movements] == ["Line 1", "Line 2", "Line 3", "Line 4"])
     check("frame shown at scale 1 (640x360)", abs(dlg.scale - 1.0) < 1e-9, str(dlg.scale))
+    # another roadside video as the background: a bigger one shows a warning that its size differs from the zones' picture
+    video2 = os.path.join(tmp, "v2.mp4")
+    make_video(video2, w=1280, h=720)
+    check("Line editor: the window can change to another video", dlg.change_video(video2) is True and (dlg.w, dlg.h) == (1280, 720) and dlg.video_path == video2)
+    check("Line editor: a different size is flagged next to the frame", "⚠" in dlg.frame_label.cget("text"), dlg.frame_label.cget("text"))
+    check("Line editor: the choice is kept for the next window", app.edit_video == video2)
+    check("Line editor: back to the first video, no warning", dlg.change_video(video) is True and (dlg.w, dlg.h) == (640, 360) and "⚠" not in dlg.frame_label.cget("text"))
+    check("Line editor: back at scale 1 (640x360)", abs(dlg.scale - 1.0) < 1e-9, str(dlg.scale))
+    app.edit_video = ""
 
     # click: two points per line; the editor advances to the next undrawn stream by itself
     clicks = {"2-3-4": ((400, 200), (400, 340)), "5-6-7": ((300, 20), (300, 120)),

@@ -2251,13 +2251,84 @@ class _NoLinesToSave(Exception):
     """Every stream of the Line window uses its zone edge: nothing to write into the Zone file."""
 
 
+VIDEO_FILETYPES = [("วิดีโอ", "*.mp4 *.mov *.avi *.mkv *.m4v"), ("ทั้งหมด", "*.*")]
+
+
+def clip_video_choices(app):
+    """The roadside videos the editors can show: every clip of the clip list, then the video chosen in the main window (existing files, no repeats)."""
+    paths = []
+    panel = getattr(app, "clips_panel", None)
+    for c in (getattr(panel, "clips", None) or []):
+        paths.append(str(c.get("video", "") or ""))
+    try:
+        paths.append(str(app.video_var.get() or "").strip())
+    except Exception:
+        pass
+    out = []
+    for q in paths:
+        if q and os.path.isfile(q) and q not in out:
+            out.append(q)
+    return out
+
+
+def choose_background_video(app, parent, current=""):
+    """A small window: pick one of the clips of the clip list or browse for another video file. Returns the path or None (cancelled)."""
+    choices = clip_video_choices(app)
+    result = {"path": None}
+    dlg = tk.Toplevel(parent)
+    dlg.title("เลือกวิดีโอข้างทาง")
+    dlg.transient(parent)
+    ttk.Label(dlg, text="เลือกวิดีโอที่จะใช้เป็นภาพพื้นหลัง (ดับเบิลคลิก = ใช้เลย)", padding=(10, 8, 10, 2)).pack(anchor="w")
+    lb = tk.Listbox(dlg, width=90, height=min(12, max(4, len(choices))), exportselection=False)
+    for q in choices:
+        lb.insert("end", q)
+    if current in choices:
+        lb.selection_set(choices.index(current))
+    elif choices:
+        lb.selection_set(0)
+    lb.pack(padx=10, pady=4, fill="both", expand=True)
+
+    def use_selected(*_):
+        sel = lb.curselection()
+        if sel:
+            result["path"] = choices[sel[0]]
+            dlg.destroy()
+
+    def browse():
+        path = filedialog.askopenfilename(parent=dlg, title="เลือกวิดีโอข้างทาง", filetypes=VIDEO_FILETYPES)
+        if path:
+            result["path"] = path
+            dlg.destroy()
+
+    lb.bind("<Double-Button-1>", use_selected)
+    row = ttk.Frame(dlg, padding=10)
+    row.pack(fill="x")
+    ttk.Button(row, text="ใช้วิดีโอที่เลือก", command=use_selected).pack(side="left")
+    ttk.Button(row, text="เลือกไฟล์อื่น…", command=browse).pack(side="left", padx=6)
+    ttk.Button(row, text="ยกเลิก", command=dlg.destroy).pack(side="right")
+    dlg.grab_set()
+    dlg.wait_window()
+    return result["path"]
+
+
+def video_size_of(path):
+    """(width, height) of a video file or None."""
+    cap = cv2.VideoCapture(str(path))
+    try:
+        w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        return (w, h) if w > 0 and h > 0 else None
+    finally:
+        cap.release()
+
+
 class LineEditorDialog:
     """Click two points on a video frame to place the Reference Lines that Gap
     Acceptance needs (one per conflicting stream). Saves the Lines into the Zone
     JSON file and fills the Reference Line Mapping text."""
 
-    def __init__(self, app, frame_bgr, frame_index, movements, assignments, lines, modes=None):
+    def __init__(self, app, frame_bgr, frame_index, movements, assignments, lines, modes=None, video_path=""):
         self.app = app
+        self.video_path = video_path
         self.frame_index = frame_index
         self.h, self.w = frame_bgr.shape[:2]
         self.movements = list(movements)
@@ -2308,9 +2379,12 @@ class LineEditorDialog:
             self.status_labels[mv] = lab
         nrow = len(self.movements) * 3 + 1
         ttk.Separator(side, orient="horizontal").grid(row=nrow, column=0, columnspan=2, sticky="ew", pady=8)
-        ttk.Label(side, text=f"เฟรมที่ {frame_index} ของวิดีโอ ({self.w}×{self.h})", foreground="#555555").grid(row=nrow + 1, column=0, columnspan=2, sticky="w")
-        ttk.Button(side, text="บันทึก", command=self.save).grid(row=nrow + 2, column=0, columnspan=2, sticky="ew", pady=(10, 2))
-        ttk.Button(side, text="ปิด", command=self.top.destroy).grid(row=nrow + 3, column=0, columnspan=2, sticky="ew")
+        self.frame_label = ttk.Label(side, text="", foreground="#555555", wraplength=300, justify="left")
+        self.frame_label.grid(row=nrow + 1, column=0, columnspan=2, sticky="w")
+        self._set_frame_label()
+        ttk.Button(side, text="เปลี่ยนวิดีโอ…", command=self.change_video).grid(row=nrow + 2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        ttk.Button(side, text="บันทึก", command=self.save).grid(row=nrow + 3, column=0, columnspan=2, sticky="ew", pady=(10, 2))
+        ttk.Button(side, text="ปิด", command=self.top.destroy).grid(row=nrow + 4, column=0, columnspan=2, sticky="ew")
 
         self.canvas = tk.Canvas(self.top, width=shown.shape[1], height=shown.shape[0], highlightthickness=0, cursor="crosshair")
         self.canvas.grid(row=0, column=1, sticky="nsew")
@@ -2318,6 +2392,43 @@ class LineEditorDialog:
         self.canvas.bind("<Button-1>", lambda e: self.add_point(e.x, e.y))
         self.canvas.bind("<Button-3>", lambda e: self.clear(self.current))
         self.redraw()
+
+    def _set_frame_label(self):
+        name = os.path.basename(str(self.video_path or "")) or "วิดีโอ"
+        text = f"{name}\nเฟรมที่ {self.frame_index} ({self.w}×{self.h})"
+        zw, zh = getattr(self.app, "zone_source_width", None), getattr(self.app, "zone_source_height", None)
+        if zw and zh and (int(zw), int(zh)) != (self.w, self.h):
+            text += f"\n⚠ ขนาดต่างจากภาพที่วาดโซน ({int(zw)}×{int(zh)})"
+        self.frame_label.config(text=text)
+
+    def show_frame(self, frame_bgr, frame_index, video_path):
+        """Show another picture under the zones and Lines (the Lines keep their pixel positions)."""
+        self.video_path, self.frame_index = video_path, frame_index
+        self.h, self.w = frame_bgr.shape[:2]
+        self.scale = min(1.0, max(640, min(1300, self.top.winfo_screenwidth() - 340)) / float(self.w), max(360, min(820, self.top.winfo_screenheight() - 240)) / float(self.h))
+        shown = cv2.resize(frame_bgr, (int(self.w * self.scale), int(self.h * self.scale)))
+        self._draw_zones(shown)
+        ok, buf = cv2.imencode(".png", shown)
+        self.photo = tk.PhotoImage(data=base64.b64encode(buf.tobytes()))
+        self.canvas.config(width=shown.shape[1], height=shown.shape[0])
+        self.canvas.delete("all")
+        self.canvas.create_image(0, 0, anchor="nw", image=self.photo)
+        self.pending = None
+        self._set_frame_label()
+        self.redraw()
+
+    def change_video(self, path=None):
+        """Another roadside video as the background (from the clip list or a file). Returns True when it was shown."""
+        path = path or choose_background_video(self.app, self.top, self.video_path)
+        if not path:
+            return False
+        img = read_picture_any(path, None)
+        if img is None:
+            messagebox.showerror("วาด Line", "อ่านเฟรมจากวิดีโอนี้ไม่ได้", parent=self.top)
+            return False
+        self.app.edit_video = path
+        self.show_frame(img, 0, path)
+        return True
 
     # ---- drawing ----
     def _draw_zones(self, img):
@@ -2893,6 +3004,7 @@ class AlignDialog:
         self.kind_var = tk.StringVar(value=ALIGN_KINDS[self.kind][1])
         self.scale_var = tk.StringVar(value=(f"{self.scale:.6g}" if self.scale else ""))
         self.frame_var = tk.StringVar(value="")
+        self.vpath_var = tk.StringVar(value=video_path)
         self.dframe_var = tk.StringVar(value=str((initial.get("drone") or {}).get("frame", "")))
         self.dpath_var = tk.StringVar(value=self.drone_path)
         cap = cv2.VideoCapture(video_path)
@@ -2914,6 +3026,24 @@ class AlignDialog:
         self.video_img = img
         self.frame_var.set(str(frame if frame not in (None, "") else self.total // 2 + 1))
         self.vpane.set_image(img)
+        return True
+
+    def change_video(self, path=None):
+        """Another roadside video (from the clip list or a file): its middle frame is shown; the pairs keep their pixel positions."""
+        path = path or choose_background_video(self.app, self.top, self.video_path)
+        if not path:
+            return False
+        cap = cv2.VideoCapture(path)
+        total = max(1, int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 1))
+        cap.release()
+        if read_picture_any(path, None) is None:
+            self.msg_var.set("อ่านเฟรมจากวิดีโอนี้ไม่ได้")
+            return False
+        self.video_path, self.total = path, total
+        self.vpath_var.set(path)
+        self.app.edit_video = path
+        self.load_video_frame(None)
+        self.refresh_all()
         return True
 
     def load_drone(self, path, frame=None):
@@ -3287,6 +3417,11 @@ class AlignDialog:
         ttk.Label(top, text=("1) เลือกภาพ/วิดีโอโดรน  2) คลิกจุดบนพื้นถนนในภาพวิดีโอ (ซ้าย) แล้วคลิกจุดเดียวกันในภาพโดรน (ขวา) = 1 คู่ "
                              "(มุมทางม้าลาย ปลายขีดเส้นประ มุมขอบทาง ฝาท่อ — ไม่ใช่ตึก/ต้นไม้)  3) ตั้งสเกลภาพโดรน (วัดจากความยาวจริง)  "
                              "4) เลือกชนิดการแปลง ดูความคลาด แล้วกด ใช้ค่านี้  ·  ล้อเมาส์ = ซูม · ลาก = เลื่อนภาพ"), wraplength=1440, justify="left").pack(anchor="w", padx=8, pady=(6, 2))
+        bar0 = ttk.Frame(top)
+        bar0.pack(fill="x", padx=8, pady=(0, 2))
+        ttk.Label(bar0, text="วิดีโอข้างทาง").pack(side="left")
+        ttk.Entry(bar0, textvariable=self.vpath_var, width=90, state="readonly").pack(side="left", padx=4)
+        ttk.Button(bar0, text="เปลี่ยนวิดีโอ…", command=self.change_video).pack(side="left")
         bar = ttk.Frame(top)
         bar.pack(fill="x", padx=8)
         ttk.Label(bar, text="เฟรมวิดีโอ").pack(side="left")
@@ -3422,12 +3557,29 @@ class ZoneAlignEditor:
         self.len_var = tk.BooleanVar(value=True)                  # write the real length (metres) of every edge on the pictures
         self.snap_cm_var = tk.StringVar(value="25")
         self.level_var = tk.BooleanVar(value=False)
+        self.vpath_var = tk.StringVar(value=video_path)
         self._setup_plan()
         self._build()
         self.vpane.set_image(self.video_img if self.video_img is not None else np.full((720, 1280, 3), 60, np.uint8))
         self.dpane.set_image(self.drone_img if self.drone_img is not None else np.full((720, 1280, 3), 60, np.uint8))
         self.ppane.set_image(self.plan_img)
         self.refresh_all()
+
+    def change_video(self, path=None):
+        """Another roadside video (from the clip list or a file) as the left picture; the zones keep their pixel positions."""
+        path = path or choose_background_video(self.app, self.top, self.video_path)
+        if not path:
+            return False
+        img = read_picture_any(path, None)
+        if img is None:
+            self.msg_var.set("อ่านเฟรมจากวิดีโอนี้ไม่ได้")
+            return False
+        self.video_path, self.video_img = path, img
+        self.vpath_var.set(path)
+        self.app.edit_video = path
+        self.vpane.set_image(img)
+        self.refresh_all(report=False)
+        return True
 
     # ----- geometry -----
     def _vpts(self, z):
@@ -3684,6 +3836,11 @@ class ZoneAlignEditor:
                              "กด Shift ค้างตอนลาก = ขอบจากมุมก่อนหน้าตั้งฉากกับขอบก่อนนั้น · ติ๊ก ดูดติด = ดูดติดมุม/ขอบของโซนอื่น · "
                              "ปุ่ม ทำให้ตั้งฉาก = ขอบตัดขวางถนนเป็นแนวตั้งในผังทีเดียว · ล้อเมาส์ = ซูม · ลากพื้นที่ว่าง = เลื่อนภาพ"),
                   wraplength=1500, justify="left").pack(anchor="w", padx=8, pady=(6, 2))
+        bar0 = ttk.Frame(top)
+        bar0.pack(fill="x", padx=8, pady=(0, 2))
+        ttk.Label(bar0, text="วิดีโอข้างทาง").pack(side="left")
+        ttk.Entry(bar0, textvariable=self.vpath_var, width=90, state="readonly").pack(side="left", padx=4)
+        ttk.Button(bar0, text="เปลี่ยนวิดีโอ…", command=self.change_video).pack(side="left")
         bar = ttk.Frame(top)
         bar.pack(fill="x", padx=8)
         ttk.Button(bar, text="ทำให้ตั้งฉาก (ทุกโซน)", command=lambda: self.make_perpendicular(False)).pack(side="left")
@@ -4488,6 +4645,8 @@ class Run1App:
             value=DEFAULT_SETTINGS["show_preview"]
         )
         self.video_max_width_var = tk.StringVar(value=DEFAULT_SETTINGS["video_max_width"])
+        self.edit_video = ""                                   # the video chosen inside the Align / zone editor / Line window (blank = the main video)
+        self.video_var.trace_add("write", lambda *_: setattr(self, "edit_video", ""))
         self.video_fps_var = tk.StringVar(value=DEFAULT_SETTINGS["video_fps"])
         self.topview_max_px_var = tk.StringVar(value=DEFAULT_SETTINGS["topview_max_px"])
         self.topview_fps_var = tk.StringVar(value=DEFAULT_SETTINGS["topview_fps"])
@@ -5820,9 +5979,16 @@ class Run1App:
             msg += "\n\nข้อผิดพลาด: " + fatal
         messagebox.showinfo("PK Studio Batch", msg)
 
+    def _edit_video_path(self):
+        """The video the Align / zone editor / Line windows start with: the one chosen inside one of them (kept until the main video changes), else the main one."""
+        chosen = str(getattr(self, "edit_video", "") or "")
+        if chosen and os.path.isfile(chosen):
+            return chosen
+        return str(self.video_var.get() or "").strip()
+
     def open_line_editor(self):
         """Open the dialog that draws the Reference Lines on a frame of the video."""
-        video = self.video_var.get().strip()
+        video = self._edit_video_path()
         if not video or not os.path.isfile(video):
             messagebox.showerror("วาด Line", "เลือกไฟล์วิดีโอ (Video) ก่อน — Line วาดบนเฟรมของวิดีโอ")
             return None
@@ -5868,7 +6034,7 @@ class Run1App:
                 modes[mv] = "edge"                                    # what a run would use now: the shared edge (the dialog turns it into "drawn" when there is none)
             else:
                 modes[mv] = "drawn"
-        self.line_editor = LineEditorDialog(self, frame, 0, movements, assignments, self.lines, modes)
+        self.line_editor = LineEditorDialog(self, frame, 0, movements, assignments, self.lines, modes, video_path=video)
         return self.line_editor
 
     def apply_editor_lines(self, lines_by_name, assignments, frame_w, frame_h):
@@ -7905,7 +8071,7 @@ class Run1App:
         return txt + ("" if self.run3_align_enabled_var.get() else " — ยังไม่ได้ติ๊กใช้")
 
     def open_align(self):
-        video = str(self.video_var.get() or "").strip()
+        video = self._edit_video_path()
         if not video or not os.path.isfile(video):
             messagebox.showerror("จัดแนวกับภาพโดรน", "เลือกวิดีโอก่อน (ใช้เฟรมจากวิดีโอนี้)")
             return None
@@ -7924,7 +8090,7 @@ class Run1App:
 
     def open_zone_editor(self):
         """The zone editor on the video | drone | X-Y views (needs a saved Align, the zones and the drone picture)."""
-        video = str(self.video_var.get() or "").strip()
+        video = self._edit_video_path()
         if not video or not os.path.isfile(video):
             messagebox.showerror("แก้รูปโซน", "เลือกวิดีโอก่อน")
             return None

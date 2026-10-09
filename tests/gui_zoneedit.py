@@ -207,6 +207,18 @@ ed.len_var.set(False)
 ed._draw(_img_off, "plan", ed.ppane)
 check("edge lengths (m) are drawn on the picture and the switch removes them", int((_img_on.sum(axis=2) > 0).sum()) > int((_img_off.sum(axis=2) > 0).sum()) + 200,
       f"{int((_img_on.sum(axis=2) > 0).sum())} vs {int((_img_off.sum(axis=2) > 0).sum())}")
+# another roadside video as the left picture
+video2 = os.path.join(tmp, "clip2.mp4")
+vw2 = cv2.VideoWriter(video2, cv2.VideoWriter_fourcc(*"mp4v"), 10, (CW, CH))
+for _ in range(5):
+    vw2.write(np.full((CH, CW, 3), 200, np.uint8))
+vw2.release()
+mean_before = float(ed.video_img.mean())
+zones_before = {z: [list(q) for q in pts] for z, pts in ed.zones.items()}
+check("zone editor: the window can change to another video", ed.change_video(video2) is True and ed.video_path == video2 and float(ed.video_img.mean()) > mean_before + 50)
+check("zone editor: the zones keep their pixel positions and the choice is remembered", ed.zones == zones_before and app.edit_video == video2 and ed.vpath_var.get() == video2)
+check("zone editor: a missing file changes nothing", ed.change_video(os.path.join(tmp, "nothing.mp4")) is False and ed.video_path == video2)
+app.edit_video = ""
 ed.len_var.set(True)
 ed.close()
 
