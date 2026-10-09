@@ -390,6 +390,9 @@ DEFAULT_SETTINGS = {
 
     "show_preview": False,              # off by default: drawing + showing every frame slows the run (PKT 1.33.0)
     "video_max_width": "1920",          # Tracking_Result.mp4 is scaled down to at most this width (0 = original size); detection uses the full frame
+    "video_fps": "0",                   # Tracking_Result.mp4 keeps only as many frames per second (0 = every frame, the video's own rate); it still lasts as long as the real video
+    "topview_max_px": "1280",           # Tracking_Topview.mp4 / Tracking_Topview_Drone.mp4: the longest side in px
+    "topview_fps": "0",                 # the same for the two X-Y videos (0 = one picture per processed frame)
     "hw_decode": False,                 # decode the input video on the graphics card when OpenCV supports it (falls back to normal decoding)
     "use_tensorrt": False,              # run YOLO through a TensorRT engine (best.engine next to best.pt, built on first use; needs the tensorrt package)
     "draw_center": False,  # draw the point that decides the zone (Trajectory Position) on the preview / result video
@@ -2189,6 +2192,39 @@ def frame_speeds_kmh(times, points, window_s=0.5, smoothing=1):
         dt = t[b] - t[a] if b > a else 0.0
         out.append(None if dt <= 0 else float(np.hypot(*(P[b] - P[a])) / dt * 3.6))
     return out
+
+
+def output_fps_ratio(out_fps_text, src_fps):
+    """The share of the frames a result video keeps (0 < ratio <= 1) so that it plays at out_fps; the video still lasts as long as the real one.
+    Blank / 0 / not a number / not below the source rate = 1.0 (every frame)."""
+    try:
+        v = float(str(out_fps_text).strip() or 0)
+    except ValueError:
+        return 1.0
+    try:
+        src = float(src_fps)
+    except (TypeError, ValueError):
+        return 1.0
+    if v <= 0 or src <= 0 or v >= src:
+        return 1.0
+    return v / src
+
+
+def output_frame_offset(i, ratio):
+    """The offset (0-based, counted in the frames that come in) of the i-th frame a result video keeps when it keeps `ratio` of them:
+    ratio 1 -> 0, 1, 2...; ratio 0.5 -> 0, 2, 4...; ratio 0.4 -> 0, 3, 5, 8..."""
+    if ratio >= 1.0:
+        return int(i)
+    return int(math.ceil(i / ratio - 1e-9))
+
+
+def topview_px_setting(text, default=1280):
+    """The longest side (px) of the X-Y / drone result video: a positive number, else the default."""
+    try:
+        v = int(float(str(text).strip()))
+    except ValueError:
+        return int(default)
+    return v if v > 0 else int(default)
 
 
 # ==== CORE-END ====
@@ -4452,6 +4488,9 @@ class Run1App:
             value=DEFAULT_SETTINGS["show_preview"]
         )
         self.video_max_width_var = tk.StringVar(value=DEFAULT_SETTINGS["video_max_width"])
+        self.video_fps_var = tk.StringVar(value=DEFAULT_SETTINGS["video_fps"])
+        self.topview_max_px_var = tk.StringVar(value=DEFAULT_SETTINGS["topview_max_px"])
+        self.topview_fps_var = tk.StringVar(value=DEFAULT_SETTINGS["topview_fps"])
         self.hw_decode_var = tk.BooleanVar(value=DEFAULT_SETTINGS["hw_decode"])
         self.use_tensorrt_var = tk.BooleanVar(value=DEFAULT_SETTINGS["use_tensorrt"])
 
@@ -6352,6 +6391,9 @@ class Run1App:
         ttk.Checkbutton(frame, text="ถอดรหัสวิดีโอด้วยการ์ดจอ (ถ้า OpenCV รองรับ; ไม่รองรับจะใช้วิธีปกติเอง)",
                         variable=self.hw_decode_var).grid(row=5, column=0, columnspan=2, sticky="w", pady=2)
         self.add_entry(frame, 6, "วิดีโอผลลัพธ์กว้างไม่เกิน (px, 0 = เท่าต้นฉบับ)", self.video_max_width_var)
+        self.add_entry(frame, 7, "วิดีโอผลลัพธ์ fps (0 = เท่าต้นฉบับ; ต่ำลง = เข้ารหัสเร็วขึ้น ไฟล์เล็กลง ความยาวเท่าเดิม)", self.video_fps_var)
+        self.add_entry(frame, 8, "วิดีโอ X-Y / X-Y บนโดรน: ด้านยาวไม่เกิน (px)", self.topview_max_px_var)
+        self.add_entry(frame, 9, "วิดีโอ X-Y / X-Y บนโดรน: fps (0 = ตามเฟรมที่ประมวลผล)", self.topview_fps_var)
 
     # ========================================================
     # PROCESSING
@@ -6732,6 +6774,9 @@ class Run1App:
             "match_threshold": self.match_threshold_var.get(),
             "show_preview": self.show_preview_var.get(),
             "video_max_width": self.video_max_width_var.get(),
+            "video_fps": self.video_fps_var.get(),
+            "topview_max_px": self.topview_max_px_var.get(),
+            "topview_fps": self.topview_fps_var.get(),
             "hw_decode": self.hw_decode_var.get(),
             "use_tensorrt": self.use_tensorrt_var.get(),
             "draw_center": self.draw_center_var.get(),
@@ -6948,6 +6993,9 @@ class Run1App:
             ("match_threshold", self.match_threshold_var),
             ("show_preview", self.show_preview_var),
             ("video_max_width", self.video_max_width_var),
+            ("video_fps", self.video_fps_var),
+            ("topview_max_px", self.topview_max_px_var),
+            ("topview_fps", self.topview_fps_var),
             ("hw_decode", self.hw_decode_var),
             ("use_tensorrt", self.use_tensorrt_var),
             ("draw_center", self.draw_center_var),
@@ -8704,6 +8752,8 @@ class Run1App:
             if last_frame is not None:
                 total_frames = last_frame      # progress / ETA / "Frame: i/total" run to the end of the window
 
+            rec_ratio = output_fps_ratio(settings.get("video_fps", "0"), fps)         # the share of the frames the result video keeps
+            rec_written = 0
             if settings["save_video"]:
 
                 fourcc = cv2.VideoWriter_fourcc(
@@ -8714,7 +8764,7 @@ class Run1App:
                 writer = cv2.VideoWriter(
                     output_video,
                     fourcc,
-                    fps,
+                    fps * rec_ratio,
                     out_size
                 )
 
@@ -9652,11 +9702,12 @@ class Run1App:
 
                     y_pos += 27
 
-                if writer is not None and rec_first <= frame_index <= rec_last_eff:
+                if writer is not None and rec_first <= frame_index <= rec_last_eff and (frame_index - rec_first) >= output_frame_offset(rec_written, rec_ratio):
 
                     writer.write(
                         frame
                     )
+                    rec_written += 1
 
                 if show_preview:
 
@@ -10611,9 +10662,9 @@ class Run1App:
         except Exception:
             return 1
 
-    def _run3_overlay_ttc_boxes(self, tracks, c, result_path, first_frame=1, draw_ttc=True, draw_pet=False, src_size=None):
+    def _run3_overlay_ttc_boxes(self, tracks, c, result_path, first_frame=1, draw_ttc=True, draw_pet=False, src_size=None, frame_ratio=1.0):
         """Draws the vehicle rectangles that TTC used on the NORMAL roadside video (Tracking_Result.mp4) after Run 3, so there is no third video: the
-        picture i of that video is frame `first_frame + i`; the 4 corners of every rectangle (metres) are mapped back into the picture with the
+        picture i of that video is frame `first_frame + output_frame_offset(i, frame_ratio)` (frame_ratio < 1: the video keeps only some of the frames); the 4 corners of every rectangle (metres) are mapped back into the picture with the
         calibration that is set. The video is read, drawn on and written to a temporary file that then takes the place of the original (if that file is
         locked, e.g. open in a player, it is tried again for a few seconds; then the result is saved as Tracking_Result_TTC.mp4; no temporary file is left). Returns the path of the result or None."""
         shapes = getattr(self, "_run3_ttc_shapes", None) if draw_ttc else None
@@ -10650,7 +10701,8 @@ class Run1App:
                 ok, img = reader.read()
                 if not ok:
                     break
-                sh = shapes.get(first_frame + i) if shapes else None
+                fno = first_frame + output_frame_offset(i, frame_ratio)
+                sh = shapes.get(fno) if shapes else None
                 marks = [mk for mk in (sh.get("marks", []) if sh else []) if mk.get("px") is not None]
                 if marks:
                     dst = np.concatenate([np.array([mk["pa"], mk["pb"], mk["label"]], dtype=float) for mk in marks])
@@ -10660,7 +10712,7 @@ class Run1App:
                            "marks": [dict(mk, pa=pix[3 * k], pb=pix[3 * k + 1], label=pix[3 * k + 2], cross=(pix[3 * k + 2] if mk.get("cross") is not None else None))
                                      for k, mk in enumerate(marks)]}
                     img = self._run3_draw_ttc_boxes(img, sh2, lambda q: q)
-                pm = [mk for mk in (pet_shapes.get(first_frame + i, []) if pet_shapes else []) if mk.get("px") is not None]
+                pm = [mk for mk in (pet_shapes.get(fno, []) if pet_shapes else []) if mk.get("px") is not None]
                 if pm:
                     dst = np.array([mk["cross"] for mk in pm], dtype=float)
                     init = np.array([np.asarray(mk["px"], dtype=float) for mk in pm])
@@ -10936,7 +10988,9 @@ class Run1App:
         fps_out = float(min(120.0, max(1.0, 1.0 / float(np.median(dts))))) if len(dts) else 30.0
         out_name = "Tracking_Topview_Drone.mp4" if drone else "Tracking_Topview.mp4"
         out_path = os.path.join(output_dir, out_name)
-        writer = BackgroundVideoWriter(cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*"mp4v"), fps_out, (W, H)))      # the encoding runs beside the drawing
+        tv_ratio = output_fps_ratio(dsp.get("topview_fps", "0"), fps_out)       # a lower rate keeps only some of the pictures (the trails still use every frame)
+        tv_seen = tv_kept = 0
+        writer = BackgroundVideoWriter(cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*"mp4v"), fps_out * tv_ratio, (W, H)))      # the encoding runs beside the drawing
         if not writer.isOpened():
             writer.release()
             raise RuntimeError("Unable to create " + out_name)
@@ -11006,7 +11060,10 @@ class Run1App:
                         cv2.putText(img, " | ".join(parts), (p_[0] + 8, max(14, p_[1] - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2, cv2.LINE_AA)
                 if flag("show_time", True):
                     cv2.putText(img, f"t = {now:.2f} s   frame {fr}", (6, H - 22), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
-                writer.write(img)
+                if tv_seen >= output_frame_offset(tv_kept, tv_ratio):
+                    writer.write(img)
+                    tv_kept += 1
+                tv_seen += 1
         finally:
             writer.release()
         return out_path
@@ -12593,16 +12650,26 @@ class Run1App:
             draw_pet = bool(c.get("pet_enabled") and c.get("pet_show_point_video"))
             video_src = (settings or {}).get("video")
 
+            tv_px = topview_px_setting((settings or {}).get("topview_max_px", ""))
+
             def make_xy():
-                return self._run3_write_topview_video(tracks, c, output_dir, video_src, display=settings)
+                return self._run3_write_topview_video(tracks, c, output_dir, video_src, max_px=tv_px, display=settings)
 
             def make_drone():
-                return self._run3_write_topview_video(tracks, c, output_dir, video_src, display=settings, drone=True)
+                return self._run3_write_topview_video(tracks, c, output_dir, video_src, max_px=tv_px, display=settings, drone=True)
 
             def make_overlay():
                 result_video = os.path.join(output_dir, "Tracking_Result.mp4")
+                src_fps = None
+                cap_ = cv2.VideoCapture(str(video_src)) if video_src and os.path.isfile(str(video_src)) else None
+                if cap_ is not None:
+                    try:
+                        src_fps = cap_.get(cv2.CAP_PROP_FPS)
+                    finally:
+                        cap_.release()
                 return self._run3_overlay_ttc_boxes(tracks, c, result_video, self._run3_record_first_frame(settings, video_src),
-                                                    src_size=self._run3_video_size(video_src), draw_ttc=draw_ttc, draw_pet=draw_pet)
+                                                    src_size=self._run3_video_size(video_src), draw_ttc=draw_ttc, draw_pet=draw_pet,
+                                                    frame_ratio=output_fps_ratio((settings or {}).get("video_fps", "0"), src_fps))
 
             # the three videos are independent (each reads the same finished results and writes its own file), and the video libraries release the
             # interpreter lock while they decode / encode, so they are made at the same time (about the time of the slowest one instead of the sum)

@@ -325,3 +325,8 @@ py -3.12 tools/batch_run.py --settings "../Output/Test/R5/คลิป/Settings.
 | Speed | `Speed.csv` เปลี่ยนเป็นความเร็วต่อเฟรม (คอลัมน์ `Frame, Time_s, Vehicle_ID, Vehicle_Class, Zone, Movement, Speed_kmh, QC_Flag`); **เลิก** `Speed_Detail.csv`, `Speed_Statistics.csv` และสรุปต่อคัน (แบบกว้าง) |
 
 ผล pivot/สูตร Excel ที่อ้างชื่อเดิมต้องแก้เป็นชื่อใหม่เมื่อเปิดผลรันใหม่
+
+
+| `video_fps` | 0 | วิดีโอผลลัพธ์ | **PKT 1.44.1**: Tracking_Result.mp4 เก็บกี่เฟรมต่อวินาที (0 = ทุกเฟรม) ยังยาวเท่าวิดีโอจริง ต่ำลง = เข้ารหัสเร็วขึ้น ไฟล์เล็ก; มีผลตอนรัน YOLO | 0, 30, 20 |
+| `topview_max_px` | 1280 | วิดีโอ X-Y / X-Y บนโดรน | ด้านยาวของภาพ (px) | 960, 1280, 1600 |
+| `topview_fps` | 0 | วิดีโอ X-Y / X-Y บนโดรน | fps ที่เก็บ (0 = ทุกภาพตามเฟรมที่ประมวลผล) | 0, 30 |
