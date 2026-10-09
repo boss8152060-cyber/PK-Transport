@@ -13,7 +13,7 @@
 
 - commit ใหม่ตั้งชื่อ `PKT x.y.z: คำอธิบายสั้น ๆ` (ต่อ `(PASS)` เมื่อผู้ใช้ยืนยัน) และติด tag `PKT-x.y.z` ที่ commit นั้น
 - `Merge pull request ...` ที่ GitHub สร้างให้ไม่ให้เลขเวอร์ชัน (ไม่ใช่งาน)
-- เวอร์ชันถัดไป: งานต่อเรื่องเดิม = `1.40.2`; เรื่องใหม่ = `1.41.0` (เลขเรียงตามหัวข้อ ไม่ใช่เวลาเสมอไป — หัวข้อ 1.25 ทำหลังหัวข้อ 1.26–1.28 ของเซสชัน cloud)
+- เวอร์ชันถัดไป: งานต่อเรื่องเดิม = `1.41.1`; เรื่องใหม่ = `1.42.0` (เลขเรียงตามหัวข้อ ไม่ใช่เวลาเสมอไป — หัวข้อ 1.25 ทำหลังหัวข้อ 1.26–1.28 ของเซสชัน cloud)
 
 
 ## 0.1.z — เอกสารโปรเจ็คและกติกา git (ก่อนชุด v27)
@@ -435,4 +435,10 @@
 | PKT | commit | ชื่อเดิม | ทำอะไร |
 |---|---|---|---|
 | **PKT 1.40.0** | `2d9794a` | PKT 1.40.0: UiRedesign_FiveTabs_IndicatorPages_FoldableGroups | 5 แท็บ, หน้าย่อยต่อตัวชี้วัด (● เปิด / ○ ปิด), กลุ่มย่อ/ขยายได้, ตารางวาดภาพ 3 วิดีโอพอดีจอ |
-| **PKT 1.40.1** | (commit นี้) | PKT 1.40.1: TensorRt_CudaMatchingPackage_EngineBuiltInSeparateProcess | แก้ TensorRT เด้ง: ลงแพ็กเกจ tensorrt ให้ตรง CUDA ของ PyTorch (cu12 → 10.x), สร้าง engine ในโปรเซสแยก, .bat ไม่เปิดซ้ำเมื่อดับ |
+| **PKT 1.40.1** | `a0d5fa3` | PKT 1.40.1: TensorRt_CudaMatchingPackage_EngineBuiltInSeparateProcess | แก้ TensorRT เด้ง: ลงแพ็กเกจ tensorrt ให้ตรง CUDA ของ PyTorch (cu12 → 10.x), สร้าง engine ในโปรเซสแยก, .bat ไม่เปิดซ้ำเมื่อดับ |
+
+## 1.41.z — เร่ง YOLO และการ์ดจอหลายค่าย
+
+| PKT | commit | ชื่อเดิม | ทำอะไร |
+|---|---|---|---|
+| **PKT 1.41.0** | (commit นี้) | PKT 1.41.0: TensorRtFp16_PerGpuEngineName_DirectMlBackendAnyGpu | TensorRT เป็น FP16 (เร็วขึ้นจริง 15.7→19.6 fps), engine แยกตามรุ่นการ์ด, ตัวเลือก GPU DirectML สำหรับ AMD/Intel/NVIDIA |

@@ -102,6 +102,12 @@ check("the indicators have a page each, with ● / ○ for on / off", [_ind.tab(
 app.run3_pet_enabled_var.set(False)
 check("an indicator that is switched off shows ○ on its page", _ind.tab(4, "text").startswith("○ "))
 app.run3_pet_enabled_var.set(True)
+# the device choices: Auto / CPU / GPU 0 / GPU DirectML (any maker); DirectML is the Windows backend for AMD / Intel
+app.device_var.set("GPU DirectML")
+check("device 'GPU DirectML' resolves to the directml backend", app.resolve_device() == "directml")
+app.device_var.set("CPU")
+check("device CPU resolves to cpu", app.resolve_device() == "cpu")
+app.device_var.set("Auto")
 # the groups fold: the title stays, the contents go; the tracker group starts folded; "ย่อทั้งหมด / ขยายทั้งหมด" act on a whole page
 _site = [v for k, v in app._sections.items()][1]                      # the groups of tab 2
 app.root.update()

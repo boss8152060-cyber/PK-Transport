@@ -2006,6 +2006,35 @@ def ensure_python_package(module, pip_spec=None, runner=None, finder=None, timeo
     return True, f"{module} installed with pip"
 
 
+def gpu_vendor(name):
+    """"nvidia" / "amd" / "intel" / "other" from the name of a video controller."""
+    n = str(name or "").lower()
+    if any(k in n for k in ("nvidia", "geforce", "quadro", "tesla", "rtx", "gtx")):
+        return "nvidia"
+    if any(k in n for k in ("amd", "radeon", "advanced micro")):
+        return "amd"
+    if "intel" in n:
+        return "intel"
+    return "other"
+
+
+def tensorrt_engine_name(model_path, imgsz, half, capability, trt_version):
+    """File name of a TensorRT engine: an engine only works on the GPU generation (compute capability) and the TensorRT it was built with, so both are in the
+    name (a project folder shared with a computer that has another GPU builds its own engine instead of loading a wrong one)."""
+    base = os.path.splitext(str(model_path))[0]
+    try:
+        cc = "sm%d%d" % (int(capability[0]), int(capability[1]))
+    except (TypeError, ValueError, IndexError):
+        cc = "smXX"
+    major = str(trt_version or "").split(".")[0] or "x"
+    return f"{base}_{int(imgsz)}_{'fp16' if half else 'fp32'}_{cc}_trt{major}.engine"
+
+
+def directml_onnx_name(model_path, imgsz):
+    """File name of the ONNX model used by the DirectML backend (fixed input size = imgsz)."""
+    return os.path.splitext(str(model_path))[0] + f"_{int(imgsz)}_dml.onnx"
+
+
 def tensorrt_pip_spec(torch_cuda):
     """The pip package of TensorRT that matches the CUDA of PyTorch. `pip install tensorrt` alone gives the newest TensorRT built for CUDA 13, which needs a newer
     NVIDIA driver than a PyTorch cu12x install runs on (it crashes the whole program while the engine is built): CUDA 12 -> tensorrt-cu12 below 11 (10.x)."""
@@ -2066,15 +2095,15 @@ def prepare_tensorrt_packages(torch_cuda):
     return ok, msg
 
 
-def build_tensorrt_engine(model_path, engine, imgsz, device, timeout_s=3600):
+def build_tensorrt_engine(model_path, engine, imgsz, device, timeout_s=3600, half=True):
     """Build the engine in a SEPARATE Python process: a crash of TensorRT / the driver then cannot take PK Studio down with it, it only means no engine
     (the caller goes on with the .pt model). Raises RuntimeError with the end of the log when it fails."""
     import subprocess
     import sys
     code = ("import sys, os; from ultralytics import YOLO; "
-            "b = YOLO(sys.argv[1]).export(format='engine', imgsz=int(sys.argv[2]), device=sys.argv[3], half=False, verbose=False); "
+            "b = YOLO(sys.argv[1]).export(format='engine', imgsz=int(sys.argv[2]), device=sys.argv[3], half=(sys.argv[5] == '1'), verbose=False); "
             "os.replace(str(b), sys.argv[4]) if os.path.abspath(str(b)) != os.path.abspath(sys.argv[4]) else None")
-    res = subprocess.run([sys.executable, "-c", code, str(model_path), str(int(imgsz)), str(device), str(engine)], capture_output=True, text=True, timeout=timeout_s)
+    res = subprocess.run([sys.executable, "-c", code, str(model_path), str(int(imgsz)), str(device), str(engine), "1" if half else "0"], capture_output=True, text=True, timeout=timeout_s)
     if res.returncode != 0 or not os.path.isfile(engine):
         tail = " | ".join(((res.stderr or "") + (res.stdout or "")).strip().splitlines()[-4:])
         raise RuntimeError(f"building the TensorRT engine failed (exit code {res.returncode}): {tail}")
@@ -3860,20 +3889,152 @@ def open_video_capture(path, hw_decode=False):
     return cv2.VideoCapture(path)
 
 
-def load_yolo_model(model_path, use_tensorrt=False, imgsz=640, device=None):
-    """(YOLO model, path used). With use_tensorrt a TensorRT engine is used: <model>_<imgsz>.engine next to the .pt, built (once, several minutes)
-    when it is missing or older than the .pt; the tensorrt and onnx packages are pip-installed into this Python first when missing. Anything that fails (no tensorrt package, CPU device, export error) falls back to the .pt model."""
-    if use_tensorrt and str(model_path).lower().endswith(".pt") and str(device).lower() not in ("cpu", "none", ""):
-        engine = os.path.splitext(model_path)[0] + f"_{int(imgsz)}.engine"
+def list_video_controllers(timeout_s=12):
+    """The names of the video controllers of this computer (Windows: PowerShell Get-CimInstance); [] when they cannot be listed. Cached."""
+    global _VIDEO_CONTROLLERS
+    if _VIDEO_CONTROLLERS is not None:
+        return _VIDEO_CONTROLLERS
+    names = []
+    if os.name == "nt":
         try:
-            if not os.path.isfile(engine) or os.path.getmtime(engine) < os.path.getmtime(model_path):
-                # the engine has to be built: TensorRT (the build that fits this CUDA) and ONNX are installed here when they are missing / wrong
-                ok, msg = prepare_tensorrt_packages(getattr(torch.version, "cuda", None))
-                if not ok:
-                    raise RuntimeError(msg)
-                print("TensorRT    : building", engine, "(first time only, this takes a few minutes; done in its own process)")
-                build_tensorrt_engine(model_path, engine, imgsz, device)
-            return YOLO(engine, task="detect"), engine
+            res = subprocess.run(["powershell", "-NoProfile", "-Command", "Get-CimInstance Win32_VideoController | ForEach-Object { $_.Name }"],
+                                 capture_output=True, text=True, timeout=timeout_s)
+            names = [x.strip() for x in (res.stdout or "").splitlines() if x.strip()]
+        except Exception:
+            names = []
+    _VIDEO_CONTROLLERS = names
+    return names
+
+
+_VIDEO_CONTROLLERS = None
+
+
+def directml_target_dir():
+    """Where the DirectML build of ONNX Runtime is installed: a folder of its own next to PK Studio, so that it never replaces the onnxruntime / onnxruntime-gpu
+    of the Python (they have the same module name)."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "_ort_directml")
+
+
+def prepare_directml_runtime():
+    """Make `import onnxruntime` give the DirectML build (pip install --target into directml_target_dir when it is not there yet). Returns (ok, message).
+    DirectML runs on any DirectX 12 GPU (AMD, Intel, NVIDIA) on Windows. Once onnxruntime is imported in this process the build cannot be changed any more."""
+    if os.name != "nt":
+        return False, "DirectML works on Windows only"
+    target = directml_target_dir()
+    mod = sys.modules.get("onnxruntime")
+    if mod is None:
+        if not os.path.isdir(os.path.join(target, "onnxruntime")):
+            print("DirectML    : installing onnxruntime-directml into", target)
+            res = subprocess.run([sys.executable, "-m", "pip", "install", "--target", target, "onnxruntime-directml"], capture_output=True, text=True, timeout=1800)
+            if res.returncode != 0:
+                return False, "pip install onnxruntime-directml failed: " + " | ".join((res.stderr or res.stdout or "").strip().splitlines()[-3:])
+        if target not in sys.path:
+            sys.path.insert(0, target)
+        importlib.invalidate_caches()
+        try:
+            import onnxruntime as mod
+        except Exception as exc:
+            return False, f"onnxruntime (DirectML) cannot be imported: {exc}"
+    if "DmlExecutionProvider" not in mod.get_available_providers():
+        return False, "this onnxruntime has no DirectML (another build was already loaded in this run: close PK Studio and open it again)"
+    return True, "DirectML is ready"
+
+
+def patch_onnxruntime_providers(providers):
+    """Every ONNX Runtime session that Ultralytics opens from now on uses `providers` (Ultralytics only knows CUDA and CPU)."""
+    import onnxruntime as ort
+    if getattr(ort.InferenceSession, "_pk_providers", None) == list(providers):
+        return
+    base = getattr(ort.InferenceSession, "_pk_base", ort.InferenceSession)
+
+    class _Session(base):
+        _pk_base = base
+        _pk_providers = list(providers)
+
+        def __init__(self, path, *a, **k):
+            k["providers"] = list(providers)
+            super().__init__(path, *a, **k)
+    ort.InferenceSession = _Session
+
+
+def build_onnx_model(model_path, onnx_path, imgsz, timeout_s=1800):
+    """Export the YOLO model to ONNX (fixed size imgsz) in a separate process. Raises RuntimeError when it fails."""
+    code = ("import sys, os; os.environ['YOLO_AUTOINSTALL'] = 'false'; from ultralytics import YOLO; "
+            "b = YOLO(sys.argv[1]).export(format='onnx', imgsz=int(sys.argv[2]), device='cpu', simplify=False, verbose=False); "
+            "os.replace(str(b), sys.argv[3]) if os.path.abspath(str(b)) != os.path.abspath(sys.argv[3]) else None")
+    ok, msg = ensure_python_package("onnx", "onnx")
+    if not ok:
+        raise RuntimeError(msg)
+    res = subprocess.run([sys.executable, "-c", code, str(model_path), str(int(imgsz)), str(onnx_path)], capture_output=True, text=True, timeout=timeout_s)
+    if res.returncode != 0 or not os.path.isfile(onnx_path):
+        tail = " | ".join(((res.stderr or "") + (res.stdout or "")).strip().splitlines()[-4:])
+        raise RuntimeError(f"exporting the model to ONNX failed (exit code {res.returncode}): {tail}")
+    return onnx_path
+
+
+def load_directml_model(model_path, imgsz=640):
+    """(YOLO model, onnx path) that runs on the GPU through DirectML (any maker). Needs the .pt model: it is exported to <model>_<imgsz>_dml.onnx once."""
+    if not str(model_path).lower().endswith(".pt"):
+        raise RuntimeError("the DirectML backend needs a .pt model (it makes the ONNX file itself)")
+    ok, msg = prepare_directml_runtime()
+    print("DirectML    :", msg)
+    if not ok:
+        raise RuntimeError(msg)
+    onnx_path = directml_onnx_name(model_path, imgsz)
+    if not os.path.isfile(onnx_path) or os.path.getmtime(onnx_path) < os.path.getmtime(model_path):
+        print("DirectML    : exporting", onnx_path, "(first time only)")
+        build_onnx_model(model_path, onnx_path, imgsz)
+    try:                                                              # Ultralytics must not pip-install the plain onnxruntime over the DirectML build
+        import ultralytics.utils.checks as _checks
+        _checks.AUTOINSTALL = False
+    except Exception:
+        pass
+    patch_onnxruntime_providers(["DmlExecutionProvider", "CPUExecutionProvider"])
+    return YOLO(onnx_path, task="detect"), onnx_path
+
+
+def load_yolo_model(model_path, use_tensorrt=False, imgsz=640, device=None):
+    """(YOLO model, path used). device "directml" = the GPU through DirectML (AMD / Intel / NVIDIA, see load_directml_model). With use_tensorrt (NVIDIA) a
+    TensorRT engine is used: <model>_<imgsz>_<fp16|fp32>_<sm..>_trt<n>.engine next to the .pt (the name says which GPU generation and TensorRT it is for), built
+    in its own process (once, several minutes) when it is missing or older than the .pt; FP16 first (1.5x faster than FP32 on a GTX 1650), FP32 when FP16 fails;
+    the tensorrt and onnx packages that fit the CUDA of PyTorch are pip-installed first when missing. Anything that fails (no tensorrt package, CPU device,
+    export error) is logged and the plain .pt model is used."""
+    if str(device).lower() == "directml":
+        return load_directml_model(model_path, imgsz)
+    if use_tensorrt and str(model_path).lower().endswith(".pt") and str(device).lower() not in ("cpu", "none", ""):
+        try:
+            try:
+                index = int(str(device).split(":")[1]) if ":" in str(device) else 0
+            except ValueError:
+                index = 0
+            capability = torch.cuda.get_device_capability(index)
+            import importlib.metadata as _md
+            trt_version = ""
+            for dist_name in ("tensorrt", "tensorrt_cu12", "tensorrt_cu13"):
+                try:
+                    trt_version = _md.version(dist_name)
+                    break
+                except Exception:
+                    continue
+            names = {half: tensorrt_engine_name(model_path, imgsz, half, capability, trt_version) for half in (True, False)}
+            for half in (True, False):                                 # an engine that is already there wins (FP16 first)
+                eng = names[half]
+                if os.path.isfile(eng) and os.path.getmtime(eng) >= os.path.getmtime(model_path):
+                    return YOLO(eng, task="detect"), eng
+            # no engine yet: TensorRT (the build that fits this CUDA) and ONNX are installed here when they are missing / wrong
+            ok, msg = prepare_tensorrt_packages(getattr(torch.version, "cuda", None))
+            if not ok:
+                raise RuntimeError(msg)
+            last = None
+            for half in (True, False):
+                print("TensorRT    : building", names[half], "(first time only, this takes a few minutes; done in its own process)")
+                try:
+                    build_tensorrt_engine(model_path, names[half], imgsz, device, half=half)
+                    return YOLO(names[half], task="detect"), names[half]
+                except Exception as exc:
+                    last = exc
+                    log.warning("TensorRT %s engine failed: %s", "FP16" if half else "FP32", exc)
+            raise last
         except Exception:
             log.exception("TensorRT engine could not be used; the .pt model is used instead")
     return YOLO(model_path), model_path
@@ -4547,6 +4708,7 @@ class Run1App:
             value=""
         )
 
+        self.device_note_var = tk.StringVar(value="กำลังตรวจการ์ดจอ…")
         self.hardware_var = tk.StringVar(
             value="Checking hardware..."
         )
@@ -6278,7 +6440,8 @@ class Run1App:
             values=[
                 "Auto",
                 "CPU",
-                "GPU 0"
+                "GPU 0",
+                "GPU DirectML"
             ],
             state="readonly",
             width=18
@@ -6344,7 +6507,9 @@ class Run1App:
 
         ttk.Label(
             frame,
-            text="GPU 0 = NVIDIA GeForce GTX 1650 — บนการ์ดรุ่นนี้ FP16 ช้ากว่า FP32 (~2.7 เท่า) ใช้ Auto หรือ FP32"
+            textvariable=self.device_note_var,
+            wraplength=900,
+            justify="left"
         ).grid(
             row=3,
             column=0,
@@ -6497,7 +6662,30 @@ class Run1App:
     # HARDWARE
     # ========================================================
 
+    def refresh_gpu_note(self):
+        """The text under Device: which video controllers this computer has and which choice fits each (done in a thread: listing them takes a second or two)."""
+        def work():
+            names = list_video_controllers()
+            lines = []
+            cuda = torch.cuda.is_available()
+            for n in names:
+                v = gpu_vendor(n)
+                if v == "nvidia" and cuda:
+                    lines.append(f"{n}: เลือก GPU 0 (CUDA) — ติ๊ก \"เร่ง YOLO ด้วย TensorRT\" (FP16) จะเร็วที่สุด; PyTorch FP16 บนการ์ดรุ่นเก่ากว่า RTX อาจช้า ใช้ Auto")
+                elif v == "nvidia":
+                    lines.append(f"{n}: Python นี้ไม่มี CUDA — ติดตั้ง PyTorch แบบ CUDA หรือเลือก GPU DirectML")
+                elif v in ("amd", "intel"):
+                    lines.append(f"{n}: เลือก GPU DirectML (ใช้ได้กับ AMD / Intel บน Windows; ครั้งแรกจะโหลด onnxruntime-directml และแปลงโมเดล)")
+                else:
+                    lines.append(f"{n}: เลือก GPU DirectML หรือ CPU")
+            if not lines:
+                lines.append("ตรวจชื่อการ์ดจอไม่ได้ — ถ้าเป็น NVIDIA เลือก GPU 0; AMD / Intel เลือก GPU DirectML")
+            text = "การ์ดจอที่พบ:\n" + "\n".join("• " + x for x in lines)
+            self.post_ui(lambda t=text: self.device_note_var.set(t))
+        threading.Thread(target=work, daemon=True).start()
+
     def update_hardware_info(self):
+        self.refresh_gpu_note()
 
         if torch.cuda.is_available():
 
@@ -8127,6 +8315,11 @@ class Run1App:
         if selected == "CPU":
             return "cpu"
 
+        if selected == "GPU DirectML":
+            if os.name != "nt":
+                raise RuntimeError("GPU DirectML works on Windows only")
+            return "directml"
+
         if selected == "GPU 0":
 
             if not torch.cuda.is_available():
@@ -8463,7 +8656,7 @@ class Run1App:
                         dev_index = 0
                     use_fp16 = fp16_is_faster(dev_index)       # FP32 on the GTX 16 series, where FP16 is much slower
 
-            if precision == "FP16" and not device.startswith("cuda"):
+            if precision == "FP16" and not device.startswith("cuda") and device != "directml":
 
                 raise RuntimeError(
                     "FP16 requires a CUDA/GPU device"
@@ -8511,7 +8704,7 @@ class Run1App:
                 model_is_engine = bool(carry.get("model_is_engine"))
             else:
                 model, used = load_yolo_model(model_path, bool(settings.get("use_tensorrt")), int(settings.get("img_size") or 640), device)
-                model_is_engine = str(used).lower().endswith(".engine")
+                model_is_engine = str(used).lower().endswith((".engine", ".onnx"))
                 print("Model file  :", used)
 
             cap = open_video_capture(video_path, bool(settings.get("hw_decode")))
@@ -8878,7 +9071,7 @@ class Run1App:
                         "conf": conf,
                         "iou": iou,
                         "imgsz": img_size,
-                        "device": device,
+                        "device": "cpu" if device == "directml" else device,        # DirectML: the ONNX Runtime session does the GPU work, Ultralytics only does the rest
                         "verbose": False,
                     }
 

@@ -18,3 +18,8 @@ Dataset/
 .vscode/
 .idea/
 Thumbs.db
+
+# The DirectML build of ONNX Runtime that PK Studio installs for itself, and models made from the .pt files
+_ort_directml/
+*.engine
+*.onnx

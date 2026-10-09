@@ -8,7 +8,7 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = open(os.path.join(os.path.dirname(HERE), "PKStudio.py"), encoding="utf-8").read()
-NS = {"np": np, "math": math}
+NS = {"np": np, "math": math, "os": os}
 exec(SRC[SRC.index("# ==== CORE-BEGIN"):SRC.index("# ==== CORE-END")], NS)
 
 
@@ -116,6 +116,29 @@ class TensorRtPackages(unittest.TestCase):
     def test_a_failing_build_raises_instead_of_crashing_the_program(self):
         with self.assertRaises(RuntimeError):
             NS["build_tensorrt_engine"]("no_such_model.pt", os.path.join(HERE, "no_such.engine"), 640, "cpu", timeout_s=120)
+
+
+class GpuBackends(unittest.TestCase):
+    def test_vendor_from_the_name(self):
+        v = NS["gpu_vendor"]
+        self.assertEqual(v("NVIDIA GeForce GTX 1650"), "nvidia")
+        self.assertEqual(v("NVIDIA RTX A2000 Laptop GPU"), "nvidia")
+        self.assertEqual(v("AMD Radeon(TM) Graphics"), "amd")
+        self.assertEqual(v("Radeon RX 6600"), "amd")
+        self.assertEqual(v("Intel(R) UHD Graphics 630"), "intel")
+        self.assertEqual(v("Microsoft Basic Display Adapter"), "other")
+        self.assertEqual(v(None), "other")
+
+    def test_engine_name_tells_the_gpu_generation_and_precision(self):
+        n = NS["tensorrt_engine_name"]
+        base = os.path.join("x", "best.pt")
+        self.assertEqual(n(base, 640, True, (7, 5), "10.16.1.11"), os.path.join("x", "best") + "_640_fp16_sm75_trt10.engine")
+        self.assertEqual(n(base, 960, False, (8, 6), "11.4"), os.path.join("x", "best") + "_960_fp32_sm86_trt11.engine")
+        self.assertNotEqual(n(base, 640, True, (7, 5), "10.1"), n(base, 640, True, (8, 9), "10.1"))      # another GPU generation = another file
+        self.assertTrue(n(base, 640, True, None, "").endswith("_smXX_trtx.engine"))
+
+    def test_directml_onnx_name_has_the_size(self):
+        self.assertEqual(NS["directml_onnx_name"](os.path.join("m", "best.pt"), 640), os.path.join("m", "best") + "_640_dml.onnx")
 
 
 if __name__ == "__main__":
