@@ -408,6 +408,16 @@ def scene2(app):
     pairs_b = {(r["Vehicle_A_ID"], r["Vehicle_B_ID"]) for r in read_csv(os.path.join(out_b, "TTC.csv"))}
     check("TTC record limit: 0.5 s keeps only P-R; blank = everything is recorded", pairs_c == {("1", "3")} and pairs_b == {("4", "5"), ("1", "3")}, f"{sorted(pairs_c)} | {sorted(pairs_b)}")
 
+    # the lowest value: a frame whose TTC is below it is not counted (P-R runs to ~ 0 s as the two pass the crossing), so its event minimum stays above it
+    app.run3_ttc_min_record_var.set("0.5")
+    out_m, _ = run_scene(app, veh)
+    app.run3_ttc_min_record_var.set(m.RUN3_DEFAULTS["ttc_min_record_s"])
+    ev_m = read_csv(os.path.join(out_m, "TTC.csv"))
+    fr_m = read_csv(os.path.join(out_m, "TTC_Frames.csv"))
+    check("TTC lowest value 0.5 s: every event minimum is >= 0.5 s and the dropped frames are marked Below_TTC_Min",
+          bool(ev_m) and all(float(r["TTC_s"]) >= 0.5 for r in ev_m) and any(r["Status"] == "Below_TTC_Min" for r in fr_m),
+          f"{[r['TTC_s'] for r in ev_m]} | {sum(r['Status'] == 'Below_TTC_Min' for r in fr_m)} frames")
+
     # ---- the expected collision point, the miss distance and the arrival times
     out_p, _ = run_scene(app, veh)
     tp = read_csv(os.path.join(out_p, "TTC.csv"))

@@ -567,6 +567,7 @@ RUN3_DEFAULTS = {
     "pet_min_speed_kmh": "",                # a vehicle slower than this while passing the crossing point skips the pair; blank = no limit
     "pet_max_s": "10.0",                    # pairs/events above this are not PET conflicts; blank = no limit
     "ttc_max_record_s": "3.0",              # record TTC events with TTCmin <= this value
+    "ttc_min_record_s": "",                 # a frame whose TTC is below this is not counted (a pair passing side by side has a TTC that runs to 0 without a collision); blank = no limit
     "ttc_velocity_window_s": "0.50",        # centred window of observed samples for velocity
     "ttc_min_speed_kmh": "5.0",             # a frame where either vehicle is slower than this is skipped (a parked vehicle whose box flickers has a false velocity)
     "ttc_decision": "by_type",              # which pairs count: by_type (by the conflict angle, see ttc_pair_decision) | miss (the points come within (W_A+W_B)/2 + ttc_miss_margin_m) | none (every approaching pair, as Yaibok et al. 2026)
@@ -4592,6 +4593,7 @@ class Run1App:
         self.run3_pet_show_drone_var = tk.BooleanVar(value=RUN3_DEFAULTS["pet_show_point_drone"])
         self.run3_pet_show_video_var = tk.BooleanVar(value=RUN3_DEFAULTS["pet_show_point_video"])
         self.run3_ttc_max_record_var = tk.StringVar(value=RUN3_DEFAULTS["ttc_max_record_s"])
+        self.run3_ttc_min_record_var = tk.StringVar(value=RUN3_DEFAULTS["ttc_min_record_s"])
         self.run3_ttc_velocity_window_var = tk.StringVar(value=RUN3_DEFAULTS["ttc_velocity_window_s"])
         self.run3_ttc_min_speed_var = tk.StringVar(value=RUN3_DEFAULTS["ttc_min_speed_kmh"])
         self.run3_risk_vars = {key: tk.StringVar(value=RUN3_DEFAULTS[key]) for key in RISK_SETTING_KEYS}
@@ -5268,6 +5270,7 @@ class Run1App:
             self._entry_row(box, 12 + i, label, var, span=7)
         ttk.Checkbutton(box, text="ท้ายชนท้าย: คิด TTC ของช่องว่างท้ายรถหน้า–หัวรถหลัง (หักความยาวรถ; ค่าแบบจุดเก็บไว้ในคอลัมน์ TTC_Point_s)",
                         variable=self.run3_ttc_rear_gap_var).grid(row=15, column=0, columnspan=8, sticky="w", pady=2)
+        self._entry_row(box, 16, "ไม่นับเฟรมที่ TTC < (s) — ว่าง = นับทั้งหมด (ตัดค่าที่ลงไปใกล้ 0 เพราะรถแค่ผ่านกัน/กรอบกระโดด)", self.run3_ttc_min_record_var, span=7)
         for i, (label, var) in enumerate((("บันทึกเมื่อ TTCmin ≤ (s) — ว่าง = บันทึกทั้งหมด", self.run3_ttc_max_record_var),
                                           ("หน้าต่างคำนวณความเร็ว (s)", self.run3_ttc_velocity_window_var),
                                           ("ความเร็วขั้นต่ำของแต่ละคัน (km/h) — คันใดต่ำกว่านี้ข้ามเฟรมนั้น (รถจอด กรอบกระพริบ)", self.run3_ttc_min_speed_var),
@@ -6835,6 +6838,7 @@ class Run1App:
                 "pet_show_point_drone": self.run3_pet_show_drone_var.get(),
                 "pet_show_point_video": self.run3_pet_show_video_var.get(),
                 "ttc_max_record_s": self.run3_ttc_max_record_var.get(),
+                "ttc_min_record_s": self.run3_ttc_min_record_var.get(),
                 "ttc_velocity_window_s": self.run3_ttc_velocity_window_var.get(),
                 "ttc_min_speed_kmh": self.run3_ttc_min_speed_var.get(),
                 **{key: var.get() for key, var in self.run3_risk_vars.items()},
@@ -7055,6 +7059,7 @@ class Run1App:
                 ("pet_show_point_drone", self.run3_pet_show_drone_var),
                 ("pet_show_point_video", self.run3_pet_show_video_var),
                 ("ttc_max_record_s", self.run3_ttc_max_record_var),
+                ("ttc_min_record_s", self.run3_ttc_min_record_var),
                 ("ttc_velocity_window_s", self.run3_ttc_velocity_window_var),
                 ("ttc_min_speed_kmh", self.run3_ttc_min_speed_var),
                 *[(key, var) for key, var in self.run3_risk_vars.items()],
@@ -8049,6 +8054,8 @@ class Run1App:
             need_zone(self.run3_ttc_zone_vars, "TTC")
             if str(self.run3_ttc_max_record_var.get()).strip():
                 self._run3_float(self.run3_ttc_max_record_var.get(), "TTC record limit (s)")
+            if str(self.run3_ttc_min_record_var.get()).strip():
+                self._run3_float(self.run3_ttc_min_record_var.get(), "TTC lowest value to count (s)", positive=False)
             self._run3_float(self.run3_ttc_velocity_window_var.get(), "TTC velocity window (s)")
             self._run3_float(self.run3_ttc_min_speed_var.get(), "TTC minimum vehicle speed (km/h)", positive=False)
             self._run3_float(self.run3_ttc_min_rel_speed_var.get(), "TTC minimum relative speed (m/s)", positive=False)
@@ -10434,6 +10441,7 @@ class Run1App:
             "pet_show_point_video": bool(self.run3_pet_show_video_var.get()),
             "pet_min_speed_kmh": pet_min_speed if (pet_min_speed is not None and pet_min_speed > 0) else None,
             "ttc_max_record_s": (None if not str(self.run3_ttc_max_record_var.get()).strip() else num(self.run3_ttc_max_record_var, 3.0)),
+            "ttc_min_record_s": (None if not str(self.run3_ttc_min_record_var.get()).strip() else num(self.run3_ttc_min_record_var, 0.0)),
             "ttc_velocity_window_s": num(self.run3_ttc_velocity_window_var, 0.5),
             "ttc_min_speed_kmh": num(self.run3_ttc_min_speed_var, 5.0),
             "risk_limits": {
@@ -11983,6 +11991,7 @@ class Run1App:
         rel_min = c["ttc_min_rel_speed_ms"]
         radius = c["ttc_pair_radius_m"]
         ttc_max = c["ttc_max_record_s"]                       # None = record everything
+        ttc_min = c.get("ttc_min_record_s")                   # None = every value counts; a frame below this is not counted
         miss_margin = c.get("ttc_miss_margin_m", 0.5)
         decision = c.get("ttc_decision", "by_type")
         rear_margin = c.get("ttc_rear_margin_m", 1.0)
@@ -12008,7 +12017,7 @@ class Run1App:
 
         visits_of = {}                                        # tid -> flicker-cleaned zone visits (the Zone Sequence with its times)
         diag = {"zone_geometry": bool(geom), "events_type_excluded": 0, "frames_zone_not_on_path": 0, "frames_collision_point_outside_zone": 0, "frames_with_pairs": 0, "pairs_evaluated": 0, "pairs_outside_radius": 0, "pairs_slow_vehicle": 0, "pairs_slow_relative": 0,
-                "frames_boxes_never_touch": 0, "frames_already_overlapping": 0, "frames_above_ttc_max": 0, "candidates": 0}
+                "frames_boxes_never_touch": 0, "frames_already_overlapping": 0, "frames_above_ttc_max": 0, "frames_below_ttc_min": 0, "candidates": 0}
 
         def size_of(cls):
             return (lengths.get(cls) or 4.5, widths.get(cls) or 1.8)
@@ -12094,6 +12103,9 @@ class Run1App:
                 elif ttc_max is not None and ttc_val > ttc_max:
                     diag["frames_above_ttc_max"] += 1
                     entry.update({"ttc": ttc_val, "status": "Above_TTC_Max"})
+                elif ttc_min is not None and ttc_val < ttc_min:
+                    diag["frames_below_ttc_min"] += 1
+                    entry.update({"ttc": ttc_val, "status": "Below_TTC_Min"})
                 else:
                     diag["candidates"] += 1
                     entry.update({"ttc": ttc_val, "status": "Counted"})
@@ -12523,7 +12535,7 @@ class Run1App:
                             "decision_text": {"by_type": "angle < 30 or > 150 deg (the same line): the points come within (W_A+W_B)/2 + rear margin; otherwise the paths cross ahead of both "
                                                          "and the vehicles reach the crossing within cross_time_s of each other",
                                               "miss": "the points come within (W_A+W_B)/2 + miss margin", "none": "every approaching pair"}.get(c.get("ttc_decision", "by_type"), ""),
-                            "cross_time_s": c.get("ttc_cross_time_s"), "rear_margin_m": c.get("ttc_rear_margin_m"), "rear_clear_gap": bool(c.get("ttc_rear_clear_gap")),
+                            "min_record_s": c.get("ttc_min_record_s"), "max_record_s": c.get("ttc_max_record_s"), "cross_time_s": c.get("ttc_cross_time_s"), "rear_margin_m": c.get("ttc_rear_margin_m"), "rear_clear_gap": bool(c.get("ttc_rear_clear_gap")),
                             "miss_margin_m": c.get("ttc_miss_margin_m"), "min_vehicle_speed_kmh": c["ttc_min_speed_kmh"],
                             "min_rel_speed_ms": c["ttc_min_rel_speed_ms"], "pair_radius_m": c["ttc_pair_radius_m"],
                             "angle_rear_end_deg": c["ttc_angle_rear_end_deg"], "angle_crossing_deg": c["ttc_angle_crossing_deg"]}

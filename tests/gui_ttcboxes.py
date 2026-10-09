@@ -47,7 +47,7 @@ app.zones = {name: [] for name in m.ZONE_NAMES}
 app.zones["Zone 3"] = [(20, 100), (1260, 100), (1260, 600), (20, 600)]
 c = {"perspective": None, "perspective_enabled": False, "ppm": PPM, "axis_deg": 0.0, "align": None, "site_id": 8,
      "ttc_enabled": True, "ttc_zones": [3], "ttc_velocity_window_s": 0.5, "ttc_min_speed_kmh": 5.0, "ttc_min_rel_speed_ms": 0.5, "ttc_pair_radius_m": 50.0,
-     "ttc_max_record_s": None, "ttc_angle_rear_end_deg": 30.0, "ttc_angle_crossing_deg": 85.0,
+     "ttc_max_record_s": None, "ttc_min_record_s": None, "ttc_angle_rear_end_deg": 30.0, "ttc_angle_crossing_deg": 85.0,
      "widths": {"Car": 1.8}, "lengths": {"Car": 4.5}, "risk_limits": dict(m.RISK_DEFAULT_LIMITS), "ttc_show_boxes_xy": True, "ttc_show_boxes_video": True}
 
 tracks = {1: [], 2: []}
