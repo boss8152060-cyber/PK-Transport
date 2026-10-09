@@ -293,8 +293,6 @@ def scene2(app):
         (4, "Car", make_rows(4, "Car", along_x(-12.0, 10.0), lambda x, y: 3, n, (4.5, 1.8))),
         (5, "Car", make_rows(5, "Car", along_x(-12.0, 5.0, x0=20.0), lambda x, y: 3, n, (4.5, 1.8))),
     ]
-    app.run3_ttc_method_var.set("box")                              # the rectangle method first (the checks below), the point method at the end of this scene
-    app.run3_pet_area_shape_var.set("circle")                       # the circle area first (the checks below), the rectangle area right after the PET checks
     out, summary = run_scene(app, veh)
     print("scene 2 output:", out)
     # the pair screening radius is adjustable: at 5 m only the P-R pair (about 1 m apart when they cross) is evaluated
@@ -324,15 +322,15 @@ def scene2(app):
     mv = summary["source_counts"]["movement_counts"]
     check("scene 2 movements: P = 2-3-4, Q and R = 1-3-6-7 (partial)", mv.get("2-3-4") == 1 and mv.get("1-3-6-7") == 2, str(mv))
 
-    # ---- PET ----
+    # ---- PET (the crossing point only: the time each vehicle is AT the crossing of the two paths; the later minus the earlier) ----
     pet = read_csv(os.path.join(out, "PET.csv"))
     pairs = {(r["Vehicle_A_ID"], r["Vehicle_B_ID"]): r for r in pet}
-    check("PET (conflict area, radius (W_A+W_B)/2 = 1.8 m): one event P-Q (P-R are in the area at the same time = undefined, Q-R never cross, F/L no movement)",
-          set(pairs) == {("1", "2")}, str(sorted(pairs)))
-    if ("1", "2") in pairs:
+    check("PET at the crossing point: events P-Q and P-R (Q-R never cross, F/L have no movement)", set(pairs) == {("1", "2"), ("1", "3")}, str(sorted(pairs)))
+    if ("1", "2") in pairs and ("1", "3") in pairs:
         r = pairs[("1", "2")]
-        check("PET PET(P,Q) = 1.24 s (P leaves the 1.8 m circle at 1.68 s, Q enters it at 2.92 s)", abs(float(r["PET_s"]) - 1.24) < 0.06, r["PET_s"])
-        check("PET area radius written: 1.8 m", abs(float(r["Area_Radius_m"]) - 1.8) < 0.01, r["Area_Radius_m"])
+        check("PET(P,Q) = 1.6 s (P at the crossing at 1.5 s, Q at 3.1 s), PET(P,R) = 0.1 s (R at 1.6 s)",
+              abs(float(r["PET_s"]) - 1.6) < 0.06 and abs(float(pairs[("1", "3")]["PET_s"]) - 0.1) < 0.06, f"{r['PET_s']} {pairs[('1', '3')]['PET_s']}")
+        check("PET has no area columns any more", "Area_Radius_m" not in r and "Area_Shape" not in r, str(sorted(r)))
         check("PET crossing point written: (15, 0)", abs(float(r["Cross_X_m"]) - 15.0) < 0.05 and abs(float(r["Cross_Y_m"])) < 0.05,
               f"{r['Cross_X_m']} {r['Cross_Y_m']}")
         check("PET conflict zone 3, type by the TTC angle rule: P (+x) and Q (+y) meet at 90 deg = Crossing",
@@ -343,33 +341,6 @@ def scene2(app):
               and r["PET_Risk_Level"] == m.combine_risk(r["PET_Level"], "Moderate") and abs(float(r["Speed_A_At_Crossing_kmh"]) - 36.0) < 0.5,
               f"{r['PET_s']} {r['PET_Level']} {r['Speed_Level']} {r['PET_Risk_Level']} speeds {r['Speed_A_At_Crossing_kmh']} {r['Speed_B_At_Crossing_kmh']}")
 
-    # PET with the vehicle RECTANGLES (as TTC): the area where the two paths cross is a 2.3 x 2.3 m square (cars 1.8 m wide + 0.25 m margin each side);
-    # P (+x, 10 m/s, at the crossing at 1.5 s) has its front in the square at 1.135 s and its rear out at 1.865 s (half length 2.25 + 0.25 = 2.5 m);
-    # Q (+y, at the crossing at 3.1 s) is in it from 2.735 s to 3.465 s  =>  PET = 2.735 - 1.865 = 0.87 s
-    app.run3_pet_area_shape_var.set("box")
-    out_bx, _ = run_scene(app, veh)
-    pet_bx = {(r["Vehicle_A_ID"], r["Vehicle_B_ID"]): r for r in read_csv(os.path.join(out_bx, "PET.csv"))}
-    if ("1", "2") in pet_bx:
-        r = pet_bx[("1", "2")]
-        check("PET rectangles: PET(P,Q) = 0.87 s, Area_Shape Box, no radius", abs(float(r["PET_s"]) - 0.87) < 0.06 and r["Area_Shape"] == "Box" and r["Area_Radius_m"] == "",
-              f"{r['PET_s']} {r['Area_Shape']} {r['Area_Radius_m']}")
-        check("PET rectangles: T1 (P rear leaves) = 1.87 s, T2 (Q front enters) = 2.74 s", abs(float(r["T1_Exit_Time_s"]) - 1.865) < 0.06 and abs(float(r["T2_Entry_Time_s"]) - 2.735) < 0.06,
-              f"{r['T1_Exit_Time_s']} {r['T2_Entry_Time_s']}")
-    else:
-        check("PET rectangles: event P-Q exists", False, str(sorted(pet_bx)))
-    app.run3_pet_area_shape_var.set("circle")
-
-    # PET with the area switched off = the crossing point only: PET = the difference of the times at the point
-    app.run3_pet_use_area_var.set(False)
-    out_pt, _ = run_scene(app, veh)
-    app.run3_pet_use_area_var.set(True)
-    pet_pt = {(r["Vehicle_A_ID"], r["Vehicle_B_ID"]): r for r in read_csv(os.path.join(out_pt, "PET.csv"))}
-    check("PET point only: events P-Q and P-R", set(pet_pt) == {("1", "2"), ("1", "3")}, str(sorted(pet_pt)))
-    if ("1", "2") in pet_pt and ("1", "3") in pet_pt:
-        check("PET point only: PET(P,Q) = 1.6 s, PET(P,R) = 0.1 s, no radius",
-              abs(float(pet_pt[("1", "2")]["PET_s"]) - 1.6) < 0.06 and abs(float(pet_pt[("1", "3")]["PET_s"]) - 0.1) < 0.06 and pet_pt[("1", "2")]["Area_Radius_m"] == "",
-              f"{pet_pt[('1', '2')]['PET_s']} {pet_pt[('1', '3')]['PET_s']}")
-
     # a result file switched off in the list of files is not written, the others still are
     app.run3_csv_vars["PET.csv"].set(False)
     out_off, summary_off = run_scene(app, veh)
@@ -377,23 +348,23 @@ def scene2(app):
     check("result file switched off (PET.csv) is not written; TTC.csv still is", not os.path.exists(os.path.join(out_off, "PET.csv")) and os.path.exists(os.path.join(out_off, "TTC.csv")))
     check("the run summary lists TTC.csv but not the switched-off PET.csv", "ttc" in summary_off["outputs"] and "pet" not in summary_off["outputs"], str(sorted(summary_off["outputs"])))
 
-    # ---- TTC (vehicle rectangles: the time until they first touch) ----
+    # ---- TTC (one point per vehicle: vector TTC, the expected collision point is kept) ----
     ttc = read_csv(os.path.join(out, "TTC.csv"))
     ev = {(r["Vehicle_A_ID"], r["Vehicle_B_ID"]): r for r in ttc}
     check("TTC columns: conflict angle, relative vectors, DTC",
           {"Theta_deg", "Rel_X_m", "RelV_X_mps", "DTC_m", "TTC_Type", "Collide_X_m", "Collide_Y_m", "Miss_Distance_m"} <= set(ttc[0]) and "S_Conflict_Distance_m" not in ttc[0],
           str(sorted(ttc[0])) if ttc else "no rows")
-    check("TTC events = F-L and P-R (P-L runs 12 m beside each other: the rectangles never touch)", set(ev) == {("4", "5"), ("1", "3")}, str(sorted(ev)))
+    check("TTC events = F-L and P-R (P-L passes 12 m beside: the points never come within (1.8+1.8)/2 + 0.5 m)", set(ev) == {("4", "5"), ("1", "3")}, str(sorted(ev)))
     fl = ev.get(("4", "5"))
     if fl:
         check("TTC F-L: Rear-end, angle 0 deg", fl["TTC_Type"] == "Rear-end" and abs(float(fl["Theta_deg"])) < 1.0, f"{fl['TTC_Type']} {fl['Theta_deg']}")
-        check("TTC F-L: boxes (4.5 m + 0.25 m on each side) closing at 5 m/s: (20 - 5 t - 5.0) / 5 = 3 - t -> ~ 1.0 s at t = 2 s", abs(float(fl["TTC_s"]) - 1.0) < 0.06, fl["TTC_s"])
+        check("TTC F-L: centre-to-centre (20 - 5 t) / 5 = 4 - t -> ~ 2.0 s at t = 2 s", abs(float(fl["TTC_s"]) - 2.0) < 0.06, fl["TTC_s"])
         check("TTC F-L: DTC = TTC x 5 m/s", abs(float(fl["DTC_m"]) - 5.0 * float(fl["TTC_s"])) < 0.01, fl["DTC_m"])
         check("TTC F-L: relative speed 5 m/s = 18 km/h", abs(float(fl["Rel_Speed_kmh"]) - 18.0) < 0.5, fl["Rel_Speed_kmh"])
     pr_ = ev.get(("1", "3"))
     if pr_:
         check("TTC P-R: Crossing, angle 90 deg", pr_["TTC_Type"] == "Crossing" and abs(float(pr_["Theta_deg"]) - 90.0) < 1.0, f"{pr_['TTC_Type']} {pr_['Theta_deg']}")
-        check("TTC P-R: the boxes touch at t = 1.235 s, so the last approaching frames have TTC ~ 0", float(pr_["TTC_s"]) < 0.05, pr_["TTC_s"])
+        check("TTC P-R: the two points meet at the crossing (R is 0.1 s behind P there), TTC ~ 0", float(pr_["TTC_s"]) < 0.06, pr_["TTC_s"])
         check("TTC P-R: relative speed sqrt(10^2 + 10^2) m/s = 50.9 km/h", abs(float(pr_["Rel_Speed_kmh"]) - 50.91) < 1.0, pr_["Rel_Speed_kmh"])
     check("TTC overall level = the less severe of the TTC level and the speed level (every row)",
           all(r["TTC_Risk_Level"] == m.combine_risk(r["TTC_Level"], r["Speed_Level"]) for r in ttc), str([(r["TTC_Level"], r["Speed_Level"], r["TTC_Risk_Level"]) for r in ttc]))
@@ -418,28 +389,15 @@ def scene2(app):
         counted = [float(r["TTC_s"]) for r in fr_rows if (r["Vehicle_A_ID"], r["Vehicle_B_ID"]) == pair and r["Status"] == "Counted"]
         check(f"TTC_Frames: the marked minimum is the smallest counted TTC of {pair}", counted and abs(min(counted) - float(ev[pair]["TTC_s"])) < 1e-6)
     pr_rows = [r for r in fr_rows if (r["Vehicle_A_ID"], r["Vehicle_B_ID"]) == ("1", "3")]
-    ov_rows = [r for r in pr_rows if r["Status"] == "Already_Overlapping"]
-    check("TTC_Frames: P-R frames after the boxes touch (t > 1.235 s) are Already_Overlapping with no TTC",
-          ov_rows and all(r["TTC_s"] == "" and float(r["Time_s"]) > 1.2 for r in ov_rows), f"{len(ov_rows)} overlap rows")
     cnt_pr = [r for r in pr_rows if r["Status"] == "Counted"]
-    check("TTC_Frames: P-R counted frames have a TTC that falls as the boxes approach (more than 5 frames)", len(cnt_pr) > 5
+    check("TTC_Frames: P-R counted frames have a TTC that falls as the vehicles approach (more than 5 frames)", len(cnt_pr) > 5
           and float(cnt_pr[0]["TTC_s"]) > float(cnt_pr[-1]["TTC_s"]), f"{len(cnt_pr)} counted")
-    check("TTC_Frames: P-L (12 m beside each other) has no frames: the rectangles never touch", not [r for r in fr_rows if (r["Vehicle_A_ID"], r["Vehicle_B_ID"]) == ("1", "5")])
     # a vehicle slower than the speed limit skips the frame: L drives 5 m/s = 18 km/h, so a 20 km/h limit drops F-L
     app.run3_ttc_min_speed_var.set("20")
     out_s, _ = run_scene(app, veh)
     app.run3_ttc_min_speed_var.set(m.RUN3_DEFAULTS["ttc_min_speed_kmh"])
     pairs_s = {(r["Vehicle_A_ID"], r["Vehicle_B_ID"]) for r in read_csv(os.path.join(out_s, "TTC.csv"))}
     check("TTC: a frame where a vehicle is slower than the speed limit is skipped (20 km/h drops F-L, L = 18 km/h)", pairs_s == {("1", "3")}, str(sorted(pairs_s)))
-    # the box margin is adjustable: 0 -> F-L ~ 1.1 s (4.5 m boxes), 0.25 -> ~ 1.0 s, 1.5 -> ~ 0.5 s
-    res_m = {}
-    for mg in ("0", "1.5"):
-        app.run3_ttc_box_margin_var.set(mg)
-        o_, _ = run_scene(app, veh)
-        res_m[mg] = {(r["Vehicle_A_ID"], r["Vehicle_B_ID"]): r for r in read_csv(os.path.join(o_, "TTC.csv"))}.get(("4", "5"))
-    app.run3_ttc_box_margin_var.set(m.RUN3_DEFAULTS["ttc_box_margin_m"])
-    check("TTC: box margin 0 -> F-L ~ 1.1 s (4.5 m boxes)", res_m["0"] and abs(float(res_m["0"]["TTC_s"]) - 1.1) < 0.06, res_m["0"]["TTC_s"] if res_m["0"] else "missing")
-    check("TTC: box margin 1.5 m on each side -> F-L ~ 0.5 s", res_m["1.5"] and abs(float(res_m["1.5"]["TTC_s"]) - 0.5) < 0.06, res_m["1.5"]["TTC_s"] if res_m["1.5"] else "missing")
     # the record limit: 0.5 s keeps only P-R (~ 0 s) and drops F-L (~ 1.0 s); blank records everything
     app.run3_ttc_max_record_var.set("0.5")
     out_c, _ = run_scene(app, veh)
@@ -450,8 +408,7 @@ def scene2(app):
     pairs_b = {(r["Vehicle_A_ID"], r["Vehicle_B_ID"]) for r in read_csv(os.path.join(out_b, "TTC.csv"))}
     check("TTC record limit: 0.5 s keeps only P-R; blank = everything is recorded", pairs_c == {("1", "3")} and pairs_b == {("4", "5"), ("1", "3")}, f"{sorted(pairs_c)} | {sorted(pairs_b)}")
 
-    # ---- the POINT method (the default): one point per vehicle, vector TTC, the expected collision point is kept
-    app.run3_ttc_method_var.set("point")
+    # ---- the expected collision point, the miss distance and the arrival times
     out_p, _ = run_scene(app, veh)
     tp = read_csv(os.path.join(out_p, "TTC.csv"))
     evp = {(r["Vehicle_A_ID"], r["Vehicle_B_ID"]): r for r in tp}

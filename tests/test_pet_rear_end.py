@@ -37,7 +37,7 @@ def track(points):
 
 def config(rear=False, lane=True, cross=True):
     return {"pet_max_s": 10.0, "pet_threshold": 1.0, "pet_min_speed_kmh": None, "pet_zones": [3], "site_id": 8, "widths": {"Car": 1.8},
-            "pet_use_area": False, "pet_include_rear_end": rear, "pet_include_lane_change": lane, "pet_include_crossing": cross, "risk_limits": {"pet_s": (1.0, 2.0, 3.0), "speed_kmh": (60, 40, 20)}}
+            "pet_include_rear_end": rear, "pet_include_lane_change": lane, "pet_include_crossing": cross, "risk_limits": {"pet_s": (1.0, 2.0, 3.0), "speed_kmh": (60, 40, 20)}}
 
 
 class PetRearEnd(unittest.TestCase):
