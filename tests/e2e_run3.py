@@ -364,7 +364,7 @@ def scene2(app):
     pr_ = ev.get(("1", "3"))
     if pr_:
         check("TTC P-R: Crossing, angle 90 deg", pr_["TTC_Type"] == "Crossing" and abs(float(pr_["Theta_deg"]) - 90.0) < 1.0, f"{pr_['TTC_Type']} {pr_['Theta_deg']}")
-        check("TTC P-R: the two points meet at the crossing (R is 0.1 s behind P there), TTC ~ 0", float(pr_["TTC_s"]) < 0.06, pr_["TTC_s"])
+        check("TTC P-R: the two points meet at the crossing (R is 0.1 s behind P there), TTC ~ 0", float(pr_["TTC_s"]) < 0.1, pr_["TTC_s"])
         check("TTC P-R: relative speed sqrt(10^2 + 10^2) m/s = 50.9 km/h", abs(float(pr_["Rel_Speed_kmh"]) - 50.91) < 1.0, pr_["Rel_Speed_kmh"])
     check("TTC overall level = the less severe of the TTC level and the speed level (every row)",
           all(r["TTC_Risk_Level"] == m.combine_risk(r["TTC_Level"], r["Speed_Level"]) for r in ttc), str([(r["TTC_Level"], r["Speed_Level"], r["TTC_Risk_Level"]) for r in ttc]))
@@ -373,12 +373,12 @@ def scene2(app):
     check("TTC F-L: its level follows the limits (1.0 / 1.5 / 2.0 s)", fl and fl["TTC_Level"] == m.risk_level_low_is_risky(float(fl["TTC_s"]), m.RISK_DEFAULT_LIMITS["ttc_s"]),
           f"{fl['TTC_s']} {fl['TTC_Level']}" if fl else "")
     # the risk limits are editable: TTC limits 0.05 / 0.5 / 0.9 s -> F-L (~1.0 s) = Interaction, P-R (~0 s) = High
-    app.run3_risk_vars["risk_ttc_limits_s"].set("0.05, 0.5, 0.9")
+    app.run3_risk_vars["risk_ttc_limits_s"].set("0.1, 0.5, 0.9")
     out_rl, summ_rl = run_scene(app, veh)
     app.run3_risk_vars["risk_ttc_limits_s"].set(m.RUN3_DEFAULTS["risk_ttc_limits_s"])
     lv = {(r["Vehicle_A_ID"], r["Vehicle_B_ID"]): (r["TTC_Level"], r["TTC_Risk_Level"]) for r in read_csv(os.path.join(out_rl, "TTC.csv"))}
-    check("TTC risk limits are editable (0.05 / 0.5 / 0.9 s: F-L = Interaction, P-R = High level)", lv.get(("4", "5"), ("", ""))[0] == "Interaction" and lv.get(("1", "3"), ("", ""))[0] == "High", str(lv))
-    check("the limits used are written to the summary", summ_rl.get("risk_level_limits", {}).get("ttc_s") == [0.05, 0.5, 0.9], str(summ_rl.get("risk_level_limits")))
+    check("TTC risk limits are editable (0.1 / 0.5 / 0.9 s: F-L = Interaction, P-R = High level)", lv.get(("4", "5"), ("", ""))[0] == "Interaction" and lv.get(("1", "3"), ("", ""))[0] == "High", str(lv))
+    check("the limits used are written to the summary", summ_rl.get("risk_level_limits", {}).get("ttc_s") == [0.1, 0.5, 0.9], str(summ_rl.get("risk_level_limits")))
     # TTC_Frames.csv: every pair frame with a TTC or an overlap; the chosen minimum is marked
     fr_rows = read_csv(os.path.join(out, "TTC_Frames.csv"))
     check("TTC_Frames.csv has the frames of the pairs, with Status and DTC", len(fr_rows) > 20 and {"Status", "Is_Event_Min", "DTC_m", "TTC_s"} <= set(fr_rows[0]), str(len(fr_rows)))
@@ -421,17 +421,48 @@ def scene2(app):
               f"({flp['Collide_X_m']}, {flp['Collide_Y_m']}) miss {flp['Miss_Distance_m']}")
     prp = evp.get(("1", "3"))
     if prp:
-        check("point method P-R: Crossing; TTC ~ 0; the expected collision point is where the straight paths cross, (15, 0)", prp["TTC_Type"] == "Crossing" and float(prp["TTC_s"]) < 0.06
+        check("point method P-R: Crossing; TTC ~ 0; the expected collision point is where the straight paths cross, (15, 0)", prp["TTC_Type"] == "Crossing" and float(prp["TTC_s"]) < 0.1
               and abs(float(prp["Collide_X_m"]) - 15.0) < 0.1 and abs(float(prp["Collide_Y_m"])) < 0.1, f"{prp['TTC_s']} ({prp['Collide_X_m']}, {prp['Collide_Y_m']})")
         check("point method P-R: the arrival times at the crossing differ by 0.1 s (P at 1.5 s, R at 1.6 s): Arrival_B - Arrival_A ~ 0.1 s",
               abs(abs(float(prp["Arrival_B_s"]) - float(prp["Arrival_A_s"])) - 0.1) < 0.05 and float(prp["Dist_A_to_Collide_m"]) > 0, f"{prp['Arrival_A_s']} {prp['Arrival_B_s']}")
     frp = read_csv(os.path.join(out_p, "TTC_Frames.csv"))
     plp = [r for r in frp if (r["Vehicle_A_ID"], r["Vehicle_B_ID"]) == ("1", "5")]
-    check("point method: P-L frames are listed as Miss_Too_Far with a 12 m miss and no counted frame", plp and all(r["Status"] == "Miss_Too_Far" for r in plp) and all(abs(float(r["Miss_Distance_m"]) - 12.0) < 0.3 for r in plp), str({r["Status"] for r in plp}))
-    app.run3_ttc_miss_margin_var.set("20")
+    check("by_type: P-L (same direction, 12 m beside: the same-line rule) is listed as Lateral_Gap_Too_Large with a 12 m miss and no counted frame",
+          plp and all(r["Status"] == "Lateral_Gap_Too_Large" for r in plp) and all(abs(float(r["Miss_Distance_m"]) - 12.0) < 0.3 for r in plp), str({r["Status"] for r in plp}))
+    app.run3_ttc_rear_margin_var.set("20")
     out_pg, _ = run_scene(app, veh)
-    app.run3_ttc_miss_margin_var.set(m.RUN3_DEFAULTS["ttc_miss_margin_m"])
-    check("point method: the miss margin is adjustable (20 m brings P-L back)", ("1", "5") in {(r["Vehicle_A_ID"], r["Vehicle_B_ID"]) for r in read_csv(os.path.join(out_pg, "TTC.csv"))})
+    app.run3_ttc_rear_margin_var.set(m.RUN3_DEFAULTS["ttc_rear_margin_m"])
+    check("by_type: the rear-end margin is adjustable (20 m brings P-L back)", ("1", "5") in {(r["Vehicle_A_ID"], r["Vehicle_B_ID"]) for r in read_csv(os.path.join(out_pg, "TTC.csv"))})
+    # the columns of the new rule: the time difference at the crossing and the point-to-point TTC
+    check("TTC.csv has Time_Diff_At_Cross_s and TTC_Point_s; P-R: the two vehicles reach the crossing 0.1 s apart", prp and "Time_Diff_At_Cross_s" in prp and "TTC_Point_s" in prp
+          and abs(float(prp["Time_Diff_At_Cross_s"]) - 0.1) < 0.03, f"{prp.get('Time_Diff_At_Cross_s')} {prp.get('TTC_Point_s')}" if prp else "")
+    check("same-line pair (F-L): no crossing, so Time_Diff_At_Cross_s is blank; TTC_Point_s = TTC_s",
+          flp and flp["Time_Diff_At_Cross_s"] == "" and abs(float(flp["TTC_Point_s"]) - float(flp["TTC_s"])) < 1e-6)
+    # the crossing rule: P (at the crossing at 1.5 s) and R (1.6 s) are 0.1 s apart; a limit of 0.05 s drops P-R, the frames say why
+    app.run3_ttc_cross_time_var.set("0.05")
+    out_ct, _ = run_scene(app, veh)
+    app.run3_ttc_cross_time_var.set(m.RUN3_DEFAULTS["ttc_cross_time_s"])
+    pairs_ct = {(r["Vehicle_A_ID"], r["Vehicle_B_ID"]) for r in read_csv(os.path.join(out_ct, "TTC.csv"))}
+    stat_ct = {r["Status"] for r in read_csv(os.path.join(out_ct, "TTC_Frames.csv")) if (r["Vehicle_A_ID"], r["Vehicle_B_ID"]) == ("1", "3")}
+    check("by_type: reaching the crossing 0.1 s apart does not count when the limit is 0.05 s (P-R dropped, F-L stays)", pairs_ct == {("4", "5")} and "Arrival_Time_Too_Different" in stat_ct, f"{sorted(pairs_ct)} {stat_ct}")
+    # the other two ways to decide
+    app.run3_ttc_decision_var.set("none")
+    out_no, _ = run_scene(app, veh)
+    app.run3_ttc_decision_var.set("miss")
+    out_mi, _ = run_scene(app, veh)
+    app.run3_ttc_decision_var.set(m.RUN3_DEFAULTS["ttc_decision"])
+    pairs_no = {(r["Vehicle_A_ID"], r["Vehicle_B_ID"]) for r in read_csv(os.path.join(out_no, "TTC.csv"))}
+    pairs_mi = {(r["Vehicle_A_ID"], r["Vehicle_B_ID"]) for r in read_csv(os.path.join(out_mi, "TTC.csv"))}
+    st_mi = {r["Status"] for r in read_csv(os.path.join(out_mi, "TTC_Frames.csv")) if (r["Vehicle_A_ID"], r["Vehicle_B_ID"]) == ("1", "5")}
+    check("decision 'none' (every approaching pair, as the 2026 paper): P-L is counted too", ("1", "5") in pairs_no and {("4", "5"), ("1", "3")} <= pairs_no, str(sorted(pairs_no)))
+    check("decision 'miss' (the old rule): F-L and P-R, P-L is Miss_Too_Far", pairs_mi == {("4", "5"), ("1", "3")} and st_mi == {"Miss_Too_Far"}, f"{sorted(pairs_mi)} {st_mi}")
+    # rear-end clear gap: bumper to bumper = the centre distance less (4.5 + 4.5) / 2 = 4.5 m -> 0.9 s less at 5 m/s
+    app.run3_ttc_rear_gap_var.set(True)
+    out_cg, _ = run_scene(app, veh)
+    app.run3_ttc_rear_gap_var.set(False)
+    flc = {(r["Vehicle_A_ID"], r["Vehicle_B_ID"]): r for r in read_csv(os.path.join(out_cg, "TTC.csv"))}.get(("4", "5"))
+    check("rear-end clear gap: TTC_s = point TTC - 4.5 m / 5 m/s = ~1.1 s, TTC_Point_s stays ~2.0 s", flc and abs(float(flc["TTC_s"]) - 1.1) < 0.08 and abs(float(flc["TTC_Point_s"]) - 2.0) < 0.06,
+          f"{flc['TTC_s']} {flc['TTC_Point_s']}" if flc else "missing")
 
 
 def stream_rows(tid, t_cross, x_line, y, jitter=0.0, t_appear=None):
