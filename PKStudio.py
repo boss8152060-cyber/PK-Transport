@@ -3500,6 +3500,7 @@ class ZoneAlignEditor:
         self.top.dialog = self
         self.msg_var = tk.StringVar(value="")
         self.snap_var = tk.BooleanVar(value=True)
+        self.len_var = tk.BooleanVar(value=True)                  # write the real length (metres) of every edge on the pictures
         self.snap_cm_var = tk.StringVar(value="25")
         self.level_var = tk.BooleanVar(value=False)
         self._setup_plan()
@@ -3679,6 +3680,24 @@ class ZoneAlignEditor:
             cv2.polylines(out, [vp.reshape(-1, 1, 2)], True, col, 3 if z == self.selected_zone else 2, cv2.LINE_AA)
             c = vp.mean(axis=0).astype(int)
             cv2.putText(out, z.replace("Zone ", "Z"), (int(c[0]) - 8, int(c[1]) + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, col, 2, cv2.LINE_AA)
+        if self.len_var.get():                                      # the length of every edge in metres (an edge two zones share is written once)
+            done = set()
+            for z in self.names:
+                plan_pts = self.plan_of(self._vpts(z))
+                pane_pts = self.pane_xy(pane_name, self._vpts(z))
+                n = len(plan_pts)
+                for i in range(n):
+                    a, b = plan_pts[i], plan_pts[(i + 1) % n]
+                    key = frozenset((tuple(np.round(a / 0.05).astype(int)), tuple(np.round(b / 0.05).astype(int))))
+                    if key in done:
+                        continue
+                    done.add(key)
+                    length = float(np.hypot(*(b - a)))
+                    va, vb = pane.to_view(*pane_pts[i]), pane.to_view(*pane_pts[(i + 1) % n])
+                    mid = ((va[0] + vb[0]) // 2 - 12, (va[1] + vb[1]) // 2 - 4)
+                    text = f"{length:.1f}m"
+                    cv2.putText(out, text, mid, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 3, cv2.LINE_AA)
+                    cv2.putText(out, text, mid, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
         for gid in self.members:
             q = pane.to_view(*self.pane_xy(pane_name, self.group_video(gid).reshape(1, 2))[0])
             hot = gid == self.selected_group
@@ -3751,6 +3770,7 @@ class ZoneAlignEditor:
         ttk.Button(bar, text="ทำให้ตั้งฉาก (ทุกโซน)", command=lambda: self.make_perpendicular(False)).pack(side="left")
         ttk.Button(bar, text="ทำให้ตั้งฉาก (โซนที่เลือก)", command=lambda: self.make_perpendicular(True)).pack(side="left", padx=4)
         ttk.Checkbutton(bar, text="ทำขอบตามถนนให้เป็นแนวนอนด้วย", variable=self.level_var).pack(side="left", padx=8)
+        ttk.Checkbutton(bar, text="แสดงความยาวขอบ (เมตร)", variable=self.len_var, command=lambda: self.refresh_all(report=False)).pack(side="left", padx=(12, 2))
         ttk.Checkbutton(bar, text="ดูดติดโซนอื่น", variable=self.snap_var).pack(side="left", padx=(12, 2))
         ttk.Entry(bar, textvariable=self.snap_cm_var, width=4).pack(side="left")
         ttk.Label(bar, text="ซม.").pack(side="left", padx=(2, 12))

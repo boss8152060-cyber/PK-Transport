@@ -197,6 +197,17 @@ check("'use for the analysis' writes <name>_aligned.json beside the original and
 pu = ed.plan_of(np.asarray(app.zones["Zone 2"], float))
 check("the program's zones are the edited ones (cross-road edges vertical in the plane)", abs(pu[1][0] - pu[2][0]) < 0.08)
 check("the original zone file is still untouched", hashlib.md5(open(src_json, "rb").read()).hexdigest() == before_hash)
+# the length of every edge is written on the pictures (a switch turns it off)
+import numpy as _np
+_img_on = _np.zeros((700, 1000, 3), _np.uint8)
+_img_off = _np.zeros((700, 1000, 3), _np.uint8)
+ed.len_var.set(True)
+ed._draw(_img_on, "plan", ed.ppane)
+ed.len_var.set(False)
+ed._draw(_img_off, "plan", ed.ppane)
+check("edge lengths (m) are drawn on the picture and the switch removes them", int((_img_on.sum(axis=2) > 0).sum()) > int((_img_off.sum(axis=2) > 0).sum()) + 200,
+      f"{int((_img_on.sum(axis=2) > 0).sum())} vs {int((_img_off.sum(axis=2) > 0).sum())}")
+ed.len_var.set(True)
 ed.close()
 
 root.destroy()
