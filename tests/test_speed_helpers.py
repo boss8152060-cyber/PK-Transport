@@ -96,5 +96,27 @@ class EnsurePackage(unittest.TestCase):
         self.assertIn("no matching distribution", msg)
 
 
+class TensorRtPackages(unittest.TestCase):
+    def test_pip_package_follows_the_cuda_of_pytorch(self):
+        spec = NS["tensorrt_pip_spec"]
+        self.assertEqual(spec("12.4"), "tensorrt-cu12<11")
+        self.assertEqual(spec("13.0"), "tensorrt-cu13")
+        self.assertEqual(spec(None), "tensorrt<11")
+
+    def test_wrong_build_is_found(self):
+        mism = NS["tensorrt_build_mismatch"]
+        self.assertTrue(mism("12.4", {"tensorrt": "11.4.0.106", "tensorrt_cu13": "11.4.0.106"}))
+        self.assertTrue(mism("12.4", {"tensorrt": "10.16.1.11", "tensorrt_cu13": "10.16.1.11"}))
+        self.assertTrue(mism("12.4", {"tensorrt": "11.0.0"}))
+        self.assertFalse(mism("12.4", {"tensorrt_cu12": "10.16.1.11", "tensorrt_cu12_libs": "10.16.1.11"}))
+        self.assertFalse(mism("12.4", {}))
+        self.assertFalse(mism("13.0", {"tensorrt_cu13": "11.4"}))
+        self.assertFalse(mism(None, {"tensorrt_cu13": "11.4"}))
+
+    def test_a_failing_build_raises_instead_of_crashing_the_program(self):
+        with self.assertRaises(RuntimeError):
+            NS["build_tensorrt_engine"]("no_such_model.pt", os.path.join(HERE, "no_such.engine"), 640, "cpu", timeout_s=120)
+
+
 if __name__ == "__main__":
     unittest.main()

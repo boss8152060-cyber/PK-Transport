@@ -2006,6 +2006,81 @@ def ensure_python_package(module, pip_spec=None, runner=None, finder=None, timeo
     return True, f"{module} installed with pip"
 
 
+def tensorrt_pip_spec(torch_cuda):
+    """The pip package of TensorRT that matches the CUDA of PyTorch. `pip install tensorrt` alone gives the newest TensorRT built for CUDA 13, which needs a newer
+    NVIDIA driver than a PyTorch cu12x install runs on (it crashes the whole program while the engine is built): CUDA 12 -> tensorrt-cu12 below 11 (10.x)."""
+    try:
+        major = int(str(torch_cuda).split(".")[0])
+    except (TypeError, ValueError):
+        return "tensorrt<11"
+    if major == 12:
+        return "tensorrt-cu12<11"
+    if major >= 13:
+        return "tensorrt-cu13"
+    return "tensorrt<11"
+
+
+def tensorrt_build_mismatch(torch_cuda, installed):
+    """True when the installed TensorRT packages (`installed` = {distribution name: version}) are built for another CUDA than PyTorch's: the CUDA 13 build
+    (tensorrt_cu13*) or TensorRT 11 on a CUDA 12 PyTorch."""
+    try:
+        major = int(str(torch_cuda).split(".")[0])
+    except (TypeError, ValueError):
+        return False
+    if major != 12:
+        return False
+    names = {k.lower().replace("-", "_") for k in installed}
+    if any(n.startswith("tensorrt_cu13") for n in names):
+        return True
+    for k, v in installed.items():
+        if k.lower() == "tensorrt" and str(v).split(".")[0].isdigit() and int(str(v).split(".")[0]) >= 11:
+            return True
+    return False
+
+
+def prepare_tensorrt_packages(torch_cuda):
+    """Make sure the TensorRT that is installed fits this CUDA (a wrong build is replaced) and that onnx is there. Returns (ok, message)."""
+    import importlib.metadata
+    import subprocess
+    import sys
+    installed = {}
+    for dist in importlib.metadata.distributions():
+        name = (dist.metadata["Name"] or "")
+        if name.lower().replace("-", "_").startswith("tensorrt"):
+            installed[name] = dist.version
+    spec = tensorrt_pip_spec(torch_cuda)
+    if tensorrt_build_mismatch(torch_cuda, installed):
+        print("TensorRT    : the installed TensorRT is built for another CUDA (" + ", ".join(sorted(installed)) + "); replacing it with " + spec)
+        subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", *installed], capture_output=True, text=True, timeout=600)
+        res = subprocess.run([sys.executable, "-m", "pip", "install", spec], capture_output=True, text=True, timeout=1800)
+        if res.returncode != 0:
+            return False, f"pip install {spec} failed: " + " | ".join((res.stderr or res.stdout or "").strip().splitlines()[-3:])
+        import importlib
+        importlib.invalidate_caches()
+    ok, msg = ensure_python_package("tensorrt", spec)
+    if not ok:
+        return False, msg
+    print("TensorRT    :", msg)
+    ok, msg = ensure_python_package("onnx", "onnx")
+    print("TensorRT    :", msg)
+    return ok, msg
+
+
+def build_tensorrt_engine(model_path, engine, imgsz, device, timeout_s=3600):
+    """Build the engine in a SEPARATE Python process: a crash of TensorRT / the driver then cannot take PK Studio down with it, it only means no engine
+    (the caller goes on with the .pt model). Raises RuntimeError with the end of the log when it fails."""
+    import subprocess
+    import sys
+    code = ("import sys, os; from ultralytics import YOLO; "
+            "b = YOLO(sys.argv[1]).export(format='engine', imgsz=int(sys.argv[2]), device=sys.argv[3], half=False, verbose=False); "
+            "os.replace(str(b), sys.argv[4]) if os.path.abspath(str(b)) != os.path.abspath(sys.argv[4]) else None")
+    res = subprocess.run([sys.executable, "-c", code, str(model_path), str(int(imgsz)), str(device), str(engine)], capture_output=True, text=True, timeout=timeout_s)
+    if res.returncode != 0 or not os.path.isfile(engine):
+        tail = " | ".join(((res.stderr or "") + (res.stdout or "")).strip().splitlines()[-4:])
+        raise RuntimeError(f"building the TensorRT engine failed (exit code {res.returncode}): {tail}")
+    return engine
+
+
 def scaled_video_size(width, height, max_width):
     """(w, h) of the result video: the input size, scaled down (keeping the shape, even numbers for the encoder) when it is wider than max_width;
     max_width 0 / blank / invalid = the input size."""
@@ -3792,16 +3867,12 @@ def load_yolo_model(model_path, use_tensorrt=False, imgsz=640, device=None):
         engine = os.path.splitext(model_path)[0] + f"_{int(imgsz)}.engine"
         try:
             if not os.path.isfile(engine) or os.path.getmtime(engine) < os.path.getmtime(model_path):
-                # the engine has to be built: TensorRT (and ONNX for the export) are installed here when they are missing
-                for module, spec in (("tensorrt", "tensorrt"), ("onnx", "onnx")):
-                    ok, msg = ensure_python_package(module, spec)
-                    print("TensorRT    :", msg)
-                    if not ok:
-                        raise RuntimeError(msg)
-                print("TensorRT    : building", engine, "(first time only, this takes a few minutes)")
-                built = YOLO(model_path).export(format="engine", imgsz=int(imgsz), device=device, half=False, verbose=False)
-                if built and os.path.abspath(str(built)) != os.path.abspath(engine):
-                    os.replace(str(built), engine)
+                # the engine has to be built: TensorRT (the build that fits this CUDA) and ONNX are installed here when they are missing / wrong
+                ok, msg = prepare_tensorrt_packages(getattr(torch.version, "cuda", None))
+                if not ok:
+                    raise RuntimeError(msg)
+                print("TensorRT    : building", engine, "(first time only, this takes a few minutes; done in its own process)")
+                build_tensorrt_engine(model_path, engine, imgsz, device)
             return YOLO(engine, task="detect"), engine
         except Exception:
             log.exception("TensorRT engine could not be used; the .pt model is used instead")
