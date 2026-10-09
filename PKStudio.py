@@ -4052,6 +4052,45 @@ class BackgroundVideoWriter:
         self.writer.release()
 
 
+class PrefetchCapture:
+    """cv2.VideoCapture whose read() takes the frames a background thread has already decoded (decoding a 1080p frame takes ~10 ms of CPU),
+    so the drawing does not wait for it. Same order; read() -> (ok, frame) like cv2; close() stops the thread (call it before cap.release())."""
+
+    def __init__(self, cap, maxsize=8):
+        self.cap = cap
+        self.q = queue.Queue(maxsize=maxsize)
+        self._stop = threading.Event()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def _run(self):
+        while not self._stop.is_set():
+            try:
+                ok, frame = self.cap.read()
+            except Exception:
+                ok, frame = False, None
+            while not self._stop.is_set():
+                try:
+                    self.q.put((ok, frame), timeout=0.2)
+                    break
+                except queue.Full:
+                    continue
+            if not ok:
+                break
+
+    def read(self):
+        return self.q.get()
+
+    def close(self):
+        self._stop.set()
+        try:
+            while True:
+                self.q.get_nowait()
+        except queue.Empty:
+            pass
+        self.thread.join(timeout=5)
+
+
 def fp16_is_faster(device_index=0):
     """FP16 is only faster on GPUs with tensor cores. On the GTX 16 series (and older cards) it is SLOWER: measured on the
     GTX 1650 with this model, 170 ms instead of 62 ms per frame. Auto precision uses FP16 only where it helps."""
@@ -10590,15 +10629,17 @@ class Run1App:
                 os.remove(tmp_path)                                  # a leftover of an earlier run
         except OSError:
             pass
-        writer = cv2.VideoWriter(tmp_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (W, H))
+        writer = BackgroundVideoWriter(cv2.VideoWriter(tmp_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (W, H)))      # encoding beside the drawing
         if not writer.isOpened():
+            writer.release()
             cap.release()
             raise RuntimeError("Unable to write the video with the TTC rectangles")
         drawn_ok = False
+        reader = PrefetchCapture(cap)                                                                  # decoding beside the drawing
         try:
             i = 0
             while True:
-                ok, img = cap.read()
+                ok, img = reader.read()
                 if not ok:
                     break
                 sh = shapes.get(first_frame + i) if shapes else None
@@ -10621,6 +10662,7 @@ class Run1App:
                 i += 1
             drawn_ok = True
         finally:
+            reader.close()
             writer.release()
             cap.release()
             if not drawn_ok:
@@ -10886,8 +10928,9 @@ class Run1App:
         fps_out = float(min(120.0, max(1.0, 1.0 / float(np.median(dts))))) if len(dts) else 30.0
         out_name = "Tracking_Topview_Drone.mp4" if drone else "Tracking_Topview.mp4"
         out_path = os.path.join(output_dir, out_name)
-        writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*"mp4v"), fps_out, (W, H))
+        writer = BackgroundVideoWriter(cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*"mp4v"), fps_out, (W, H)))      # the encoding runs beside the drawing
         if not writer.isOpened():
+            writer.release()
             raise RuntimeError("Unable to create " + out_name)
         trails = defaultdict(deque)
         speed_hist = defaultdict(deque)
@@ -12534,35 +12577,66 @@ class Run1App:
             summary["diagnostics"]["topview"] = {"records": len(topview_rows), "calibration_mode": self._run3_calibration_mode(c)}
             want_xy = bool((settings or {}).get("xy_video", c.get("topview_video")))
             want_drone = bool((settings or {}).get("drone_video", c.get("drone_video")))
-            if want_xy and topview_rows:
-                status("Run 3 — drawing the Topview video...")
-                tv = self._run3_write_topview_video(tracks, c, output_dir, (settings or {}).get("video"), display=settings)
-                if tv:
-                    outputs["topview_video"] = tv
-                    summary["diagnostics"]["topview"]["video"] = tv
-            if want_drone and topview_rows:
-                status("Run 3 — drawing the X-Y video on the drone picture...")
-                dv = self._run3_write_topview_video(tracks, c, output_dir, (settings or {}).get("video"), display=settings, drone=True)
-                if dv:
-                    outputs["topview_drone_video"] = dv
-                    summary["diagnostics"]["topview"]["drone_video"] = dv
-                else:
-                    summary["diagnostics"]["topview"]["drone_video"] = "not made: needs the Align result (video -> drone picture) with its picture file"
-                    log.warning("X-Y on drone video not made: the Align result or its picture is missing")
             draw_ttc = bool(c.get("ttc_enabled") and c.get("ttc_show_boxes_video"))
             draw_pet = bool(c.get("pet_enabled") and c.get("pet_show_point_video"))
-            if draw_ttc or draw_pet:
-                status("Run 3 — drawing the TTC / PET marks on the normal video...")
+            video_src = (settings or {}).get("video")
+
+            def make_xy():
+                return self._run3_write_topview_video(tracks, c, output_dir, video_src, display=settings)
+
+            def make_drone():
+                return self._run3_write_topview_video(tracks, c, output_dir, video_src, display=settings, drone=True)
+
+            def make_overlay():
                 result_video = os.path.join(output_dir, "Tracking_Result.mp4")
-                bv = self._run3_overlay_ttc_boxes(tracks, c, result_video, self._run3_record_first_frame(settings, (settings or {}).get("video")),
-                                                  src_size=self._run3_video_size((settings or {}).get("video")),
-                                                  draw_ttc=draw_ttc, draw_pet=draw_pet)
-                if bv:
-                    outputs["tracking_result_with_ttc_boxes"] = bv
+                return self._run3_overlay_ttc_boxes(tracks, c, result_video, self._run3_record_first_frame(settings, video_src),
+                                                    src_size=self._run3_video_size(video_src), draw_ttc=draw_ttc, draw_pet=draw_pet)
+
+            # the three videos are independent (each reads the same finished results and writes its own file), and the video libraries release the
+            # interpreter lock while they decode / encode, so they are made at the same time (about the time of the slowest one instead of the sum)
+            jobs = {}
+            if want_xy and topview_rows:
+                jobs["xy"] = make_xy
+            if want_drone and topview_rows:
+                jobs["drone"] = make_drone
+            if draw_ttc or draw_pet:
+                jobs["overlay"] = make_overlay
+            if jobs:
+                self._run3_drone_picture((c or {}).get("align_drone"))                  # fill the picture cache once, before the threads read it
+                status("Run 3 — drawing the videos (" + ", ".join(sorted(jobs)) + ")...")
+            results, errors = {}, {}
+
+            def run_job(name):
+                try:
+                    results[name] = jobs[name]()
+                except Exception as exc:
+                    log.exception("Video output failed: %s", name)
+                    errors[name] = str(exc)
+
+            threads = [threading.Thread(target=run_job, args=(name,), daemon=True) for name in jobs]
+            for th in threads:
+                th.start()
+            for th in threads:
+                th.join()
+            if "xy" in results and results["xy"]:
+                outputs["topview_video"] = results["xy"]
+                summary["diagnostics"]["topview"]["video"] = results["xy"]
+            if "drone" in jobs:
+                if results.get("drone"):
+                    outputs["topview_drone_video"] = results["drone"]
+                    summary["diagnostics"]["topview"]["drone_video"] = results["drone"]
+                elif "drone" not in errors:
+                    summary["diagnostics"]["topview"]["drone_video"] = "not made: needs the Align result (video -> drone picture) with its picture file"
+                    log.warning("X-Y on drone video not made: the Align result or its picture is missing")
+            if "overlay" in jobs:
+                if results.get("overlay"):
+                    outputs["tracking_result_with_ttc_boxes"] = results["overlay"]
                     summary["diagnostics"]["ttc_boxes_video"] = getattr(self, "_run3_overlay_note", "")
                 else:
                     summary["diagnostics"]["ttc_boxes_video"] = (getattr(self, "_run3_overlay_note", "")
                                                                  or "not drawn (no Tracking_Result.mp4 in the output folder, or no TTC rectangles)")
+            if errors:
+                summary["diagnostics"]["topview_error"] = "; ".join(f"{k}: {v}" for k, v in sorted(errors.items()))
             plot = self._run3_write_xy_plot(tracks, c, output_dir, (settings or {}).get("video"), display=settings)
             if plot:
                 outputs["topview_plot"] = plot
