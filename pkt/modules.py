@@ -45,6 +45,7 @@ def resolve_module(mod_def, settings=None, root=ROOT):
     if not os.path.isabs(folder):
         folder = os.path.normpath(os.path.join(root, folder))
     entry = mod_def.get("entry")
+    page = mod_def.get("page")                 # a module opened as a page inside this app (PKT Train) instead of a separate program
     entry_path = os.path.join(folder, entry) if entry else None
     return {
         "id": mod_def["id"],
@@ -53,8 +54,9 @@ def resolve_module(mod_def, settings=None, root=ROOT):
         "exists": os.path.isdir(folder),
         "entry": entry,
         "entry_path": entry_path,
-        "entry_exists": bool(entry_path and os.path.isfile(entry_path)),
-        "launchable": bool(entry),
+        "entry_exists": bool(entry_path and os.path.isfile(entry_path)) or (bool(page) and os.path.isdir(folder)),
+        "page": page,
+        "launchable": bool(entry or page),
         "python": (user.get("python") or "").strip(),
     }
 
@@ -102,7 +104,8 @@ def python_command(override=""):
     override = (override or "").strip()
     if override:
         import shlex
-        return shlex.split(override, posix=(os.name != "nt"))
+        parts = shlex.split(override, posix=(os.name != "nt"))
+        return [q[1:-1] if len(q) >= 2 and q[0] == q[-1] and q[0] in "\"'" else q for q in parts]      # (Windows split keeps the quotes)
     if os.name == "nt":
         try:
             r = subprocess.run(["py", "-3.12", "-V"], capture_output=True, timeout=8)
@@ -115,6 +118,6 @@ def python_command(override=""):
 
 def build_command(info):
     """The full command to start a module (python command + its start file), or None when it has no start file."""
-    if not info["launchable"] or not info["entry_exists"]:
+    if not info["launchable"] or not info["entry_exists"] or info.get("page") or not info.get("entry_path"):
         return None
     return python_command(info["python"]) + [info["entry_path"]]

@@ -105,6 +105,10 @@ class Command(unittest.TestCase):
     def test_python_override_is_split(self):
         self.assertEqual(M.python_command("python3 -X utf8"), ["python3", "-X", "utf8"])
 
+    def test_quoted_python_path_with_spaces(self):
+        cmd = M.python_command('"C:\Program Files\Python312\python.exe" -X utf8')
+        self.assertEqual(cmd, ["C:\Program Files\Python312\python.exe", "-X", "utf8"])
+
     def test_automatic_command_is_a_list_ending_in_a_python(self):
         cmd = M.python_command("")
         self.assertIsInstance(cmd, list)

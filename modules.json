@@ -12,6 +12,7 @@
       "name": "PKT Train",
       "path": "PKT-Train",
       "entry": null,
+      "page": "train",
       "version_file": null
     },
     {

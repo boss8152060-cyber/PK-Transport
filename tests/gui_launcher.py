@@ -55,7 +55,7 @@ check("one card per module", list(app.cards) == ["data", "train", "analyze"])
 check("default language is Thai", app.tr.lang == "th" and "ไทย" not in app.cards["data"]["status"].cget("text") and "พบ" in app.cards["data"]["status"].cget("text"))
 check("a found module is marked found; the Open button is enabled for modules with a start file",
       str(app.cards["data"]["open"].cget("state")) == "normal" and str(app.cards["analyze"]["open"].cget("state")) == "normal")
-check("PKT Train has no start file yet: Open is disabled and the note says so", str(app.cards["train"]["open"].cget("state")) == "disabled" and app.cards["train"]["note"].cget("text") != "")
+check("a module with neither a start file nor a page has Open disabled", str(app.cards["train"]["open"].cget("state")) == "disabled")
 check("the card shows the folder", app.cards["data"]["folder"].cget("text") == os.path.join(tmp, "ModData"))
 check("technical terms stay in English in the Thai description", all(t in app.cards["analyze"]["version"].master.winfo_children()[0].cget("text") for t in ("TTC", "PET", "LDP")))
 

@@ -26,6 +26,7 @@ class Launcher:
         self.lang_var = tk.StringVar(value=self.tr.lang)
         self.cards = {}                 # module id -> dict of the widgets/vars of its card
         self.procs = {}                 # module id -> the Popen of the last start
+        self.train_page = None          # the open PKT Train window
         root.minsize(900, 420)
         root.geometry("1040x470")
         self.body = ttk.Frame(root, padding=14)
@@ -44,6 +45,8 @@ class Launcher:
         self.settings["language"] = lang
         self._save()
         self.build()
+        if self.train_page is not None:
+            self.train_page.retranslate()
 
     def _save(self):
         try:
@@ -131,7 +134,7 @@ class Launcher:
                 parts.append(self.t("git_missing"))
             card["detail"].config(text="\n".join(parts))
             card["folder"].config(text=info["folder"])
-            card["note"].config(text=self.t("train_soon") if (mid == "train" and info["exists"]) else "")
+            card["note"].config(text="")
             card["open"].config(state=("normal" if (info["launchable"] and info["entry_exists"]) else "disabled"))
 
     # ---------------------------------------------------------------- actions
@@ -158,6 +161,8 @@ class Launcher:
             return None
         if not info["launchable"]:
             return None
+        if mod_def.get("page") == "train":
+            return self.open_train_page(info["folder"])
         if not info["entry_exists"]:
             messagebox.showerror(self.t("app_title"), self.t("entry_missing", name=name, path=info["entry_path"]), parent=self.root)
             return None
@@ -177,6 +182,20 @@ class Launcher:
         self.status_var.set(self.t("opened", name=name))
         self.root.after(EARLY_EXIT_CHECK_MS, lambda: self._check_early_exit(mid, name, proc, log_path))
         return proc
+
+    def open_train_page(self, folder):
+        """The PKT Train page (a window of this app, not a separate program)."""
+        from pkt.train_page import TrainPage
+        if self.train_page is not None:
+            try:
+                self.train_page.top.deiconify()
+                self.train_page.top.lift()
+                return self.train_page
+            except tk.TclError:
+                self.train_page = None
+        self.train_page = TrainPage(self, folder)
+        self.status_var.set(self.t("opened", name="PKT Train"))
+        return self.train_page
 
     def _check_early_exit(self, mid, name, proc, log_path):
         code = proc.poll()
