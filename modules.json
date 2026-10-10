@@ -5,6 +5,7 @@
       "name": "PKT Data",
       "path": "PKT-Data",
       "entry": "main.py",
+      "page": "data",
       "version_file": "src/pk_studio/__init__.py"
     },
     {

@@ -29,7 +29,8 @@
 2. `python -m unittest discover -s tests -v` (test_modules, test_i18n, test_train_core — อ่าน/แพตช์สคริปต์จริงใน `PKT-Train` ถ้ามีอยู่ข้างกัน, test_shared, test_updates — ใช้ repo git ชั่วคราวจริง, test_shortcut — สร้าง .lnk จริงในโฟลเดอร์ชั่วคราว)
 3. `py -3.12 tests/gui_app.py` (หน้าต่างจริง + โมดูลปลอมในโฟลเดอร์ชั่วคราว: นำทาง/สลับภาษา/เปิดโมดูล/ตั้งค่า)
 4. `py -3.12 tests/gui_train.py` (หน้า PKT Train + โฟลเดอร์ PKT-Train ปลอม + สคริปต์เทรนปลอมที่รันจริงเป็น subprocess)
-5. `py -3.12 tests/gui_updates.py` (ตรวจ/อัปเดต/ทางลัดในหน้าต่างจริงกับ repo git ชั่วคราว)
+5. `py -3.12 tests/gui_data.py` (PKT Data ฝังเป็นแท็บ — โหลดโค้ดจริงจาก `PKT-Data/src` ถ้ามี)
+6. `py -3.12 tests/gui_updates.py` (ตรวจ/อัปเดต/ทางลัดในหน้าต่างจริงกับ repo git ชั่วคราว)
 
 ## กฎการใช้ git
 

@@ -2,7 +2,7 @@
 
 ## สถานะ
 
-- **เวอร์ชันล่าสุด:** 0.5.1 (แอปหน้าต่างเดียว ธีมเดียวกับ PKT Data สลับภาษาไทย/อังกฤษ) — ดู `CHANGELOG.md`
+- **เวอร์ชันล่าสุด:** 0.6.0 (แอปหน้าต่างเดียว ธีมเดียวกับ PKT Data สลับภาษาไทย/อังกฤษ) — ดู `CHANGELOG.md`
 - **Remote:** `origin` = https://github.com/boss8152060-cyber/PK-Transport.git (push แล้ว: main + tag v0.1.0, v0.2.0)
 
 ## งาน
@@ -24,6 +24,7 @@
 
 | วันที่ | สิ่งที่ทำ | ไฟล์ |
 |---|---|---|
+| 2026-10-10 | **0.6.0** ขั้น 2: ฝัง PKT Data เป็นแท็บ (`pages/data.py`; `modules.json` data มี `page: data`); `show()` ซ่อนหน้าอื่นจริง; ทดสอบ `tests/gui_data.py` (โหลดของจริง 6 แท็บ สลับ ซ่อน/แสดง ภาษา) + `gui_app.py` ปรับ, ถ่ายภาพหน้าจอจริง; **ยังไม่ได้ลองใช้งานจริงทีละฟีเจอร์ (ดึงเฟรม ตีกรอบ ฯลฯ) ในแท็บ และข้อความใน PKT Data ยังไม่แปลไทย** | `pkt/ui/pages/data.py`, `pkt/ui/app.py`, `modules.json`, `tests/` |
 | 2026-10-10 | **0.5.1** PKT Train: การ์ดตั้งค่าขั้นสูง = ทุกช่อง `# @param` ของสคริปต์ (อ่านด้วย `parse_params`, เขียนกลับด้วย `patch_params` คงคอมเมนต์/รูปแบบตัวเลขเดิม); unit test 54 ตัว + gui_train ตรวจว่าค่าไปถึงสคริปต์จริง; ถ่ายภาพหน้าจอตรวจเลย์เอาต์ | `pkt/train_core.py`, `pkt/ui/pages/train.py`, `pkt/i18n.py`, `tests/` |
 | 2026-10-10 | **0.5.0** แอปหน้าต่างเดียว: แพ็กเกจ `pkt/ui/` (theme โทน PKT Data, bind = สลับภาษาสด, kit, app, pages home/module/settings/train), `assets/icon.ico` จาก PKT Data, ลบ `launcher.py`/`train_page.py`; ทดสอบ unit 50 ตัว + `gui_app.py`/`gui_train.py`/`gui_updates.py` ผ่านหมด, ถ่ายภาพหน้าจอจริงไทย/อังกฤษทุกหน้า; **PKT Data/Analyze ยังเปิดเป็นหน้าต่างแยก** | `pkt/ui/`, `main.py`, `tests/`, เอกสาร |
 | 2026-10-10 | **0.4.0** ขั้น 4: `pkt/updates.py` (`check_repo` = fetch + นับ ahead/behind, `incoming`, `pull_ff` = fast-forward อย่างเดียว), `pkt/shortcut.py` (.lnk ผ่าน PowerShell), ปุ่ม ตรวจอัปเดต/อัปเดตบนการ์ดและมุมหัวหน้าต่าง, ตัวเลือกตรวจตอนเปิดแอป, ปุ่มสร้างทางลัดใน ตั้งค่า; **รูปแบบชื่อ commit ใหม่ทุก repo:** `<ชื่อ repo> <x.y.z>: <คำอธิบาย>` (กฎใน CLAUDE.md ของ PK-Transport / PKT-Analyze 1.46.1 / PKT-Data 1.3.9(1) / PKT-Train 0.2.1 ที่เพิ่ม CLAUDE.md+CHANGELOG ด้วย); ทดสอบ: unit test 49 ตัว (`test_updates.py` ใช้ repo git จริงชั่วคราว: behind/ahead/diverged/ออฟไลน์/pull ปลอดภัย; `test_shortcut.py` สร้าง .lnk จริงในโฟลเดอร์ชั่วคราวแล้วอ่านกลับ) + `gui_updates.py` (หน้าต่างจริงกับ repo ชั่วคราว) ผ่านหมด; ตรวจ `check_repo` กับ repo จริงทั้ง 4 ตัวบนเครื่อง = เป็นรุ่นล่าสุดทั้งหมด; **ยังไม่ได้กดปุ่ม อัปเดต กับ repo จริง และไม่ได้สร้างทางลัดบนเดสก์ท็อปจริง** | `pkt/updates.py`, `pkt/shortcut.py`, `pkt/launcher.py`, `pkt/i18n.py`, `tests/`, เอกสาร |

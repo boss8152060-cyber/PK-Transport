@@ -61,7 +61,7 @@ check("the window starts on Home", app.current == "home")
 check("default language is Thai", app.tr.lang == "th" and "พบ" in text(home.cards["data"]["chip"]), text(home.cards["data"]["chip"]))
 check("Open is enabled for a module with a start file or a page",
       all(str(home.cards[m]["open"].cget("state")) == "normal" for m in ("data", "analyze")) is True)
-check("the module folder is on its page", app.pages["data"].value_labels["folder_label"].cget("text") == os.path.join(tmp, "ModData"))
+check("the module folder comes from the defaults", app.info_of("data")[1]["folder"] == os.path.join(tmp, "ModData"))
 
 # navigation
 for name in ("data", "train", "analyze", "settings", "home"):
@@ -84,7 +84,7 @@ check("switching back to Thai works", "พบ" in text(home.cards["data"]["chip"
 app.set_language("en")
 
 # launching
-proc = app.launch("data")
+proc = app.launch("data")                     # the fake PKT Data here has no "page", so it starts as a program (the real one opens its tab)
 check("launching a module starts its process and says so", proc is not None and proc.poll() is None and "PKT Data" in app.status_var.get())
 check("its output goes to a log file", os.path.isfile(os.path.join(A.LOG_DIR, "data.log")))
 proc.kill()
@@ -156,7 +156,7 @@ sp.python_vars["data"].set("py -3.12")
 sp.save()
 saved = json.load(open(settings_path, encoding="utf-8"))
 check("only what differs from modules.json is saved", saved["modules"] == {"data": {"path": os.path.normpath(other), "python": "py -3.12"}}, str(saved.get("modules")))
-check("the module page follows the new folder", app.pages["data"].value_labels["folder_label"].cget("text") == os.path.normpath(other))
+check("the module follows the new folder", app.info_of("data")[1]["folder"] == os.path.normpath(other))
 sp.auto_var.set(True)
 sp.save()
 check("the check-at-start choice is saved", json.load(open(settings_path, encoding="utf-8"))["auto_check_updates"] is True)

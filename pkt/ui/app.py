@@ -166,12 +166,13 @@ class PKTApp:
                 lb.configure(bg=COLORS["sidebar_hover"], fg=COLORS["sidebar_muted"])
 
     def _build_pages(self):
+        from pkt.ui.pages.data import DataPage
         from pkt.ui.pages.home import HomePage
         from pkt.ui.pages.module import ModulePage
         from pkt.ui.pages.settings import SettingsPage
         from pkt.ui.pages.train import TrainPage
         self.pages["home"] = HomePage(self.container, self)
-        self.pages["data"] = ModulePage(self.container, self, "data")
+        self.pages["data"] = DataPage(self.container, self)
         self.pages["train"] = TrainPage(self.container, self)
         self.pages["analyze"] = ModulePage(self.container, self, "analyze")
         self.pages["settings"] = SettingsPage(self.container, self)
@@ -182,7 +183,12 @@ class PKTApp:
         if name not in self.pages:
             return None
         self.current = name
-        self.pages[name].tkraise()
+        for key, page in self.pages.items():
+            if key == name:
+                page.grid()
+                page.tkraise()
+            else:
+                page.grid_remove()                  # a hidden page is really unmapped (the PKT Data tabs listen to key presses only while mapped)
         for key, item in self.nav_items.items():
             item.set_active(key == name)
         on_show = getattr(self.pages[name], "on_show", None)
@@ -234,8 +240,8 @@ class PKTApp:
             return None
         if not info["launchable"]:
             return None
-        if mod_def.get("page") == "train":
-            return self.show("train")
+        if mod_def.get("page") in self.pages:
+            return self.show(mod_def["page"])
         if not info["entry_exists"]:
             messagebox.showerror(self.t("app_title"), self.t("entry_missing", name=name, path=info["entry_path"]), parent=self.root)
             return None
