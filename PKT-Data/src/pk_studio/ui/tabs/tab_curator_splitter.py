@@ -456,8 +456,8 @@ class CuratorPanel(ttk.Frame):
                 torch.cuda.empty_cache()
                 if batch_size == 1:
                     raise RuntimeError(
-                        " VRAM  1  —  GPU  "
-                        " ( yolo26n/yolo26s  yolo26m)"
+                        "Out of GPU memory even with batch size 1 - the GPU is too small for this model. "
+                        "Use a smaller model (e.g. yolo26n/yolo26s instead of yolo26m)"
                     )
                 batch_size = max(1, batch_size // 2)
         return results
@@ -480,8 +480,8 @@ class CuratorPanel(ttk.Frame):
                 torch.cuda.empty_cache()
                 if batch_size == 1:
                     raise RuntimeError(
-                        " VRAM  1  —  GPU  "
-                        " ( yolo26n/yolo26s  yolo26m)"
+                        "Out of GPU memory even with batch size 1 - the GPU is too small for this model. "
+                        "Use a smaller model (e.g. yolo26n/yolo26s instead of yolo26m)"
                     )
                 batch_size = max(1, batch_size // 2)
         return results

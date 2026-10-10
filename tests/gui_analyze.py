@@ -53,6 +53,23 @@ root.update()
 check("its window is built into the page", page.studio is not None and page.studio.root is page.shell and page.shell.winfo_ismapped())
 check("it has its five steps", page.studio is not None and len(page.studio.notebook.tabs()) == 5)
 check("the model chosen in PK Transport is not forced when the file is not the module's own (it exists, so it is used)", page.studio.model_var.get() in (model, page.applied_model))
+def texts(widget, out=None):
+    out = [] if out is None else out
+    try:
+        out.append(str(widget.cget("text")))
+    except tk.TclError:
+        pass
+    for child in widget.winfo_children():
+        texts(child, out)
+    return out
+
+
+check("in English (the settings of this test) the Thai texts of PKT Analyze are English", "Open project…" in texts(page.shell) and "เปิดโปรเจกต์…" not in texts(page.shell))
+app.set_language("th")
+root.update()
+check("in Thai they are the original Thai", "เปิดโปรเจกต์…" in texts(page.shell))
+app.set_language("en")
+root.update()
 check("closing the program while nothing runs does not ask", page.is_running() is False)
 check("the other pages still work", all(app.show(n) is app.pages[n] for n in ("train", "data", "settings", "home")))
 app.show("analyze")

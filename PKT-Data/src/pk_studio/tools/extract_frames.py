@@ -306,7 +306,7 @@ def _extract_frame_range(
 
     cap = _open_video_capture(video_path)
     if not cap.isOpened():
-        log(f"[ERROR]  ( {chunk_start}-{chunk_end}): {video_path}")
+        log(f"[ERROR] Cannot open the video (frames {chunk_start}-{chunk_end}): {video_path}")
         return 0, False, 0, []
 
     saved_count = 0
@@ -340,7 +340,7 @@ def _extract_frame_range(
             if _write_image(fpath, f, img_format, quality):
                 saved_count += 1
             else:
-                log(f"[WARN] : {fname}")
+                log(f"[WARN] Could not write the image: {fname}")
 
     use_seek_mode = frame_step >= SEEK_MODE_MIN_STEP
     frame_idx = chunk_start
@@ -434,10 +434,10 @@ def _extract_frames_single_parallel(
         cursor = chunk_end
         chunk_idx += 1
 
-    log(f"[INFO]  {len(chunks)}  (/)")
+    log(f"[INFO] Processing in {len(chunks)} part(s) (frame ranges / threads)")
     if dedup_enabled:
-        log("[]  dedup  —  ")
-        log("            ()")
+        log("[WARN] Dedup is on - parts are processed one after another so the comparison stays in order")
+        log("            (this is slower than without dedup)")
 
     total_frames_all = max(1, end_frame - start_frame)
     progress_lock = _threading.Lock()
@@ -515,7 +515,7 @@ def extract_frames(
 
     info = probe_video_info(video_path)
     if info is None:
-        log(f"[ERROR] : {video_path}")
+        log(f"[ERROR] Cannot read the video information: {video_path}")
         return 0
 
     video_fps = info["fps"]
@@ -528,8 +528,8 @@ def extract_frames(
     end_frame = min(end_frame, total_frames)
     prefix = prefix or video_path.stem
 
-    log(f"[INFO] {video_path.name}: {video_fps:.2f} FPS, {total_frames} , {duration:.1f} ")
-    log(f"[INFO]  {frame_step}  ( {start_frame}-{end_frame})")
+    log(f"[INFO] {video_path.name}: {video_fps:.2f} FPS, {total_frames} frames, {duration:.1f} seconds")
+    log(f"[INFO] Taking one frame every {frame_step} frames (frames {start_frame}-{end_frame})")
 
     frames_to_process = max(1, end_frame - start_frame)
     use_seek_mode = frame_step >= SEEK_MODE_MIN_STEP
@@ -558,26 +558,26 @@ def extract_frames(
         )
 
     if cancelled:
-        log(f"[]  —  {saved_count}  -> {output_dir}")
+        log(f"[CANCELLED] Stopped - {saved_count} images saved -> {output_dir}")
     else:
         if dedup_enabled:
             if diff_stats:
                 log(
-                    f"[INFO] dedup:  {skipped_dedup}/{len(diff_stats)}  "
-                    f"(  {min(diff_stats):.2f}%  {max(diff_stats):.2f}% "
-                    f" {sum(diff_stats)/len(diff_stats):.2f}% |  {dedup_threshold:.1f}%)"
+                    f"[INFO] dedup: skipped {skipped_dedup}/{len(diff_stats)} similar frames "
+                    f"(difference min {min(diff_stats):.2f}%, max {max(diff_stats):.2f}%, "
+                    f"average {sum(diff_stats)/len(diff_stats):.2f}% | threshold {dedup_threshold:.1f}%)"
                 )
                 if skipped_dedup == 0 and min(diff_stats) > dedup_threshold:
                     log(
-                        f"[]   ({min(diff_stats):.2f}%) "
-                        f" ({dedup_threshold:.1f}%) —  noise/ "
-                        f"  \"\" "
+                        f"[WARN] Even the smallest difference ({min(diff_stats):.2f}%) is above the threshold "
+                        f"({dedup_threshold:.1f}%) - nothing was skipped; the video may contain noise or fast motion. "
+                        f"Try a higher dedup level."
                     )
             else:
-                log("[INFO] dedup:  2  ")
+                log("[INFO] dedup: fewer than 2 frames were compared")
         if progress_callback is not None:
             progress_callback(frames_to_process, frames_to_process)
-        log(f"[DONE]  {saved_count}  -> {output_dir}")
+        log(f"[DONE] {saved_count} images saved -> {output_dir}")
     return saved_count
 
 
@@ -613,7 +613,7 @@ def _process_videos_parallel(
     if max_workers is None:
         max_workers = min(4, max(1, os.cpu_count() or 2))
 
-    log(f"[INFO]  {max_workers}  ( {len(videos)} )")
+    log(f"[INFO] Using {max_workers} parallel worker(s) ({len(videos)} videos)")
     if video_progress_callback is not None:
         video_progress_callback(0, len(videos), f" {len(videos)} ...")
 
@@ -687,7 +687,7 @@ def process_input(
             key=lambda p: str(p).lower(),
         )
         if not videos:
-            log(f"[WARN] : {input_path}")
+            log(f"[WARN] No video files found: {input_path}")
             return 0
 
         if parallel and len(videos) > 1:
@@ -699,7 +699,7 @@ def process_input(
         else:
             for i, v in enumerate(videos, start=1):
                 if cancel_event is not None and cancel_event.is_set():
-                    log("[] ")
+                    log("[CANCELLED] Stopped before the next video")
                     break
                 if video_progress_callback is not None:
                     video_progress_callback(i, len(videos), v.name)
@@ -708,7 +708,7 @@ def process_input(
                     v, sub_out, log=log, cancel_event=cancel_event,
                     progress_callback=progress_callback, **kwargs
                 )
-        log(f"\n[SUMMARY]  {total}   {len(videos)} ")
+        log(f"\n[SUMMARY] {total} images saved from {len(videos)} videos")
     elif input_path.is_file():
         if video_progress_callback is not None:
             video_progress_callback(1, 1, input_path.name)
@@ -717,7 +717,7 @@ def process_input(
             progress_callback=progress_callback, **kwargs
         )
     else:
-        log(f"[ERROR] : {input_path}")
+        log(f"[ERROR] Input not found: {input_path}")
 
     return total
 
@@ -747,12 +747,12 @@ def _run_ffmpeg(cmd, log, timeout=1800):
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except Exception as e:
-        log(f"[]  ffmpeg : {e}")
+        log(f"[WARN] Could not run ffmpeg: {e}")
         return False
 
     if result.returncode != 0:
         tail = (result.stderr or "").strip().splitlines()[-1:] or [""]
-        log(f"[] ffmpeg  error: {tail[0][:200]}")
+        log(f"[WARN] ffmpeg reported an error: {tail[0][:200]}")
         return False
     return True
 
@@ -773,14 +773,14 @@ def _ffmpeg_trim(ffmpeg_path, video_path, output_path, start_sec, end_sec, log):
         cmd += ["-t", f"{end_sec:.3f}"]
     cmd += ["-c", "copy", str(output_path)]
 
-    log("[INFO]  ffmpeg ( )...")
+    log("[INFO] Fast mode with ffmpeg (no re-encoding)...")
     if not _run_ffmpeg(cmd, log):
         return False
     if not output_path.exists() or output_path.stat().st_size == 0:
-        log("[] ffmpeg ")
+        log("[WARN] ffmpeg did not produce an output file")
         return False
 
-    log(f"[DONE]  ffmpeg -> {output_path}")
+    log(f"[DONE] ffmpeg -> {output_path}")
     return True
 
 
@@ -809,9 +809,9 @@ def trim_video(
                 if progress_callback is not None:
                     progress_callback(1, 1)
                 return True
-            log("[INFO]  ()")
+            log("[INFO] Falling back to precise mode (frame by frame)")
         else:
-            log("[]  ffmpeg   ()")
+            log("[WARN] ffmpeg was not found - using precise mode (frame by frame)")
 
     return _trim_video_opencv(video_path, output_path, start_sec, end_sec, log, cancel_event, progress_callback)
 
@@ -824,7 +824,7 @@ def _trim_video_opencv(video_path, output_path, start_sec, end_sec, log, cancel_
     video_path = Path(video_path)
     cap = _open_video_capture(video_path)
     if not cap.isOpened():
-        log(f"[ERROR] : {video_path}")
+        log(f"[ERROR] Cannot read the video information: {video_path}")
         return False
 
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
@@ -838,14 +838,14 @@ def _trim_video_opencv(video_path, output_path, start_sec, end_sec, log, cancel_
     span = max(0, end_frame - start_frame)
 
     if span <= 0:
-        log("[ERROR]  ( >=  )")
+        log("[ERROR] Invalid range (the end must be after the start)")
         cap.release()
         return False
 
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     writer, actual_path = _open_video_writer(output_path, fourcc, fps, (width, height))
     if not writer.isOpened():
-        log(f"[ERROR] : {output_path}")
+        log(f"[ERROR] Cannot create the output file: {output_path}")
         cap.release()
         return False
 
@@ -853,12 +853,12 @@ def _trim_video_opencv(video_path, output_path, start_sec, end_sec, log, cancel_
     frame_idx = start_frame
     written = 0
     cancelled = False
-    log(f"[INFO]  {video_path.name}: {format_hms(start_frame / fps)} - {format_hms(end_frame / fps)} ({span} )")
+    log(f"[INFO] Trimming {video_path.name}: {format_hms(start_frame / fps)} - {format_hms(end_frame / fps)} ({span} frames)")
 
     while frame_idx < end_frame:
         if cancel_event is not None and cancel_event.is_set():
             cancelled = True
-            log(f"[]  —  {written} ")
+            log(f"[CANCELLED] Stopped - {written} frames written")
             break
         ret, frame = cap.read()
         if not ret:
@@ -876,10 +876,10 @@ def _trim_video_opencv(video_path, output_path, start_sec, end_sec, log, cancel_
         return False
 
     if written <= 0:
-        log("[ERROR]  ")
+        log("[ERROR] No frames were written")
         return False
 
-    log(f"[DONE]  {written}  -> {actual_path}")
+    log(f"[DONE] {written} frames written -> {actual_path}")
     return True
 
 
@@ -918,7 +918,7 @@ def _ffmpeg_concat(ffmpeg_path, video_paths, output_path, log):
             list_path = f.name
 
         cmd = [ffmpeg_path, "-y", "-f", "concat", "-safe", "0", "-i", list_path, "-c", "copy", str(output_path)]
-        log("[INFO]  ffmpeg ( )...")
+        log("[INFO] Fast mode with ffmpeg (no re-encoding)...")
         if not _run_ffmpeg(cmd, log):
             return False
     finally:
@@ -929,10 +929,10 @@ def _ffmpeg_concat(ffmpeg_path, video_paths, output_path, log):
                 pass
 
     if not output_path.exists() or output_path.stat().st_size == 0:
-        log("[] ffmpeg ")
+        log("[WARN] ffmpeg did not produce an output file")
         return False
 
-    log(f"[DONE]  ffmpeg -> {output_path}")
+    log(f"[DONE] ffmpeg -> {output_path}")
     return True
 
 
@@ -952,7 +952,7 @@ def merge_videos(
     """
     video_paths = [Path(p) for p in video_paths]
     if len(video_paths) < 2:
-        log("[ERROR]  2 ")
+        log("[ERROR] Select at least 2 videos")
         return False
 
     if fast_mode:
@@ -964,14 +964,14 @@ def merge_videos(
                     if progress_callback is not None:
                         progress_callback(1, 1)
                     return True
-                log("[INFO]  ()")
+                log("[INFO] Falling back to precise mode (frame by frame)")
             else:
                 log(
-                    "[] /fps/ "
-                    " ( ffmpeg )"
+                    "[WARN] The videos differ in size/fps/codec, so they cannot be joined without re-encoding "
+                    "(precise mode is used instead of ffmpeg copy)"
                 )
         else:
-            log("[]  ffmpeg  ")
+            log("[WARN] ffmpeg was not found - using precise mode")
 
     return _merge_videos_opencv(video_paths, output_path, log, cancel_event, progress_callback)
 
@@ -984,7 +984,7 @@ def _merge_videos_opencv(video_paths, output_path, log, cancel_event, progress_c
     #  fps/
     first_info = probe_video_info(video_paths[0])
     if first_info is None:
-        log(f"[ERROR] : {video_paths[0]}")
+        log(f"[ERROR] Cannot read the video information: {video_paths[0]}")
         return False
 
     cap0 = _open_video_capture(video_paths[0])
@@ -999,7 +999,7 @@ def _merge_videos_opencv(video_paths, output_path, log, cancel_event, progress_c
     for p in video_paths[1:]:
         info = probe_video_info(p)
         if info is None:
-            log(f"[ERROR] : {p}")
+            log(f"[ERROR] Cannot read the video information: {p}")
             return False
         infos.append(info)
     total_frames_all = sum(i["total_frames"] for i in infos)
@@ -1007,7 +1007,7 @@ def _merge_videos_opencv(video_paths, output_path, log, cancel_event, progress_c
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     writer, actual_path = _open_video_writer(output_path, fourcc, fps, target_size)
     if not writer.isOpened():
-        log(f"[ERROR] : {output_path}")
+        log(f"[ERROR] Cannot create the output file: {output_path}")
         return False
 
     written_total = 0
@@ -1016,17 +1016,17 @@ def _merge_videos_opencv(video_paths, output_path, log, cancel_event, progress_c
         if cancel_event is not None and cancel_event.is_set():
             cancelled = True
             break
-        log(f"[INFO] ({idx}/{len(video_paths)}) : {path.name}")
+        log(f"[INFO] ({idx}/{len(video_paths)}) Adding: {path.name}")
         cap = _open_video_capture(path)
         if not cap.isOpened():
-            log(f"[WARN] : {path.name}")
+            log(f"[WARN] Cannot open: {path.name}")
             continue
 
         this_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         this_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         needs_resize = (this_w, this_h) != target_size
         if needs_resize:
-            log(f"[] {path.name}  {this_w}x{this_h}  ({width}x{height}) — ")
+            log(f"[INFO] {path.name} is {this_w}x{this_h}, different from the first video ({width}x{height}) - resizing")
 
         while True:
             if cancel_event is not None and cancel_event.is_set():
@@ -1050,14 +1050,14 @@ def _merge_videos_opencv(video_paths, output_path, log, cancel_event, progress_c
     writer.release()
 
     if cancelled:
-        log(f"[]  —  {written_total} ")
+        log(f"[CANCELLED] Stopped - {written_total} frames written")
         return False
 
     if written_total <= 0:
-        log("[ERROR]  ")
+        log("[ERROR] No frames were written")
         return False
 
-    log(f"[DONE]  {len(video_paths)}   {written_total}  -> {actual_path}")
+    log(f"[DONE] {len(video_paths)} videos merged, {written_total} frames -> {actual_path}")
     return True
 
 
@@ -1086,15 +1086,15 @@ def images_to_video(image_paths, output_path, fps=25.0, log=print, cancel_event=
 
     image_paths = [Path(p) for p in image_paths]
     if len(image_paths) < 1:
-        log("[ERROR]  1 ")
+        log("[ERROR] Select at least 1 image")
         return False
     if fps is None or fps <= 0:
-        log("[ERROR] FPS  0")
+        log("[ERROR] FPS must be greater than 0")
         return False
 
     first_img = _read_image_safe(image_paths[0])
     if first_img is None:
-        log(f"[ERROR] : {image_paths[0]}")
+        log(f"[ERROR] Cannot read the image: {image_paths[0]}")
         return False
 
     h, w = first_img.shape[:2]
@@ -1103,23 +1103,23 @@ def images_to_video(image_paths, output_path, fps=25.0, log=print, cancel_event=
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     writer, actual_path = _open_video_writer(output_path, fourcc, fps, target_size)
     if not writer.isOpened():
-        log(f"[ERROR] : {output_path}")
+        log(f"[ERROR] Cannot create the output file: {output_path}")
         return False
 
     total = len(image_paths)
     written = 0
     cancelled = False
-    log(f"[INFO]  {total}   {fps} FPS ( {w}x{h})...")
+    log(f"[INFO] Creating a video from {total} images at {fps} FPS (size {w}x{h})...")
 
     for idx, img_path in enumerate(image_paths):
         if cancel_event is not None and cancel_event.is_set():
             cancelled = True
-            log(f"[]  —  {written} ")
+            log(f"[CANCELLED] Stopped - {written} frames written")
             break
 
         img = _read_image_safe(img_path)
         if img is None:
-            log(f"[WARN] : {img_path.name}")
+            log(f"[WARN] Cannot read the image, skipped: {img_path.name}")
             continue
         if img.shape[1] != w or img.shape[0] != h:
             img = cv2.resize(img, target_size, interpolation=cv2.INTER_AREA)
@@ -1137,10 +1137,10 @@ def images_to_video(image_paths, output_path, fps=25.0, log=print, cancel_event=
         return False
 
     if written <= 0:
-        log("[ERROR]  ")
+        log("[ERROR] No frames were written")
         return False
 
-    log(f"[DONE]  {written}  (~{written / fps:.1f} ) -> {actual_path}")
+    log(f"[DONE] {written} frames (~{written / fps:.1f} seconds) -> {actual_path}")
     return True
 
 
@@ -1167,7 +1167,7 @@ def build_arg_parser():
     p.add_argument("--prefix", help=" (: )")
     p.add_argument(
         "--no-parallel", action="store_true",
-        help=" ()",
+        help="Process videos one at a time instead of in parallel (slower, uses less memory)",
     )
     p.add_argument("--dedup", action="store_true", help="/")
     p.add_argument(
@@ -1748,7 +1748,7 @@ def launch_gui(parent=None, visible_tools=None):
                 #     thread pool  
                 if n_items > 1:
                     max_workers = min(4, max(1, _os.cpu_count() or 2), n_items)
-                    log(f"[INFO]  {max_workers}  ( {n_items} )")
+                    log(f"[INFO] Using {max_workers} parallel worker(s) ({n_items} videos)")
                     current_video_var.set(f"Processing {n_items} videos in parallel...")
 
                     #  ( probe )
@@ -1784,13 +1784,13 @@ def launch_gui(parent=None, visible_tools=None):
                     do_one(0, path, start_sec, end_sec, source_root, update_progress)
 
                 total_saved = saved_holder["n"]
-                log(f"\n[SUMMARY]  {total_saved}   {n_items} ")
+                log(f"\n[SUMMARY] {total_saved} images saved from {n_items} videos")
                 if cancel_event.is_set():
-                    log("\n⏹ ")
+                    log("\n⏹ Cancelled.")
                 else:
-                    log("\n✅ ! ")
+                    log("\n✅ Done!")
             except Exception as e:
-                log(f"\n❌ : {e}")
+                log(f"\n❌ Error: {e}")
             finally:
                 root.after(0, lambda: set_running_state(False))
 
@@ -1801,7 +1801,7 @@ def launch_gui(parent=None, visible_tools=None):
         if ev is not None:
             ev.set()
             stop_btn.configure(state="disabled")
-            log("\n[...] ")
+            log("\n[...] Stopping...")
 
     run_btn = ttk.Button(run_btn_holder, text="▶  Extract Frames", command=run_extraction)
     run_btn.pack(side="left", expand=True, padx=(0, 4))
@@ -1837,7 +1837,7 @@ def launch_gui(parent=None, visible_tools=None):
                 trim_info_holder["info"] = info
                 if info:
                     trim_duration_var.set(
-                        f": {format_hms(info['duration_sec'])}  |  {info['fps']:.1f} FPS  |  {info['total_frames']} "
+                        f"Duration: {format_hms(info['duration_sec'])}  |  {info['fps']:.1f} FPS  |  {info['total_frames']} frames"
                     )
                 else:
                     trim_duration_var.set("( — )")
@@ -1976,7 +1976,7 @@ def launch_gui(parent=None, visible_tools=None):
             return
         if start_sec is None and end_sec is None:
             if not messagebox.askyesno(
-                "", " /Entire Clip ?"
+                "Entire Clip", "No start or end time is set. Trim the entire clip?"
             ):
                 return
 
@@ -2309,8 +2309,8 @@ def launch_gui(parent=None, visible_tools=None):
     ttk.Label(frm_i2v_list, textvariable=i2v_count_var).pack(anchor="w", padx=6, pady=(0, 2))
     ttk.Label(
         frm_i2v_list,
-        text=": \"\"  () "
-        " ",
+        text="Note: the images are combined in the order listed. Use \"Clear All\" to start over "
+        "(the order follows the list, top to bottom).",
     ).pack(anchor="w", padx=6, pady=(0, 6))
 
     frm_i2v_settings = ttk.LabelFrame(i2v_content, text="2) Video Settings")

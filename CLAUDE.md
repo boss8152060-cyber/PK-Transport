@@ -21,6 +21,7 @@
 
 - แก้โมดูลได้ใน repo นี้ (ตามกฎของโมดูลนั้นใน `PKT-*/CLAUDE.md` เรื่องโค้ด/เทสต์); PKT Data และ PKT Analyze ถูกฝังเป็นหน้าในแอป (ดู `pkt/ui/pages/data.py`, `analyze.py`) PKT Train เป็นหน้าของแอป
 - ข้อความบนหน้าจอใส่ใน `pkt/i18n.py` ทั้งไทยและอังกฤษ (key ต้องครบทั้งสองภาษา — มีเทสต์ตรวจ); **ศัพท์เฉพาะไม่แปล** (TTC, PET, LDP, Lateral Clearance, Gap Acceptance, Speed, ชื่อโมเดล YOLO26/RT-DETR/RT-DETRv2, Colab, ชื่อโมดูล) ดู `KEEP_TERMS`
+- **ข้อความใหม่ใน PKT Data / PKT Analyze ต้องเพิ่มคำแปลใน `pkt/ui/lang/data_th.py` (อังกฤษ→ไทย) / `analyze_en.py` (ไทย→อังกฤษ)** — `tests/test_xlate.py` อ่านซอร์สจริงแล้วเตือนถ้าข้อความไหนยังไม่มีคำแปล; ตัวแปลทำงานที่ `pkt/ui/xlate.py` (ไม่แตะ combo box/ช่องกรอก); ไม่ต้องแก้โค้ดหน้าจอของโมดูล
 - ธีม: ขาว-ดำ-เทาโทนเข้มเหมือน PKT Data (สีอยู่ใน `pkt/ui/theme.py`), โลโก้ = ของ PKT Data (`assets/icon.ico`) — ห้ามเปลี่ยนเป็นสีฉูดฉาด; ใช้ `TextBinder` ผูกข้อความเพื่อให้สลับภาษาสด
 - เรียกตัวชี้วัดด้วยชื่อ ห้ามใช้รหัส Y1–Y7
 - เปลี่ยนเลย์เอาต์ต้องถ่ายภาพหน้าจอตรวจ (PIL `ImageGrab` ได้ แต่ Tk บนเครื่องนี้ไม่ DPI-aware ภาพจับอาจถูกตัด)

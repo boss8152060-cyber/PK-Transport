@@ -58,6 +58,7 @@ class PKTApp:
                 pass
         self._build_shell()
         self._build_pages()
+        self._build_translator()
         self.refresh_modules()
         self.show("home")
         root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -99,6 +100,7 @@ class PKTApp:
         self._paint_lang_switch()
         self.b.refresh()
         self._show_app_update()
+        self.xl.sweep()                                   # PKT Data / PKT Analyze texts
 
     def _save(self):
         try:
@@ -185,6 +187,15 @@ class PKTApp:
         self.pages["settings"] = SettingsPage(self.container, self)
         for page in self.pages.values():
             page.grid(row=0, column=0, sticky="nsew")
+
+    def _build_translator(self):
+        """The language switch for the embedded programs: catalogs per target language, swept over their pages (pkt/ui/xlate.py)."""
+        from pkt.ui import xlate
+        from pkt.ui.lang import analyze_en, data_th
+        self.xl = xlate.Translator(self.root, lambda: self.tr.lang, [xlate.Catalog("th", data_th.EXACT, data_th.TEMPLATES),
+                                                                   xlate.Catalog("en", analyze_en.EXACT, analyze_en.TEMPLATES, fragments=True)])
+        self.xl.areas = [self.pages["data"], self.pages["analyze"]]
+        self.xl.install()
 
     def show(self, name):
         if name not in self.pages:
