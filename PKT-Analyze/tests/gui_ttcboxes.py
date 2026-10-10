@@ -1,0 +1,157 @@
+"""The vehicle rectangles that TTC uses, drawn on the X-Y video and on the normal roadside video (Tracking_Result.mp4; each with its own switch, no extra video).
+
+Two cars drive towards each other (10 m/s each, 4.5 m x 1.8 m). The boxes (+ 0.25 m on each side) touch when the centres are 5.0 m apart: at t = 1.75 s.
+Before that the frames count (red, with the TTC written), after that they overlap.
+
+Run from the Run folder:   python tests/gui_ttcboxes.py
+"""
+import importlib.util
+import os
+import sys
+import tempfile
+import tkinter as tk
+
+import cv2
+import numpy as np
+
+os.environ["PK_STUDIO_CUDA_RELAUNCHED"] = "1"
+HERE = os.path.dirname(os.path.abspath(__file__))
+spec = importlib.util.spec_from_file_location("pkstudio_main", os.path.join(HERE, "..", "PKStudio.py"))
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
+failures = []
+
+
+def check(name, cond, detail=""):
+    print(("PASS " if cond else "FAIL ") + name + (f"  {detail}" if detail else ""))
+    if not cond:
+        failures.append(name)
+
+
+tmp = tempfile.mkdtemp(prefix="pk_ttcbox_")
+out_dir = os.path.join(tmp, "ผลลัพธ์")
+os.makedirs(out_dir)
+CW, CH = 1280, 720
+PPM = 20.0
+video = os.path.join(tmp, "clip.mp4")
+vw = cv2.VideoWriter(video, cv2.VideoWriter_fourcc(*"mp4v"), 10, (CW, CH))
+for _ in range(30):
+    vw.write(np.full((CH, CW, 3), 80, np.uint8))
+vw.release()
+
+root = tk.Tk()
+root.withdraw()
+app = m.Run1App(root)
+app.zones = {name: [] for name in m.ZONE_NAMES}
+app.zones["Zone 3"] = [(20, 100), (1260, 100), (1260, 600), (20, 600)]
+c = {"perspective": None, "perspective_enabled": False, "ppm": PPM, "axis_deg": 0.0, "align": None, "site_id": 8,
+     "ttc_enabled": True, "ttc_zones": [3], "ttc_velocity_window_s": 0.5, "ttc_min_speed_kmh": 5.0, "ttc_min_rel_speed_ms": 0.5, "ttc_pair_radius_m": 50.0,
+     "ttc_max_record_s": None, "ttc_min_record_s": None, "ttc_angle_rear_end_deg": 30.0, "ttc_angle_crossing_deg": 85.0,
+     "widths": {"Car": 1.8}, "lengths": {"Car": 4.5}, "risk_limits": dict(m.RISK_DEFAULT_LIMITS), "ttc_show_boxes_xy": True, "ttc_show_boxes_video": True}
+
+tracks = {1: [], 2: []}
+for k in range(21):
+    t = k / 10.0
+    for tid, x in ((1, 5.0 + 10.0 * t), (2, 45.0 - 10.0 * t)):
+        px = (x * PPM, 15.0 * PPM)
+        tracks[tid].append({"frame": str(k + 1), "timestamp": f"{t:.6f}", "_timestamp": t, "class_name": "Car", "zone": "Zone 3", "_zone_num": 3,
+                            "_point": px, "_center": px, "_m": (x, 15.0), "_mc": (x, 15.0), "confidence": "0.9"})
+rows, diag, frames, shapes = app._run3_ttc(tracks, c, {})
+app._run3_ttc_shapes = shapes
+check("one event: the two cars head-on (angle 180 deg = Crossing in the 30 / 85 deg scheme)", len(rows) == 1 and rows[0]["TTC_Type"] == "Crossing", str([r["TTC_Type"] for r in rows]))
+check("no rectangles are built: the shapes hold only what is drawn (hot ids, pairs, marks)", all(set(sh) == {"hot", "pairs", "marks"} for sh in shapes.values()), str({k: sorted(v) for k, v in list(shapes.items())[:1]}))
+
+
+def frame_at(path, idx):
+    cap = cv2.VideoCapture(path)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+    ok, f = cap.read()
+    cap.release()
+    return f.astype(np.int16) if ok else None
+
+
+def red(f):
+    return (f[:, :, 2] > 190) & (f[:, :, 1] < 80) & (f[:, :, 0] < 80)
+
+
+def green(f):
+    return (f[:, :, 1] > 180) & (f[:, :, 2] < 80) & (f[:, :, 0] < 80)
+
+
+def make_result(name, n):
+    path = os.path.join(out_dir, name)
+    w = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), 10, (CW, CH))
+    for _ in range(n):
+        w.write(np.full((CH, CW, 3), 80, np.uint8))
+    w.release()
+    return path
+
+
+# ---- the expected collision point (where the two straight paths cross) is drawn as a red cross + the TTC
+# car 1 along +x at y = 15 m (10 m/s), car 2 along -y at x = 25 m (10 m/s): both reach (25, 15) at t = 2.0 s
+tr2 = {1: [], 2: []}
+for k in range(21):
+    t = k / 10.0
+    for tid, (x, y) in ((1, (5.0 + 10.0 * t, 15.0)), (2, (25.0, 35.0 - 10.0 * t))):
+        px = (x * PPM, y * PPM)
+        tr2[tid].append({"frame": str(k + 1), "timestamp": f"{t:.6f}", "_timestamp": t, "class_name": "Car", "zone": "Zone 3", "_zone_num": 3,
+                         "_point": px, "_center": px, "_m": (x, y), "_mc": (x, y), "confidence": "0.9"})
+cp_ = dict(c, ttc_miss_margin_m=0.5)
+rows_p, diag_p, frames_p, shapes_p = app._run3_ttc(tr2, cp_, {})
+app._run3_ttc_shapes = shapes_p
+mk = shapes_p[11]["marks"]
+check("point method: one mark at t = 1.0 s, TTC 1.0 s, the paths cross at (25, 15) m",
+      len(mk) == 1 and abs(mk[0]["ttc"] - 1.0) < 0.03 and mk[0]["cross"] is not None and abs(mk[0]["cross"][0] - 25.0) < 0.05 and abs(mk[0]["cross"][1] - 15.0) < 0.05, str(mk[:1]))
+check("point method: the event row has the crossing point, the distances and the arrival times (both 1.0 s from the minimum frame)",
+      rows_p and rows_p[0]["Collide_X_m"] != "" and abs(float(rows_p[0]["Collide_X_m"]) - 25.0) < 0.1, str(rows_p[0] if rows_p else None))
+xp = frame_at(app._run3_write_topview_video(tr2, cp_, tempfile.mkdtemp(dir=tmp), video, display={"draw_trail": False}), 10)
+check("X-Y video (point method): the red cross is drawn", int(red(xp).sum()) > 30, str(int(red(xp).sum())))
+res_p = make_result("Tracking_Result.mp4", 21)
+app._run3_overlay_ttc_boxes(tr2, cp_, res_p, first_frame=1)
+fp_ = frame_at(res_p, 10)
+ys2, xs2 = np.where(red(fp_))
+check("normal video (point method): the cross is at (25 m x 20 px/m, 15 m x 20 px/m) = (500, 300) px", len(xs2) > 30 and abs(float(np.median(xs2)) - 500) < 25 and abs(float(np.median(ys2)) - 300) < 25,
+      f"{len(xs2)} px, median ({np.median(xs2) if len(xs2) else None}, {np.median(ys2) if len(ys2) else None})")
+# parallel paths (the two cars head-on on one line): no crossing point -> no cross, only a thin line and the TTC
+rows_h, _d, _f, shapes_h = app._run3_ttc(tracks, cp_, {})
+check("head-on cars on one line: no crossing point (parallel) - the mark has no cross", shapes_h[11]["marks"] and shapes_h[11]["marks"][0]["cross"] is None and rows_h[0]["Collide_X_m"] == "")
+
+# ---- the zones only filter: the collision point must lie inside a selected zone, the vehicles themselves need not be (their velocity comes from the whole track)
+tr3 = {k: [dict(r, zone="", _zone_num=None) for r in v] for k, v in tr2.items()}              # both vehicles outside every zone in every frame
+keep_zone = app.zones["Zone 3"]
+app.zones["Zone 3"] = [(20 * PPM, 10 * PPM), (30 * PPM, 10 * PPM), (30 * PPM, 20 * PPM), (20 * PPM, 20 * PPM)]     # x 20..30 m, y 10..20 m: holds the crossing (25, 15)
+rows_in, diag_in, fr_in, _sh = app._run3_ttc(tr3, cp_, {})
+check("zone filter: the collision point (25, 15) is inside Zone 3 -> the event is found although both vehicles are outside every zone", len(rows_in) == 1 and rows_in[0]["Zone"] == "Zone 3"
+      and diag_in["zone_geometry"] is True, str([(r["Zone"], r["TTC_s"]) for r in rows_in]))
+app.zones["Zone 3"] = [(40 * PPM, 10 * PPM), (50 * PPM, 10 * PPM), (50 * PPM, 20 * PPM), (40 * PPM, 20 * PPM)]     # a zone elsewhere
+rows_out, diag_out, fr_out, _sh2 = app._run3_ttc(tr2, cp_, {})
+check("zone filter: the collision point is outside the selected zone -> no event (even with both vehicles recorded inside Zone 3), the frames say Outside_Zone",
+      not rows_out and any(r["Status"] == "Outside_Zone" for r in fr_out) and diag_out["frames_collision_point_outside_zone"] > 0, str(diag_out["frames_collision_point_outside_zone"]))
+# ---- Zone Sequence: both vehicles must be in the collision zone now or enter it later (never visited / already left -> not counted)
+app.zones["Zone 3"] = [(20 * PPM, 10 * PPM), (30 * PPM, 10 * PPM), (30 * PPM, 20 * PPM), (20 * PPM, 20 * PPM)]
+def with_zones(z1, z2):
+    """z1 / z2: function of the time t -> zone number or None for car 1 / car 2"""
+    out_ = {1: [], 2: []}
+    for tid, zf in ((1, z1), (2, z2)):
+        for r in tr2[tid]:
+            z = zf(r["_timestamp"])
+            out_[tid].append(dict(r, zone="" if z is None else f"Zone {z}", _zone_num=z))
+    return out_
+ev_ok = app._run3_ttc(with_zones(lambda t: 3, lambda t: 3 if t >= 1.5 else 2), cp_, {})
+check("Zone Sequence: car 2 comes from Zone 2 and enters Zone 3 later (1.5 s) -> the zone is on its way: the event is found (frames before it enters count)",
+      len(ev_ok[0]) == 1 and ev_ok[0][0]["QC_Flag"].find("Zone_Sequence_Incomplete") < 0 and ev_ok[3][5]["marks"], str([(r["Zone"], r["TTC_s"], r["QC_Flag"]) for r in ev_ok[0]]))
+ev_never = app._run3_ttc(with_zones(lambda t: 3, lambda t: 2), cp_, {})
+check("Zone Sequence: car 2 never goes to Zone 3 (always Zone 2) -> nothing is counted; the frames say Zone_Not_On_Path",
+      not ev_never[0] and any(r["Status"] == "Zone_Not_On_Path" for r in ev_never[2]) and ev_never[1]["frames_zone_not_on_path"] > 0, str(ev_never[1]["frames_zone_not_on_path"]))
+ev_left = app._run3_ttc(with_zones(lambda t: 3, lambda t: 3 if t <= 0.4 else 2), cp_, {})
+check("Zone Sequence: car 2 was in Zone 3 only before 0.4 s and has left it -> only the early frames (it is still in the zone) count: TTC >= 1.4 s, not the 0.1 s of the late frames",
+      len(ev_left[0]) == 1 and float(ev_left[0][0]["TTC_s"]) > 1.4 and float(ev_left[0][0]["Event_End"]) <= 0.55, str([(r['Zone'], r['TTC_s'], r['Event_End']) for r in ev_left[0]]))
+ev_inc = app._run3_ttc(with_zones(lambda t: 3, lambda t: None), cp_, {})
+check("a vehicle never seen in any zone has no sequence: the rule is skipped for it and the event is flagged Zone_Sequence_Incomplete",
+      len(ev_inc[0]) == 1 and "Zone_Sequence_Incomplete" in ev_inc[0][0]["QC_Flag"], str([(r["QC_Flag"]) for r in ev_inc[0]]))
+app.zones["Zone 3"] = keep_zone
+
+root.destroy()
+print("FAILED: " + ", ".join(failures) if failures else "ALL OK")
+sys.exit(1 if failures else 0)

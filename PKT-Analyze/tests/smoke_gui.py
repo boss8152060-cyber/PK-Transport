@@ -1,0 +1,218 @@
+"""Headless smoke test of the real PKStudio GUI object (needs torch/cv2/ultralytics).
+
+Run from the Run folder:   python tests/smoke_gui.py
+Builds the Tk window without showing it, round-trips the settings, runs the
+Run 3 validation / snapshot / warning code and (optionally) the Movement
+resolver on a Detection_Records.csv.  It does NOT run YOLO or need a video.
+
+   python tests/smoke_gui.py "<path to ..._Detection_Records.csv>"
+"""
+import csv
+import importlib.util
+import os
+import sys
+import tkinter as tk
+
+os.environ["PK_STUDIO_CUDA_RELAUNCHED"] = "1"   # skip the CUDA relaunch bootstrap
+HERE = os.path.dirname(os.path.abspath(__file__))
+spec = importlib.util.spec_from_file_location("pkstudio_main", os.path.join(HERE, "..", "PKStudio.py"))
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
+root = tk.Tk()
+root.withdraw()
+app = m.Run1App(root)
+failures = []
+
+
+def check(name, cond, detail=""):
+    print(("PASS " if cond else "FAIL ") + name + (f"  {detail}" if detail else ""))
+    if not cond:
+        failures.append(name)
+
+
+# --- road geometry ---
+g = app.run3_geometry_vars
+for key, val in (("lane_entry_motorcycle_m", "1.5"), ("lane_entry_car_m", "3.25"),
+                 ("lane_opp_motorcycle_m", "1.2"), ("lane_opp_car_m", "3.0"), ("median_m", "0")):
+    g[key].set(val)
+check("W_entry total", app.run3_w_entry_text.get() == "W_entry = 4.750 m", app.run3_w_entry_text.get())
+check("W_opp total", app.run3_w_opp_text.get() == "W_opp = 4.200 m", app.run3_w_opp_text.get())
+
+# --- Gap Acceptance conflict table given by the user ---
+check("Gap conflict table", m.RUN3_GAP_CONFLICT_MAP == {
+    "1-3-4": ["2-3-4"],
+    "1-3-6-7": ["2-3-4", "5-6-7", "5-6-3-1"],
+    "5-6-3-1": ["2-3-4", "1-3-6-7"],
+}, str(m.RUN3_GAP_CONFLICT_MAP))
+
+check("Gap paths and conflict table cover the same subject movements", set(m.GAP_PATHS) == set(m.RUN3_GAP_CONFLICT_MAP))
+
+# --- settings round trip ---
+st = app.get_settings()
+for key in m.RUN3_GEOMETRY_KEYS:
+    g[key].set("")
+app.set_settings(st)
+check("settings round-trip", [g[k].get() for k in m.RUN3_GEOMETRY_KEYS] == ["1.5", "3.25", "1.2", "3.0", "0"])
+
+# --- validation / snapshot ---
+check("validate_run3_settings", app.validate_run3_settings() is True)
+cfg = app._run3_snapshot_config()
+check("snapshot geometry", cfg["geometry"]["lane_entry_car_m"] == 3.25)
+g["lane_entry_car_m"].set("abc")
+try:
+    app.validate_run3_settings()
+    check("non-numeric width rejected", False)
+except ValueError:
+    check("non-numeric width rejected", True)
+g["lane_entry_car_m"].set("3.25")
+check("warnings is a list", isinstance(app.collect_run3_warnings(), list))
+
+# --- optional: Movement resolver on a real Detection_Records.csv ---
+if len(sys.argv) > 1:
+    with open(sys.argv[1], encoding="utf-8-sig", newline="") as f:
+        rows = list(csv.DictReader(f))
+    tracks, summaries = app._run3_build_tracks(rows, [])
+    mv, status, seqs = app._run3_build_movement_index(tracks, summaries)
+    from collections import Counter
+    print("movement counts:", Counter(mv.values()))
+    print("status counts  :", Counter(status.values()))
+    check("every track classified", set(mv) == {str(t) for t in tracks})
+
+# --- worker threads reach the UI only through the queue (no Tk call from the thread) ---
+import threading
+import time
+seen = []
+th = threading.Thread(target=lambda: (app.update_ui(status="from worker"),
+                                      app.post_ui(lambda: seen.append(threading.current_thread() is threading.main_thread()))))
+th.start()
+th.join()
+end = time.time() + 1.0
+while time.time() < end and not seen:
+    root.update()
+    time.sleep(0.01)
+check("UI queue: callback posted by a worker thread runs on the main thread", seen == [True] and app.status_var.get() == "from worker", str(seen))
+check("default paths are relative to the program folder", m.DEFAULT_MODEL.endswith(os.path.join("Input", "Model", "best.pt")), m.DEFAULT_MODEL)
+
+# --- window layout: five steps + a run bar with the ready-to-run list ---
+check("five steps in order", [app.notebook.tab(i, "text") for i in range(5)] == ["① คลิปวิดีโอ", "② ทางแยก", "③ ตัวชี้วัด", "④ การแสดงผลและไฟล์", "⑤ ตรวจจับและติดตาม"])
+_ind = app._indicator_nb
+check("the indicators have a page each, with ● / ○ for on / off", [_ind.tab(i, "text").lstrip("●○ ") for i in range(len(_ind.tabs()))] == ["LDP", "Lateral Clearance", "Gap + Headway", "TTC", "PET", "Speed", "เกณฑ์ความเสี่ยง"]
+      and _ind.tab(0, "text").startswith("● ") and len(_ind.tabs()) == 7, str([_ind.tab(i, "text") for i in range(len(_ind.tabs()))]))
+app.run3_pet_enabled_var.set(False)
+check("an indicator that is switched off shows ○ on its page", _ind.tab(4, "text").startswith("○ "))
+app.run3_pet_enabled_var.set(True)
+# the device choices: Auto / CPU / GPU 0 / GPU DirectML (any maker); DirectML is the Windows backend for AMD / Intel
+app.device_var.set("GPU DirectML")
+check("device 'GPU DirectML' resolves to the directml backend", app.resolve_device() == "directml")
+app.device_var.set("CPU")
+check("device CPU resolves to cpu", app.resolve_device() == "cpu")
+app.device_var.set("Auto")
+# the groups fold: the title stays, the contents go; the tracker group starts folded; "ย่อทั้งหมด / ขยายทั้งหมด" act on a whole page
+_site = [v for k, v in app._sections.items()][1]                      # the groups of tab 2
+app.root.update()
+_f, _set_open, _c = _site[0]
+_h_open = _f.winfo_height()
+_set_open(False)
+app.root.update()
+check("a folded group is shorter and still shows its title", 1 < _f.winfo_height() < _h_open, f"{_h_open} -> {_f.winfo_height()}")
+_set_open(True)
+app.root.update()
+check("... and unfolds again", _f.winfo_height() == _h_open, f"{_f.winfo_height()}")
+_tracker = [v for k, v in app._sections.items()][-1][-1]
+check("the tracker group starts folded", _tracker[2] is True and _tracker[0].winfo_height() < 80, str(_tracker[0].winfo_height()))
+app.refresh_checklist()
+check("run bar lists model / clips / zones / lines / widths / output", set(app.check_labels) == {"model", "clips", "zones", "lines", "widths", "output"})
+check("no clips yet: the START text has no count", app.start_button.cget("text") == "▶ เริ่มวิเคราะห์", app.start_button.cget("text"))
+app.clips_panel.add_videos([("C:/x/a.mp4", "S/d")])
+app.refresh_checklist()
+check("a newly added clip starts with no result video", app.clips_panel.clips[0]["save_video"] is False)
+app.trajectory_position_var.set("Top")
+app.run3_perspective_enabled_var.set(True)
+check("warning: road-plane calibration with Trajectory Position = Top", any("Trajectory Position" in w for w in app.collect_run3_warnings()))
+app.trajectory_position_var.set("Bottom")
+check("no such warning with Bottom", not any("Trajectory Position" in w for w in app.collect_run3_warnings()))
+app.run3_perspective_enabled_var.set(False)
+app.draw_center_var.set(True)
+check("runtime snapshot knows about the decision-point option", app._runtime_snapshot().get("show_decision_point") is True)
+app.draw_center_var.set(False)
+check("one clip is a list of one", "1 คลิป" in app.start_button.cget("text"), app.start_button.cget("text"))
+# "continues the previous clip" only marks the tracking / IDs: each clip keeps its own time range and recording
+app.clips_panel.clear()
+app.clips_panel.add_videos([("C:/x/a.mp4", "S"), ("C:/x/b.mp4", "S")])
+app.clips_panel.clips[0].update({"analysis_start_s": "0:00", "analysis_end_s": "0:30", "save_video": True})
+app.clips_panel.clips[1].update({"analysis_start_s": "0:30.01", "analysis_end_s": "0:59.99", "save_video": True, "continues_previous": True})
+app.clips_panel.refresh()
+_v = [app.clips_panel.tree.item(i, "values") for i in app.clips_panel.tree.get_children()]
+check("list: a continued clip still shows its own time range and recording, plus the continue mark",
+      _v[0][1] == "0:00 – 0:30" and _v[1][1] == "0:30.01 – 0:59.99" and _v[1][2] == "ตลอดช่วงวิเคราะห์" and _v[1][5].startswith("↳") and _v[0][5] == "" and _v[0][3] == "ตลอดช่วงวิเคราะห์" and _v[0][4] == "ไม่บันทึก", str(_v))
+app.clips_panel.clear()
+from tkinter import messagebox as _mb
+_shown = []
+_mb.showinfo = lambda *a, **k: _shown.append(a)
+app.notebook.select(2)
+app.start_analysis()
+check("START with an empty list explains what to do and goes to step 1", len(_shown) == 1 and app.notebook.index(app.notebook.select()) == 0 and not app.running, str(_shown))
+check("every indicator has its own switch in its group", all(hasattr(app, n) for n in ("run3_ldp_enabled_var", "run3_lc_enabled_var", "run3_gap_enabled_var", "run3_ttc_enabled_var", "run3_pet_enabled_var", "run3_speed_enabled_var")))
+check("reference mapping text widget exists (Gap Acceptance group)", hasattr(app, "run3_reference_text"))
+
+# --- background reading / writing gives exactly the same frames, in order ---
+import tempfile as _tf
+import numpy as _np
+_cv2 = m.cv2
+_d = _tf.mkdtemp(prefix="pk_bg_")
+_src = os.path.join(_d, "src.avi")
+_w = _cv2.VideoWriter(_src, _cv2.VideoWriter_fourcc(*"MJPG"), 10.0, (64, 48))
+for _i in range(20):
+    _w.write(_np.full((48, 64, 3), 10 * _i + 5, dtype=_np.uint8))
+_w.release()
+_direct = []
+_c = _cv2.VideoCapture(_src)
+while True:
+    _ok, _f = _c.read()
+    if not _ok:
+        break
+    _direct.append(int(_f.mean()))
+_c.release()
+_c = _cv2.VideoCapture(_src)
+_r = m.BackgroundFrameReader(_c, lambda n: True, 0, None)
+_bg = []
+while True:
+    _ok, _f = _r.next()
+    if not _ok:
+        break
+    _bg.append(int(_f.mean()))
+_r.close()
+_c.release()
+check("background reader: same frames in the same order as reading directly", _bg == _direct and len(_bg) == 20, str(_bg[:5]))
+_c = _cv2.VideoCapture(_src)
+_r = m.BackgroundFrameReader(_c, lambda n: n % 2 == 0, 0, 10)       # decode every 2nd frame, stop after frame 10
+_got = []
+while True:
+    _ok, _f = _r.next()
+    if not _ok:
+        break
+    _got.append(None if _f is None else int(_f.mean()))
+_r.close()
+_c.release()
+check("background reader: skipped frames come as None, stops at the last frame of the window", len(_got) == 10 and _got[1] is None and _got[0] == _direct[0] and _got[2] == _direct[2], str(_got))
+_out = os.path.join(_d, "out.avi")
+_bw = m.BackgroundVideoWriter(_cv2.VideoWriter(_out, _cv2.VideoWriter_fourcc(*"MJPG"), 10.0, (64, 48)))
+for _i in range(15):
+    _bw.write(_np.full((48, 64, 3), 15 * _i + 5, dtype=_np.uint8))
+_bw.release()
+_bw.release()                                                    # a second release is harmless
+_c = _cv2.VideoCapture(_out)
+_vals = []
+while True:
+    _ok, _f = _c.read()
+    if not _ok:
+        break
+    _vals.append(int(_f.mean()))
+_c.release()
+check("background writer: every frame written, in order", len(_vals) == 15 and all(b2 > a2 for a2, b2 in zip(_vals, _vals[1:])), str(_vals[:5]))
+check("Auto precision: FP16 is not used on the GTX 16 series", (not m.torch.cuda.is_available()) or ("GTX 16" not in m.torch.cuda.get_device_name(0)) or m.fp16_is_faster(0) is False)
+
+root.destroy()
+print("FAILED: " + ", ".join(failures) if failures else "ALL OK")
+sys.exit(1 if failures else 0)

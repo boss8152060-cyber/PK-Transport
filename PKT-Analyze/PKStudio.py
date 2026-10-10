@@ -1,0 +1,13205 @@
+# ============================================================
+# PK Studio V17 - Run 1 + 2 + 3 V28
+# V28: 6 safety indicators in 3 domains (definitions: SPEC_v28_NewIndicators.md)
+#   Distance: LDP, Lateral Clearance
+#   Time    : Gap Acceptance, TTC (rear-end + side), PET
+#   Speed   : Speed (every frame, inside the selected zones)
+#   Zones 1-7; conflict zones 3 and 6. Movement = full zone sequence (6 patterns).
+#   No Tk access from worker thread.
+# ============================================================
+#
+# Vehicle Detection + Tracking + Trajectory + Zone/Line Measurement Research
+# Movement (Run 3) comes from the flicker-cleaned zone sequence of each track
+# (classify_movement); it is never guessed when the sequence is ambiguous.
+# GUI Version 3 - CUDA Auto Environment
+#
+# IMPORTANT:
+# This version checks the Python environment BEFORE importing
+# PyTorch / Ultralytics.
+#
+# If the current Python has torch +cpu, the program searches
+# other installed Python environments and automatically relaunches
+# this same file with the first environment where:
+#
+#   torch.cuda.is_available() == True
+#
+# This prevents the common situation where:
+#   Terminal  -> PyTorch CUDA = True
+#   GUI       -> PyTorch +cpu
+#
+# ============================================================
+
+import os
+import sys
+import csv
+import json
+import importlib.util
+import time
+import threading
+import queue
+import logging
+import subprocess
+import shutil
+import math
+import re
+import base64
+import numpy as np
+from collections import deque, defaultdict
+
+
+# ============================================================
+# CUDA PYTHON BOOTSTRAP
+# ============================================================
+
+BOOTSTRAP_MARKER = "PK_STUDIO_CUDA_RELAUNCHED"
+
+
+def _python_has_cuda(python_exe):
+    """Check whether a Python executable has a CUDA-enabled PyTorch."""
+    try:
+        result = subprocess.run(
+            [
+                python_exe,
+                "-c",
+                (
+                    "import torch; "
+                    "print('1' if torch.cuda.is_available() else '0')"
+                )
+            ],
+            capture_output=True,
+            text=True,
+            timeout=90
+        )
+
+        return result.returncode == 0 and result.stdout.strip() == "1"
+
+    except Exception:
+        return False
+
+
+def _get_python_candidates():
+    """Build a list of possible Python executables on Windows."""
+
+    candidates = []
+
+    def add(path):
+        if not path:
+            return
+
+        path = os.path.abspath(path)
+
+        if not os.path.isfile(path):
+            return
+
+        normalized = os.path.normcase(path)
+
+        for existing in candidates:
+            if os.path.normcase(existing) == normalized:
+                return
+
+        candidates.append(path)
+
+    # Current Python first.
+    add(sys.executable)
+
+    # Python Launcher for Windows.
+    py_launcher = shutil.which("py")
+
+    if py_launcher:
+        try:
+            result = subprocess.run(
+                [py_launcher, "-0p"],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+
+            for line in result.stdout.splitlines():
+                line = line.strip()
+
+                if not line:
+                    continue
+
+                # Typical output:
+                # -V:3.14 * C:\...\python.exe
+                # -V:3.13 C:\...\python.exe
+                # -V:3.12 C:\...\python.exe
+                if " " in line:
+                    possible = line.split()[-1]
+
+                    if os.path.isfile(possible):
+                        add(possible)
+
+        except Exception:
+            pass
+
+    # PATH Python.
+    add(shutil.which("python"))
+    add(shutil.which("python3"))
+
+    # Common Windows installation locations.
+    local_app = os.environ.get("LOCALAPPDATA", "")
+    program_files = os.environ.get("ProgramFiles", "")
+    program_files_x86 = os.environ.get("ProgramFiles(x86)", "")
+
+    roots = [
+        os.path.join(local_app, "Programs", "Python"),
+        os.path.join(program_files, "Python"),
+        os.path.join(program_files_x86, "Python"),
+        r"C:\Python",
+    ]
+
+    for root in roots:
+
+        if not os.path.isdir(root):
+            continue
+
+        try:
+            for name in os.listdir(root):
+
+                folder = os.path.join(root, name)
+
+                if not os.path.isdir(folder):
+                    continue
+
+                python_exe = os.path.join(
+                    folder,
+                    "python.exe"
+                )
+
+                add(python_exe)
+
+        except Exception:
+            pass
+
+    # Explicit common Python versions.
+    for version in [
+        "Python314",
+        "Python313",
+        "Python312",
+        "Python311",
+        "Python310",
+        "Python39",
+    ]:
+
+        add(
+            os.path.join(
+                local_app,
+                "Programs",
+                "Python",
+                version,
+                "python.exe"
+            )
+        )
+
+    return candidates
+
+
+def find_cuda_python(exclude=None):
+    """Path of another installed Python whose PyTorch can use CUDA, or None."""
+    skip = os.path.normcase(os.path.abspath(exclude or sys.executable))
+    for python_exe in _get_python_candidates():
+        if os.path.normcase(os.path.abspath(python_exe)) == skip:
+            continue
+        if _python_has_cuda(python_exe):
+            return python_exe
+    return None
+
+
+def _bootstrap_cuda_environment():
+    """
+    If this Python has CPU-only PyTorch, automatically find another
+    installed Python with CUDA PyTorch and relaunch this script.
+    """
+
+    if os.environ.get(BOOTSTRAP_MARKER) == "1":
+        return
+
+    # Do not import torch here until after we know which Python
+    # environment is being used.
+    try:
+        check = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import torch; "
+                    "print(torch.__version__); "
+                    "print('CUDA=' + str(torch.cuda.is_available()))"
+                )
+            ],
+            capture_output=True,
+            text=True,
+            timeout=90
+        )
+
+        output = (
+            (check.stdout or "")
+            + "\n"
+            + (check.stderr or "")
+        )
+
+    except Exception:
+        output = ""
+
+    # If current Python already has CUDA, stay here.
+    if "CUDA=True" in output:
+        return
+
+    # Current environment does not have usable CUDA.
+    candidates = _get_python_candidates()
+
+    # Remove current Python from the search list after checking it.
+    current = os.path.normcase(
+        os.path.abspath(sys.executable)
+    )
+
+    for python_exe in candidates:
+
+        if os.path.normcase(
+            os.path.abspath(python_exe)
+        ) == current:
+            continue
+
+        if not _python_has_cuda(python_exe):
+            continue
+
+        # Found CUDA-enabled Python.
+        script_path = os.path.abspath(
+            sys.argv[0]
+        )
+
+        env = os.environ.copy()
+        env[BOOTSTRAP_MARKER] = "1"
+
+        print()
+        print("=" * 75)
+        print("PK Studio - CUDA Environment Auto Switch")
+        print("=" * 75)
+        print("Current Python:")
+        print(sys.executable)
+        print()
+        print("Current environment does not provide CUDA.")
+        print()
+        print("CUDA Python found:")
+        print(python_exe)
+        print()
+        print("Relaunching Run 1 with CUDA Python...")
+        print("=" * 75)
+        print()
+
+        completed = subprocess.run(
+            [
+                python_exe,
+                script_path,
+                *sys.argv[1:]
+            ],
+            env=env
+        )
+
+        raise SystemExit(
+            completed.returncode
+        )
+
+
+# Run BEFORE importing torch / ultralytics.
+_bootstrap_cuda_environment()
+
+
+# ============================================================
+# NORMAL IMPORTS
+# ============================================================
+
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox, simpledialog
+
+import cv2
+import torch
+from ultralytics import YOLO
+
+
+# ============================================================
+# DEFAULT PATHS
+# ============================================================
+
+class _NullCSVWriter:
+    """No-op writer used for legacy research outputs that are no longer exported."""
+    def writerow(self, *args, **kwargs):
+        pass
+
+    def flush(self):
+        pass
+
+    def close(self):
+        pass
+
+
+# Default paths are relative to this file: <PKT-Analyze>\Run\PKStudio.py -> <PKT-Analyze>\Input, \Output
+_PK_STUDIO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _first_video(folder):
+    try:
+        for name in sorted(os.listdir(folder)):
+            if name.lower().endswith((".mp4", ".avi", ".mov", ".mkv")):
+                return os.path.join(folder, name)
+    except OSError:
+        pass
+    return os.path.join(folder, "video.mp4")
+
+
+# ---- PKT_ENV-BEGIN (tested by tests/test_env_model.py)
+def _env_model(default, environ=None):
+    """The model the program starts with: PKT_MODEL_PATH (set by PK Transport when the user chose a trained model there) when
+    that file exists, else `default`. The Model field can still be changed in the window."""
+    path = ((environ if environ is not None else os.environ).get("PKT_MODEL_PATH") or "").strip()
+    return path if path and os.path.isfile(path) else default
+# ---- PKT_ENV-END
+
+
+DEFAULT_MODEL = _env_model(os.path.join(_PK_STUDIO_DIR, "Input", "Model", "best.pt"))
+DEFAULT_VIDEO = _first_video(os.path.join(_PK_STUDIO_DIR, "Input", "Video"))
+DEFAULT_OUTPUT = os.path.join(_PK_STUDIO_DIR, "Output")
+
+log = logging.getLogger("pkstudio")
+if not log.handlers:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+
+# ============================================================
+# DEFAULT SETTINGS
+# ============================================================
+
+DEFAULT_SETTINGS = {
+    "run_name": "Run_1",
+    "model": DEFAULT_MODEL,
+    "video": DEFAULT_VIDEO,
+    "output": DEFAULT_OUTPUT,
+
+    "confidence": "0.25",
+    "iou": "0.50",
+    "img_size": "640",
+    "analysis_start_s": "",             # analyse only from this time (blank = from the start); m:ss or seconds
+    "analysis_end_s": "",               # ... to this time (blank = to the end)
+    "record_start_s": "",               # Save Video: record only from this time (blank = start of the analysis window)
+    "record_end_s": "",
+
+    "tracker": "ByteTrack",
+
+    "device": "Auto",
+    "precision": "Auto",
+
+    "frame_skip": "NO - Process every frame",
+
+    "track_high": "0.25",
+    "track_low": "0.10",
+    "new_track": "0.25",
+    "track_buffer": "30",
+    "match_threshold": "0.80",
+
+    "show_preview": False,              # off by default: drawing + showing every frame slows the run (PKT 1.33.0)
+    "video_max_width": "1920",          # Tracking_Result.mp4 is scaled down to at most this width (0 = original size); detection uses the full frame
+    "video_fps": "0",                   # Tracking_Result.mp4 keeps only as many frames per second (0 = every frame, the video's own rate); it still lasts as long as the real video
+    "topview_max_px": "1280",           # Tracking_Topview.mp4 / Tracking_Topview_Drone.mp4: the longest side in px
+    "topview_fps": "0",                 # the same for the two X-Y videos (0 = one picture per processed frame)
+    "hw_decode": False,                 # decode the input video on the graphics card when OpenCV supports it (falls back to normal decoding)
+    "use_tensorrt": False,              # run YOLO through a TensorRT engine (best.engine next to best.pt, built on first use; needs the tensorrt package)
+    "draw_center": False,  # draw the point that decides the zone (Trajectory Position) on the preview / result video
+    "draw_trail": False,
+    "trail_length": "30",
+
+    "save_video": True,
+    "save_csv": True,
+    "csv_flush": "100",
+
+    "research_mode": True,
+
+    # Trajectory Position: choose where the tracked trajectory is anchored
+    # inside each bounding box. Offset moves the anchor inward from the selected edge(s).
+    "trajectory_position": "Center",
+    "trajectory_offset": "0",
+
+    # Zone overlay display controls.
+    "show_zone_boundary": True,
+    "show_zone_label": True,
+    "show_zone_label_prefix": True,
+    "zone_overlay_opacity": "45",
+
+    # Individual vehicle label controls.
+    "show_label_id": True,
+    "show_label_class": True,
+    "show_label_conf": True,
+    "show_label_zone": True,
+    "show_label_speed": True,
+    "show_bbox": True,
+    "box_smooth_pct": "40",                 # the drawn box / trail / reference point of the normal video follow an exponential average of the detections (0 = off, 90 = very steady); display only, nothing recorded changes
+    "zone_confirm_frames": "1",             # a vehicle changes zone only after its point has been in the new zone / in no zone for this many frames in a row (1 = at once; 3 - 5 stops the box blinking on a zone border)
+    "show_ref_lines": True,                 # the reference line of every stream Gap Acceptance / Headway uses (drawn Line or shared zone edge); normal video
+    "outside_zone_normal": "dot",          # vehicles outside every zone in the normal video: dot (point only) | hide | show
+    "outside_zone_xy": "show",              # the same for the X-Y video and picture
+    "show_prefix_id": False,
+    "show_prefix_class": False,
+    "show_prefix_conf": False,
+    "show_prefix_zone": False,
+    "show_prefix_speed": False,
+
+    # Display choices of the X-Y video: every switch of the normal video has its own twin here (xy_...), so the two videos can show different things.
+    # A settings file written before these existed gets the normal-video choices copied (XY_FROM_NORMAL) so nothing changes until the user edits them.
+    "show_info_text": True,                 # normal video: the Frame / FPS / Elapsed / ETA text in the corner
+    "xy_show_zone_boundary": True,
+    "xy_show_zone_label": True,
+    "xy_show_zone_label_prefix": True,
+    "xy_zone_overlay_opacity": "45",
+    "xy_draw_trail": False,
+    "xy_trail_length": "30",
+    "xy_show_label_id": True,
+    "xy_show_label_class": True,
+    "xy_show_label_conf": True,
+    "xy_show_label_zone": True,
+    "xy_show_label_speed": True,
+    "xy_show_prefix_id": False,
+    "xy_show_prefix_class": False,
+    "xy_show_prefix_conf": False,
+    "xy_show_prefix_zone": False,
+    "xy_show_prefix_speed": False,
+    "xy_show_point": True,                  # the dot at the vehicle's Trajectory Position (yellow = in a zone, red ring = in none)
+    "xy_show_grid": True,                   # the metre grid and its numbers
+    "xy_show_time": True,                   # "t = ... s  frame ..." at the bottom
+    "xy_show_ref_lines": True,              # the reference lines of Gap Acceptance / Headway on the X-Y plane
+}
+
+XY_DISPLAY_KEYS = tuple(k for k in DEFAULT_SETTINGS if k.startswith("xy_"))
+XY_FROM_NORMAL = {"xy_" + k: k for k in ("show_zone_boundary", "show_zone_label", "show_zone_label_prefix", "zone_overlay_opacity", "draw_trail", "trail_length",
+                                         "show_label_id", "show_label_class", "show_label_conf", "show_label_zone", "show_label_speed",
+                                         "show_prefix_id", "show_prefix_class", "show_prefix_conf", "show_prefix_zone", "show_prefix_speed")}
+# the third video (the X-Y picture on the drone / top-view picture of the Align): every X-Y switch has its twin dr_...; a settings file without them copies the X-Y choices
+for _k in XY_DISPLAY_KEYS:
+    DEFAULT_SETTINGS["dr_" + _k[3:]] = DEFAULT_SETTINGS[_k]
+DEFAULT_SETTINGS["outside_zone_dr"] = "show"          # vehicles outside every zone in the X-Y-on-drone video
+DR_DISPLAY_KEYS = tuple(k for k in DEFAULT_SETTINGS if k.startswith("dr_"))
+DR_FROM_XY = {"dr_" + k[3:]: k for k in XY_DISPLAY_KEYS}
+
+
+# ============================================================
+# RUN 3 DEFAULTS
+# ============================================================
+
+# The result files of Run 3 that can be switched off one by one: (file, the indicator it belongs to - None = always possible, text shown)
+RUN3_CSV_CHOICES = [
+    ("LDP.csv", "ldp", "LDP — ผลต่อคันต่อโซน"),
+    ("Lateral_Clearance_Pairs.csv", "lc", "Lateral Clearance — สรุปรายคู่"),
+    ("Gap_Acceptance.csv", "gap", "Gap Acceptance"),
+    ("Critical_Gap.csv", "gap", "Critical Gap (Raff / MLE)"),
+    ("Headway.csv", "headway", "Headway"),
+    ("TTC.csv", "ttc", "TTC — รายเหตุการณ์"),
+    ("PET.csv", "pet", "PET"),
+    ("Speed.csv", "speed", "Speed — ทุกเฟรมในโซน"),
+    ("Indicator_Summary.csv", None, "สรุปทุกตัวชี้วัด (ค่าเฉลี่ย / SD / P85 …)"),
+    ("Detection_Records_Topview.csv", None, "พิกัดรถเป็นเมตร (ใช้วาดผัง X–Y)"),
+    ("Duplicate_Tracks.csv", None, "รายงาน ID ซ้ำของรถคันเดียว"),
+]
+
+RUN3_VEHICLE_CLASSES = [
+    "Bus", "Car", "Motorcycle", "Pickup", "Sidecar", "Truck", "Van"
+]
+
+RUN3_GEOMETRY_KEYS = ("lane_entry_motorcycle_m", "lane_entry_car_m",
+                      "lane_opp_motorcycle_m", "lane_opp_car_m", "median_m")
+
+RISK_SETTING_KEYS = ("risk_ttc_limits_s", "risk_pet_limits_s", "risk_ldp_limits_pct", "risk_speed_limits_kmh", "risk_ldp_speed_limits_kmh")
+RISK_SETTING_ASCENDING = {"risk_ttc_limits_s": True, "risk_pet_limits_s": True, "risk_ldp_limits_pct": False,
+                          "risk_speed_limits_kmh": False, "risk_ldp_speed_limits_kmh": False}
+
+RUN3_DEFAULTS = {
+    # Starter preset based on the values currently entered in the researcher UI.
+    # NOTE: values marked as implementation defaults are editable and are NOT
+    # source-derived research constants.
+    "site_id": "8",
+    "speed_enabled": True,
+    "gap_enabled": True,
+    "lc_enabled": True,
+    "pet_enabled": True,
+    "ttc_enabled": True,
+    "ldp_enabled": True,
+    # Risk-level limits (seminar slides, CROW 2009): three numbers each; editable in tab 3
+    "risk_ttc_limits_s": "1.0, 1.5, 2.0",
+    "risk_pet_limits_s": "1.0, 2.0, 3.0",
+    "risk_ldp_limits_pct": "80, 50, 30",
+    "risk_speed_limits_kmh": "50, 30, 15",
+    "risk_ldp_speed_limits_kmh": "80, 50, 30",
+    "ppm": "57.822",
+    # Optional road-plane perspective calibration. Disabled by default because
+    # image points and real dimensions are site/video-specific and were not
+    # supplied in the research documents.
+    "align_enabled": False,                 # use the Align result (video pixels -> the drone's plane) instead of PPM / Perspective
+    "align_data": "",                       # JSON of the Align result (the pairs of points, the kind of transformation, the scale)
+    "perspective_enabled": False,
+    "perspective_p1": "",
+    "perspective_p2": "",
+    "perspective_p3": "",
+    "perspective_p4": "",
+    "perspective_length_m": "",
+    "perspective_width_m": "",
+    "perspective_l12_m": "",
+    "perspective_l23_m": "",
+    "perspective_l34_m": "",
+    "perspective_l41_m": "",
+    "waiting_speed_threshold": "5.00",      # Gap Acceptance: "stopped" inside the conflict zones = speed <= this (km/h)
+    "gap_hold_min_duration_s": "0.30",      # ... for at least this long (s)
+    "lateral_axis_angle_deg": "0.00",       # implementation starter value; verify per video
+    "lc_heading_window_s": "0.50",          # centred window (s) used to get the heading of vehicle A
+    "topview_video": True,                  # also write Tracking_Topview.mp4 (road-plane picture drawn from the metric points); the clip list decides per clip (clip key xy_video)
+    "drone_video": False,                   # also write Tracking_Topview_Drone.mp4 (the same on the drone / top-view picture of the Align); per clip: clip key drone_video
+    "lc_along_limit_m": "0",                # side-by-side window along the heading (m); 0 = auto (L_A + L_B) / 2
+    "lc_max_lateral_m": "3.50",             # pairs further apart sideways than this (m) are unrelated; 0 = no limit
+    "pet_threshold_s": "1.00",
+    # V27 implementation starter values (editable; verify per site):
+    "pet_show_point_xy": True,              # draw the PET crossing point (magenta X + PET) in the X-Y video
+    "pet_show_point_drone": True,           # ... and in the X-Y-on-drone video
+    "pet_show_point_video": False,         # draw it also on the normal roadside video (Tracking_Result.mp4) after Run 3
+    "csv_off": "",                         # the Run 3 result files NOT to write (names separated by commas, see RUN3_CSV_CHOICES); an indicator that is switched off writes nothing anyway
+    "write_detail_files": False,           # also write the checking files: Lateral_Clearance.csv (every sample), TTC_Detail.csv, TTC_Frames.csv
+    "ttc_include_rear_end": True,          # TTC counts events of TTC_Type Rear-end / Lane change / Crossing (the angle limits below); each can be switched off
+    "ttc_include_lane_change": True,
+    "ttc_include_crossing": True,
+    "pet_include_rear_end": False,          # PET counts pairs of conflict type Rear-end (same direction at the crossing; followers - off by default, see Headway)
+    "pet_include_lane_change": True,       # PET counts pairs of conflict type Lane change
+    "pet_include_crossing": True,          # PET counts pairs of conflict type Crossing   (the angle limits are TTC's: ttc_angle_rear_end_deg / ttc_angle_crossing_deg)
+    "headway_enabled": True,               # Headway.csv: time headway / time gap of consecutive vehicles of each Movement (extra file, no risk level)
+    "headway_movements": ["1-3-4", "2-3-1", "1-3-6-7", "5-6-3-1", "2-3-4", "5-6-7"],   # Movements analysed by Headway
+    "headway_max_s": "",                   # blank = no limit: a follower is paired with the nearest leader in its path, however long ago the leader passed
+    "headway_line_mapping": "",            # Site_ID|Movement|Line N for Headway only; a Movement left out uses the Reference Line Mapping of Gap Acceptance, then the origin zone
+    "reference_line_source": "zone_edge",   # reference line of a Movement: "zone_edge" = the edge two zones share (ZONE_EDGE_DEFAULT) / "drawn" = the Line of the Reference Line Mapping / "per_stream" = each stream as chosen in the Line window (an `Edge a-b` or a `Line N` row of the mapping)
+    "zone_edge_tol_px": "6",                # two zone corners count as one shared node when closer than this (pixels) - our choice, no source
+    "critical_gap_by_subject_class": True,   # Critical Gap: one estimate per class of the WAITING driver (off = all classes together)
+    "critical_gap_by_lag_class": False,      # ... and per class of the vehicle BEHIND the gap (the one that arrives; the Lag vehicle). Off = not split by it
+    "critical_gap_min_drivers": "30",        # Critical_Gap.csv flags a group with fewer drivers having both a rejected and an accepted gap; blank = no flag (30 = a rule of thumb, no source)
+    "traj_smooth_method": "median",        # Run 3: the positions (pixel and metre) are smoothed before every indicator: none / mean / median / median_mean (SMOOTH_METHODS)
+    "traj_smooth_window_s": "0.3",         # ... over this many seconds (centred window; the Detection_Records.csv stays raw)
+    "pet_min_speed_kmh": "",                # a vehicle slower than this while passing the crossing point skips the pair; blank = no limit
+    "pet_max_s": "10.0",                    # pairs/events above this are not PET conflicts; blank = no limit
+    "ttc_max_record_s": "3.0",              # record TTC events with TTCmin <= this value
+    "ttc_min_record_s": "",                 # a frame whose TTC is below this is not counted (a pair passing side by side has a TTC that runs to 0 without a collision); blank = no limit
+    "ttc_velocity_window_s": "0.50",        # centred window of observed samples for velocity
+    "ttc_min_speed_kmh": "5.0",             # a frame where either vehicle is slower than this is skipped (a parked vehicle whose box flickers has a false velocity)
+    "ttc_decision": "by_type",              # which pairs count: by_type (by the conflict angle, see ttc_pair_decision) | miss (the points come within (W_A+W_B)/2 + ttc_miss_margin_m) | none (every approaching pair, as Yaibok et al. 2026)
+    "ttc_cross_time_s": "1.0",              # by_type, angle >= 30 deg (lane change / crossing): the two paths must cross ahead and the vehicles reach the crossing within this many seconds of each other
+    "ttc_rear_margin_m": "1.0",             # by_type, angle < 30 deg or > 150 deg (the same line: rear-end / head-on): the points must come within (W_A+W_B)/2 + this (m)
+    "ttc_rear_clear_gap": False,            # by_type, rear-end: TTC of the clear gap (bumper to bumper: centre distance - (L_A+L_B)/2) instead of the point-to-point TTC (TTC_Point_s keeps the latter)
+    "ttc_miss_margin_m": "0.5",             # point method: counts only when the two points come within (W_A + W_B)/2 + this (m)
+    "ttc_show_boxes_drone": True,           # the same in the X-Y-on-drone video
+    "ttc_show_boxes_xy": True,              # draw what TTC used in the X-Y video: the expected collision point (point method) / the rectangles (box method)
+    "ttc_show_boxes_video": False,          # draw it also on the normal roadside video (Tracking_Result.mp4) after Run 3
+    # Vector TTC (SPEC v28 section 7, formula of Yaibok et al. 2026):
+    "ttc_min_rel_speed_ms": "0.5",          # pairs with a smaller relative speed (m/s) are skipped (unstable TTC)
+    "ttc_pair_radius_m": "20",              # only pairs closer than this (m) are evaluated (the reference paper has a screening radius, value not given)
+    "ttc_angle_rear_end_deg": "30",         # conflict angle < this: Rear-end
+    "ttc_angle_crossing_deg": "85",         # conflict angle > this: Crossing (in between: Lane change)
+    # V28: road geometry (m). Blank = not entered (never guessed).
+    # W_entry = entry motorcycle lane + entry car lane (side with the side street: Zones 2-3-4)
+    # W_opp   = opposite motorcycle lane + opposite car lane (Zones 5-6-7)
+    "lane_entry_motorcycle_m": "",
+    "lane_entry_car_m": "",
+    "lane_opp_motorcycle_m": "",
+    "lane_opp_car_m": "",
+    "median_m": "",                         # recorded only; not used in any indicator
+    "ldp_smoothing_samples": "5",           # rolling median to suppress bbox jitter (1 = off)
+    # Speed: user can select any of Zones 1–6. CSV assigns each selected zone
+    # to the research role: Zone 1 = access mouth, 2/4 = approach, 3/5 = exit, 6 = middle/access.
+    "speed_zones": [1, 2, 3, 4, 5, 6, 7],
+    "speed_smoothing_samples": "5",         # rolling-median window on positions before Speed (1 = off)
+    "speed_frame_window_s": "0.50",        # the speed written for every frame (Detection_Records_Topview.csv) uses the vehicle positions within +-this/2 s
+    "speed_max_kmh": "80",                  # Speed above this is flagged Speed_Above_Max and left out of the statistics (0 = off)
+    "lc_zones": [2, 3, 4, 5, 6, 7],
+    "lc_motorcycle_pairs_only": False,      # False = every pair of vehicles; True = only pairs that include a motorcycle
+    "pet_zone6": True,
+    "pet_zones": [3, 6],
+    "ttc_zones": [3, 6],
+    "ldp_zones": [2, 3, 4, 5, 6, 7],
+    "gap_subject_134": True,
+    "gap_subject_1367": True,
+    "gap_subject_5631": True,
+    "use_raff": True,
+    "use_mle": True,
+    # Reference Line Mapping (Site_ID|Movement|Line N): ready-made for Site 8 - the four conflicting
+    # streams of Gap Acceptance use Line 1-4. The Lines themselves still have to be drawn
+    # (button "วาด Line…" next to the Zone File); the editor keeps this mapping in sync.
+    # Lines beginning with # are ignored by the program.
+    "reference_line_mapping": "# Site_ID|Movement|Line N\n8|2-3-4|Line 1\n8|5-6-7|Line 2\n8|5-6-3-1|Line 3\n8|1-3-6-7|Line 4",
+    # Starter width values entered in the current researcher UI.
+    "vehicle_widths": {
+        "Bus": "2.50",
+        "Car": "1.80",
+        "Motorcycle": "0.80",
+        "Pickup": "1.85",
+        "Sidecar": "1.30",
+        "Truck": "2.50",
+        "Van": "1.95",   # Toyota Commuter (Thai market) 1,950 mm; the older Hiace Commuter is 1,880 mm
+    },
+    # Vehicle lengths (m): Car / Pickup / Van / Motorcycle checked against Thai-market data sheets (PKT 1.42.1, see PARAMETERS.md); Bus / Truck / Sidecar
+    # vary a lot (legal maximum / typical) - set them for your site.
+    "vehicle_lengths": {
+        "Bus": "12.00",
+        "Car": "4.50",
+        "Motorcycle": "2.00",
+        "Pickup": "5.30",
+        "Sidecar": "2.20",
+        "Truck": "8.00",
+        "Van": "5.90",   # Toyota Commuter (Thai market) 5,915 mm; the older Hiace Commuter is 5,380 mm - set what your site has
+    },
+}
+
+
+# ============================================================
+# APPLICATION
+# ============================================================
+
+ZONE_IDS = list(range(1, 8))
+CONFLICT_ZONE_IDS = (3, 6)              # V28: conflict zones (default zones of PET / TTC; every zone 1-7 can be ticked)
+ZONE_NAMES = [f"Zone {i}" for i in ZONE_IDS]
+PET_SPEED_WINDOW_S = 0.5                # PET: speed at the crossing = samples within +-this/2 s of the time the vehicle passes it
+PET_SHOW_LEAD_S, PET_SHOW_TAIL_S = 0.0, 1.0   # PET picture: the crossing mark appears when the second vehicle reaches the crossing (t2) and stays 1 s (user, 2026-10-08)
+PET_GAP_FLAG_S = 0.5                    # PET: a crossing interpolated across a sample gap longer than this is flagged
+LDP_LOCKED_ZONES = (1,)                 # LDP only measures main-road movements (2-3-4, 5-6-7): Zone 1 can never have a value
+
+# ==== CORE-BEGIN (pure logic, no GUI: unit-tested by tests/test_core.py) ====
+import math
+import re
+import numpy as np
+
+# V27(2): zone visits shorter/closer than this are treated as boundary flicker
+# when the Run 2 summaries are built (raw Detection_Records zones are untouched).
+ZONE_FLICKER_MERGE_S = 0.10
+
+
+def collect_zone_visits(zone_states, fallback_end):
+    """All (zone, start, end) visits of one track, including a visit that is
+    still open when processing ends. Sorted by start time."""
+    out = []
+    for zname, zs in zone_states.items():
+        for start, end in zs.get("visits", []):
+            out.append((zname, float(start), float(end)))
+        if zs.get("inside") and zs.get("entry_time") is not None:
+            end = zs.get("last_inside_time")
+            out.append((zname, float(zs["entry_time"]),
+                        float(end) if end is not None else float(fallback_end)))
+    out.sort(key=lambda v: (v[1], v[2]))
+    return out
+
+
+def clean_zone_visits(visits, merge_gap_s=ZONE_FLICKER_MERGE_S):
+    """Remove zone-boundary flicker from a track's visit list.
+
+    1. A short visit to another zone sandwiched between two visits of the same
+       zone (A -> B -> A, B lasting <= merge_gap_s) is dropped.
+    2. Consecutive visits of the same zone separated by <= merge_gap_s
+       (the point briefly left the polygon) are merged into one visit.
+    Real movements such as 1 -> 6 -> 5 are never changed.
+    """
+    vs = [list(v) for v in visits]
+    changed = True
+    while changed:
+        changed = False
+        i = 1
+        while i < len(vs) - 1:
+            a, b, c = vs[i - 1], vs[i], vs[i + 1]
+            if (a[0] == c[0] and a[0] != b[0]
+                    and b[2] - b[1] <= merge_gap_s
+                    and c[1] - a[2] <= 2 * merge_gap_s):
+                del vs[i]
+                changed = True
+            else:
+                i += 1
+        merged = []
+        for v in vs:
+            if merged and merged[-1][0] == v[0] and v[1] - merged[-1][2] <= merge_gap_s:
+                merged[-1][2] = max(merged[-1][2], v[2])
+                changed = True
+            else:
+                merged.append(v)
+        vs = merged
+    return [tuple(v) for v in vs]
+
+
+# V28: Movement = the full (flicker-cleaned) zone sequence of a track.
+# "side" selects the lane-width divisor of LDP for main-road through movements.
+MOVEMENT_PATTERNS = {
+    "1-3-4":   {"sequence": (1, 3, 4),    "type": "Left",    "main_road": False, "side": None,
+                "name": "Left turn: side street -> main road"},
+    "2-3-1":   {"sequence": (2, 3, 1),    "type": "Left",    "main_road": False, "side": None,
+                "name": "Left turn: main road -> side street"},
+    "1-3-6-7": {"sequence": (1, 3, 6, 7), "type": "Right",   "main_road": False, "side": None,
+                "name": "Right turn: side street -> opposite side"},
+    "5-6-3-1": {"sequence": (5, 6, 3, 1), "type": "Right",   "main_road": False, "side": None,
+                "name": "Right turn: opposite side -> side street"},
+    "2-3-4":   {"sequence": (2, 3, 4),    "type": "Through", "main_road": True,  "side": "entry",
+                "name": "Through: entry side (Zones 2-3-4)"},
+    "5-6-7":   {"sequence": (5, 6, 7),    "type": "Through", "main_road": True,  "side": "opposite",
+                "name": "Through: opposite side (Zones 5-6-7)"},
+}
+MOVEMENT_IDS = list(MOVEMENT_PATTERNS)
+
+
+def zone_visits_from_samples(samples, merge_gap_s=ZONE_FLICKER_MERGE_S):
+    """samples = [(timestamp, zone_number_or_None), ...] of ONE track (time order).
+    Returns the flicker-cleaned visits [(zone, first_time, last_time), ...]. A sample outside every zone (None) ends a visit."""
+    visits = []
+    cur = None
+    for t, z in samples:
+        if z is None:
+            cur = None
+            continue
+        if cur is not None and visits[-1][0] == z:
+            visits[-1][2] = t
+        else:
+            visits.append([z, t, t])
+            cur = z
+    return clean_zone_visits(visits, merge_gap_s)
+
+
+def zone_sequence_from_samples(samples, merge_gap_s=ZONE_FLICKER_MERGE_S):
+    """samples = [(timestamp, zone_number_or_None), ...] of ONE track (time order).
+    Returns the flicker-cleaned zone sequence as a list of ints with no
+    consecutive duplicates. A sample outside every zone (None) ends a visit."""
+    seq = []
+    for z, _s, _e in zone_visits_from_samples(samples, merge_gap_s):
+        if not seq or seq[-1] != z:
+            seq.append(z)
+    return seq
+
+
+def zone_on_path(visits, zone, t, tol=0.0):
+    """True when the vehicle with these visits is in `zone` at time t or enters it later (the zone is on its way); False when it never goes there or
+    has already left it. `visits` = zone_visits_from_samples(...)."""
+    return any(z == zone and last >= t - tol for z, _first, last in visits)
+
+
+
+
+def classify_movement(sequence):
+    """Map a zone sequence to (movement_id, status). Never guesses.
+
+    Exact        - equals one of MOVEMENT_PATTERNS
+    Partial      - a fragment (>= 2 zones) that fits exactly ONE pattern
+    Ambiguous    - a fragment that fits several patterns (e.g. 3-4 = 1-3-4 or 2-3-4)
+    Unclassified - fits no pattern
+    Insufficient - fewer than 2 zones observed
+    """
+    seq = []
+    for z in sequence:
+        z = int(z)
+        if not seq or seq[-1] != z:
+            seq.append(z)
+    if len(seq) < 2:
+        return "", "Insufficient"
+    tup = tuple(seq)
+    for mid, info in MOVEMENT_PATTERNS.items():
+        if info["sequence"] == tup:
+            return mid, "Exact"
+    n = len(tup)
+    cands = [mid for mid, info in MOVEMENT_PATTERNS.items()
+             if any(info["sequence"][i:i + n] == tup for i in range(len(info["sequence"]) - n + 1))]
+    if len(cands) == 1:
+        return cands[0], "Partial"
+    if len(cands) > 1:
+        return "", "Ambiguous"
+    return "", "Unclassified"
+
+
+def rolling_median(values, k):
+    """Rolling median with a window that shrinks at the ends (k odd; k<=1 = off)."""
+    a = np.asarray(values, dtype=float)
+    k = int(k)
+    if k <= 1 or len(a) < 3:
+        return a.copy()
+    if k % 2 == 0:
+        k += 1
+    h = k // 2
+    return np.array([np.median(a[max(0, i - h): i + h + 1]) for i in range(len(a))])
+
+
+LDP_MIN_CHORD_M = 1.0   # the entry->exit reference line must be at least this long
+
+
+def ldp_for_zone(points, lane_width_m, smoothing=1):
+    """LDP of ONE vehicle in ONE zone (SPEC v28 section 4).
+
+    Reference line = straight line from the point where the vehicle entered the
+    zone (first sample) to the point where it left (last sample). Lateral
+    deviation of every sample = its perpendicular distance to that line;
+    dY = the maximum. LDP = dY / (W/2) x 100 with W = full width of that side's
+    carriageway (motorcycle lane + car lane), so the divisor is W / 2.
+    points are metric (x, y) in time order. Returns a dict or None (fewer than
+    3 samples / zero-length chord)."""
+    pts = np.asarray(points, dtype=float).reshape(-1, 2)
+    if len(pts) < 3:
+        return None
+    if smoothing and int(smoothing) > 1:
+        # shrinking window at the ends on purpose: P_in / P_out must stay at the
+        # zone entry / exit (unlike Speed, LDP is not a path-length measure)
+        pts = np.stack([rolling_median(pts[:, 0], smoothing), rolling_median(pts[:, 1], smoothing)], axis=1)
+    p_in, p_out = pts[0], pts[-1]
+    chord = p_out - p_in
+    length = float(np.hypot(chord[0], chord[1]))
+    if length < 1e-9:
+        return None
+    u = chord / length
+    rel = pts - p_in
+    dev = np.abs(rel[:, 0] * u[1] - rel[:, 1] * u[0])       # |cross(u, p - p_in)|
+    dy = float(np.max(dev))
+    return {
+        "P_in": (float(p_in[0]), float(p_in[1])), "P_out": (float(p_out[0]), float(p_out[1])),
+        "Chord_Length_m": length, "Delta_Y_m": dy, "Mean_Dev_m": float(np.mean(dev)),
+        "Samples": len(pts), "LDP_percent": dy / (float(lane_width_m) / 2.0) * 100.0,
+        "Short_Chord": length < LDP_MIN_CHORD_M,
+    }
+
+
+def zone_edges(sequence):
+    """Set of directed zone transitions of a sequence: (1,3,4) -> {(1,3), (3,4)}."""
+    seq = list(sequence)
+    return {(seq[i], seq[i + 1]) for i in range(len(seq) - 1)}
+
+
+def same_direction_in_zone(seq_a, seq_b, zone):
+    """Two vehicles move in the same direction in `zone` when their zone sequences
+    share a directed transition that touches that zone (e.g. A = 2-3-4 and
+    B = 2-3-1 share 2->3; A = 2-3-4 and B = 1-3-4 share 3->4). Needs >= 2 zones
+    observed for both vehicles."""
+    common = zone_edges(seq_a) & zone_edges(seq_b)
+    return any(zone in edge for edge in common)
+
+
+def track_headings(times, points, window_s, min_speed_ms):
+    """Unit heading vector per sample from a centred window of observed samples
+    (no interpolation). None where the vehicle is (nearly) stationary."""
+    t = np.asarray(times, dtype=float)
+    m = np.asarray(points, dtype=float).reshape(-1, 2)
+    half = max(1e-6, float(window_s)) / 2.0
+    lo = np.searchsorted(t, t - half, side="left")
+    hi = np.searchsorted(t, t + half, side="right") - 1
+    out = []
+    for k in range(len(t)):
+        a, b = lo[k], hi[k]
+        if b <= a or t[b] <= t[a]:
+            out.append(None)
+            continue
+        v = (m[b] - m[a]) / (t[b] - t[a])
+        sp = float(np.hypot(v[0], v[1]))
+        out.append((float(v[0] / sp), float(v[1] / sp)) if sp >= min_speed_ms else None)
+    return out
+
+
+def lateral_clearance(center_a, heading_a, center_b, len_a, len_b, w_a, w_b, along_limit=None, max_lateral=None):
+    """Lateral clearance for one time sample (SPEC v28 section 5). Axes come from vehicle A's
+    heading: `along` = separation along the heading, `lateral` = perpendicular
+    separation. The vehicles are side by side when |along| <= along_limit, which is
+    (L_A + L_B) / 2 unless a fixed limit (m) is given - only then the clearance is measurable.
+    `max_lateral` (m, None/0 = off): a pair further apart sideways than this is not related
+    (`Too_Far`), e.g. two vehicles far apart inside one large zone.
+    clearance = lateral - (W_A + W_B) / 2 (edge to edge; negative = boxes overlap)."""
+    dx, dy = center_b[0] - center_a[0], center_b[1] - center_a[1]
+    hx, hy = heading_a
+    along = dx * hx + dy * hy
+    signed = hx * dy - hy * dx
+    lateral = abs(signed)
+    limit = along_limit if along_limit else (len_a + len_b) / 2.0
+    return {
+        "Along_m": along, "Lateral_m": lateral, "Signed_Lateral_m": signed,
+        "Overlap": abs(along) <= limit,
+        "Too_Far": bool(max_lateral) and lateral > max_lateral,
+        "Clearance_m": lateral - (w_a + w_b) / 2.0,
+    }
+
+
+def conflict_type_from_sequences(seq_a, seq_b, trajectories_intersect=False):
+    """PET conflict type. Crossing when the two trajectories intersect; otherwise
+    Merging when both leave to the same zone, Diverging when both come from the
+    same zone, else the undecided 'Merging/Diverging'."""
+    if trajectories_intersect:
+        return "Crossing"
+    seq_a, seq_b = list(seq_a), list(seq_b)
+    if seq_a and seq_b:
+        if seq_a[-1] == seq_b[-1]:
+            return "Merging"
+        if seq_a[0] == seq_b[0]:
+            return "Diverging"
+    return "Merging/Diverging"
+
+
+TTC_ANGLE_REAR_END_DEG = 30.0       # conflict angle < 30 deg: rear-end (Yaibok et al., Sustainability 2026, 18, 4995, after Hyden / SSAM)
+TTC_ANGLE_CROSSING_DEG = 85.0       # 30 - 85 deg: lane change / weaving; > 85 deg: crossing
+
+
+SMOOTH_METHODS = ("none", "mean", "median", "median_mean")
+
+
+def smooth_positions(times, pts, window_s, method="median_mean"):
+    """A vehicle's positions (N x 2) made steadier: every position becomes the median and/or the mean of the positions within +-window_s/2 of its time
+    (a window in SECONDS, so a clip with skipped frames smooths the same way; it shrinks at the two ends). `method`: "none", "mean", "median" (kills one-frame
+    jumps of the box), "median_mean" (the median first, then the mean: also takes out the small wobble). A straight path at constant speed is not changed
+    (except for the shrunk windows at the ends, which are centred on the sample). Returns a new N x 2 array."""
+    P = np.asarray(pts, dtype=float).reshape(-1, 2).copy()
+    T = np.asarray(times, dtype=float)
+    n = len(P)
+    if n < 3 or method == "none" or method not in SMOOTH_METHODS or not window_s or float(window_s) <= 0:
+        return P
+    half = float(window_s) / 2.0
+    lo = np.searchsorted(T, T - half, side="left")
+    hi = np.searchsorted(T, T + half, side="right")
+
+    def window(A, i):
+        # symmetric around the sample: at the ends the window is cut to the shorter side so that the average is not pulled to the inside
+        a, b = lo[i], hi[i]
+        k = min(i - a, b - 1 - i)
+        return A[i - k:i + k + 1]
+    out = P
+    if method in ("median", "median_mean"):
+        out = np.array([np.median(window(P, i), axis=0) for i in range(n)])
+    if method in ("mean", "median_mean"):
+        src = out
+        out = np.array([window(src, i).mean(axis=0) for i in range(n)])
+    return out
+
+
+def invert_map(fwd, dst, init, iters=30, tol=1e-4, h=0.5):
+    """Points x with fwd(x) = dst for ANY forward map fwd (N x 2 -> N x 2, e.g. video pixels -> metres): Newton iterations from `init`."""
+    dst = np.asarray(dst, dtype=float).reshape(-1, 2)
+    x = np.asarray(init, dtype=float).reshape(-1, 2).copy()
+    for _ in range(iters):
+        f = fwd(x) - dst
+        if float(np.abs(f).max()) < tol:
+            break
+        jx = (fwd(x + [h, 0.0]) - fwd(x - [h, 0.0])) / (2 * h)
+        jy = (fwd(x + [0.0, h]) - fwd(x - [0.0, h])) / (2 * h)
+        a, b, c_, d = jx[:, 0], jy[:, 0], jx[:, 1], jy[:, 1]
+        det = a * d - b * c_
+        det = np.where(np.abs(det) < 1e-12, 1e-12, det)
+        x = x - np.stack([(d * f[:, 0] - b * f[:, 1]) / det, (-c_ * f[:, 0] + a * f[:, 1]) / det], axis=1)
+    return x
+
+
+def vector_ttc(p_a, v_a, p_b, v_b, min_rel_speed=0.0):
+    """Point-vehicle TTC (SPEC v28 section 7; Eq. 11 of Yaibok et al. 2026 = TCPA of marine navigation). r = p_b - p_a, v = v_b - v_a; constant velocities,
+    r(t) = r + v t:  TTC = -(r . v) / (v . v) when r . v < 0 (approaching), else None (also None when |v| < min_rel_speed).
+    Returns {"TTC", "r", "v", "rel_speed", "pa", "pb" (positions of A and B at TTC), "point" (the middle between them = where the vehicles are expected to meet),
+    "miss" (distance between them then: how close they come)}."""
+    r = (p_b[0] - p_a[0], p_b[1] - p_a[1])
+    v = (v_b[0] - v_a[0], v_b[1] - v_a[1])
+    vv = v[0] * v[0] + v[1] * v[1]
+    rel = math.sqrt(vv)
+    if rel <= 0.0 or rel < min_rel_speed:
+        return None
+    rv = r[0] * v[0] + r[1] * v[1]
+    if rv >= 0.0:
+        return None
+    ttc = -rv / vv
+    pa = (p_a[0] + v_a[0] * ttc, p_a[1] + v_a[1] * ttc)
+    pb = (p_b[0] + v_b[0] * ttc, p_b[1] + v_b[1] * ttc)
+    return {"TTC": ttc, "r": r, "v": v, "rel_speed": rel, "pa": pa, "pb": pb, "point": ((pa[0] + pb[0]) / 2.0, (pa[1] + pb[1]) / 2.0),
+            "miss": math.hypot(pb[0] - pa[0], pb[1] - pa[1])}
+
+
+def ray_intersection(p_a, v_a, p_b, v_b, min_angle_deg=1.0):
+    """Where the two straight paths (each vehicle keeps going along its velocity) cross AHEAD of both: the expected collision point.
+    Returns {"x": (x, y), "d_a", "d_b" (distance each has to go), "t_a", "t_b" (time each needs at its speed)} or None when the paths are (nearly)
+    parallel (< min_angle_deg) or cross behind one of the vehicles."""
+    sa, sb = math.hypot(v_a[0], v_a[1]), math.hypot(v_b[0], v_b[1])
+    if sa <= 0.0 or sb <= 0.0:
+        return None
+    ha, hb = (v_a[0] / sa, v_a[1] / sa), (v_b[0] / sb, v_b[1] / sb)
+    den = ha[0] * hb[1] - ha[1] * hb[0]
+    if abs(den) < math.sin(math.radians(min_angle_deg)):
+        return None
+    dx, dy = p_b[0] - p_a[0], p_b[1] - p_a[1]
+    d_a = (dx * hb[1] - dy * hb[0]) / den
+    d_b = (dx * ha[1] - dy * ha[0]) / den
+    if d_a <= 0.0 or d_b <= 0.0:
+        return None
+    return {"x": (p_a[0] + ha[0] * d_a, p_a[1] + ha[1] * d_a), "d_a": d_a, "d_b": d_b, "t_a": d_a / sa, "t_b": d_b / sb}
+
+
+def ttc_miss_limit(width_a, width_b, margin=0.5):
+    """How close two POINT vehicles must come for the TTC to count: half of the two widths plus `margin` (m). TTC only says WHEN they are closest, not
+    how close - without this every pair that merely passes each other has a TTC that falls to ~0 at the closest point."""
+    return (float(width_a) + float(width_b)) / 2.0 + float(margin)
+
+
+TTC_DECISION_MODES = ("by_type", "miss", "none")
+
+
+def ttc_pair_decision(mode, theta, miss, width_a, width_b, cross, rear_deg=30.0, miss_margin=0.5, rear_margin=1.0, cross_time_s=1.0):
+    """Does a pair that is approaching (r.v < 0) count as a TTC conflict? Returns None when it counts, else the reason (the Status of TTC_Frames.csv).
+    mode "none": every approaching pair counts (the rule of Yaibok et al. 2026: no collision test at all).
+    mode "miss": the two points must come within (W_A + W_B)/2 + miss_margin at their closest moment (`miss` = their distance then).
+    mode "by_type" (default): by the angle `theta` between the two velocities:
+      - the same line (theta < rear_deg: rear-end, or theta > 180 - rear_deg: head-on): the paths run parallel and never cross, so the points must come within
+        (W_A + W_B)/2 + rear_margin (the one exception);
+      - otherwise (lane change / crossing): the straight paths must cross ahead of BOTH vehicles (`cross` from ray_intersection) and the two vehicles must
+        reach the crossing within cross_time_s seconds of each other (they would be there together)."""
+    if mode == "none":
+        return None
+    if mode == "miss":
+        return None if miss <= ttc_miss_limit(width_a, width_b, miss_margin) else "Miss_Too_Far"
+    same_line = theta is None or theta < rear_deg or theta > 180.0 - rear_deg
+    if same_line:
+        return None if miss <= ttc_miss_limit(width_a, width_b, rear_margin) else "Lateral_Gap_Too_Large"
+    if cross is None:
+        return "Paths_Not_Crossing"
+    return None if abs(cross["t_a"] - cross["t_b"]) <= cross_time_s else "Arrival_Time_Too_Different"
+
+
+def rear_clear_gap_ttc(dtc, rel_speed, length_a, length_b):
+    """TTC of the clear gap of a rear-end pair: the distance between the two reference points that the relative motion has to cover (`dtc`, m) less the
+    half lengths of both vehicles (bumper to bumper), divided by the closing speed (m/s). 0 when the vehicles already touch."""
+    if rel_speed <= 0:
+        return None
+    return max(0.0, float(dtc) - (float(length_a) + float(length_b)) / 2.0) / float(rel_speed)
+
+
+def conflict_angle_deg(v_a, v_b, min_speed=0.0):
+    """Angle (0 - 180 deg) between the velocity vectors of the two vehicles; None when either is slower than `min_speed` (m/s) or still."""
+    sa, sb = math.hypot(v_a[0], v_a[1]), math.hypot(v_b[0], v_b[1])
+    if sa <= 0.0 or sb <= 0.0 or sa < min_speed or sb < min_speed:
+        return None
+    c = (v_a[0] * v_b[0] + v_a[1] * v_b[1]) / (sa * sb)
+    return math.degrees(math.acos(max(-1.0, min(1.0, c))))
+
+
+def ttc_conflict_type(theta_deg, rear_end_deg=TTC_ANGLE_REAR_END_DEG, crossing_deg=TTC_ANGLE_CROSSING_DEG):
+    """Conflict type from the angle between the two velocity vectors (Yaibok et al. 2026, Fig. 8):
+    theta < 30 -> Rear-end | 30 <= theta <= 85 -> Lane change | theta > 85 -> Crossing | no angle -> Unclassified."""
+    if theta_deg is None:
+        return "Unclassified"
+    if theta_deg < rear_end_deg:
+        return "Rear-end"
+    if theta_deg <= crossing_deg:
+        return "Lane change"
+    return "Crossing"
+
+
+def type_included(ctype, c, prefix, rear_default):
+    """Is a pair / event of this conflict type counted? `prefix` = "pet" or "ttc": the switches <prefix>_include_rear_end / _lane_change / _crossing
+    follow the angle rule of TTC (Rear-end / Lane change / Crossing). Unclassified (no angle: a vehicle standing still) is always counted."""
+    key = {"Rear-end": ("_include_rear_end", rear_default), "Lane change": ("_include_lane_change", True), "Crossing": ("_include_crossing", True)}.get(ctype)
+    return True if key is None else bool(c.get(prefix + key[0], key[1]))
+
+
+def pet_type_included(ctype, c):
+    """PET: Rear-end off by default (followers), Lane change and Crossing on."""
+    return type_included(ctype, c, "pet", False)
+
+
+def ttc_type_included(ctype, c):
+    """TTC: all three types on by default."""
+    return type_included(ctype, c, "ttc", True)
+
+
+def canvas_to_video(cx, cy, scale, width, height):
+    """Canvas (screen) coordinates -> video pixel coordinates, clamped to the frame."""
+    x = int(round(cx / scale))
+    y = int(round(cy / scale))
+    return max(0, min(width - 1, x)), max(0, min(height - 1, y))
+
+
+def scale_points(points, src_w, src_h, dst_w, dst_h):
+    """Scale (x, y) points from a src_w x src_h frame to a dst_w x dst_h frame.
+    Returns the points unchanged when a size is unknown or the sizes match."""
+    pts = [(int(round(x)), int(round(y))) for x, y in points]
+    if not (src_w and src_h and dst_w and dst_h) or (src_w == dst_w and src_h == dst_h):
+        return pts
+    sx, sy = dst_w / float(src_w), dst_h / float(src_h)
+    return [(int(round(x * sx)), int(round(y * sy))) for x, y in pts]
+
+
+def update_reference_mapping_text(text, site_id, assignments):
+    """Reference Line Mapping text with `Site_ID|Movement|Line N` rows for the
+    given {movement: line_name}. Rows (active or commented-out template rows)
+    of the same site and movement are replaced; everything else is kept."""
+    site = str(site_id).strip()
+    out = []
+    for raw in str(text or "").splitlines():
+        body = raw.strip().lstrip("#").strip()
+        parts = [q.strip() for q in body.split("|")]
+        if len(parts) == 3 and parts[0] == site and parts[1] in assignments:
+            continue
+        out.append(raw)
+    while out and not out[-1].strip():
+        out.pop()
+    for movement, line_name in assignments.items():
+        out.append(f"{site}|{movement}|{line_name}")
+    return "\n".join(out)
+
+
+DUPLICATE_TRACK_IOU = 0.70          # two track IDs whose boxes overlap this much are one vehicle
+DUPLICATE_TRACK_MIN_FRAMES = 10     # ... for at least this many frames
+DUPLICATE_SHORT_SHARE = 0.80        # a SHORT track (< min frames) is also a duplicate when this share of its frames overlaps a longer track
+
+
+def bbox_iou(a, b):
+    """Intersection over union of two (x1, y1, x2, y2) boxes."""
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    inter = ix * iy
+    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / union if union > 0 else 0.0
+
+
+def find_duplicate_tracks(frame_boxes, track_length, iou_min=DUPLICATE_TRACK_IOU,
+                          min_frames=DUPLICATE_TRACK_MIN_FRAMES, short_share=DUPLICATE_SHORT_SHARE):
+    """Detect one vehicle tracked under two IDs at the same time (an ID switch where the
+    old ID does not die). frame_boxes = {frame: [(track_id, (x1, y1, x2, y2)), ...]},
+    track_length = {track_id: number of rows}.
+
+    Two IDs are duplicates when their boxes overlap with IoU >= iou_min in at least
+    min_frames frames. A track that is shorter than min_frames (a 1-9 frame blip, often a second box
+    with another class such as Van / Car on the same vehicle) is a duplicate when at least short_share
+    of ITS frames overlap the other track that strongly. The track with fewer rows (ties: the later ID)
+    is the duplicate.
+    Returns {duplicate_id: {"keep": kept_id, "frames": set_of_frames_to_remove}}."""
+    shared = {}
+    for frame, items in frame_boxes.items():
+        for i in range(len(items)):
+            for j in range(i + 1, len(items)):
+                (ta, ba), (tb, bb) = items[i], items[j]
+                if ta != tb and bbox_iou(ba, bb) >= iou_min:
+                    shared.setdefault((ta, tb) if str(ta) < str(tb) else (tb, ta), set()).add(frame)
+    out = {}
+    for (ta, tb), frames in shared.items():
+        la, lb = track_length.get(ta, 0), track_length.get(tb, 0)
+        keep, drop = (ta, tb) if (la, str(tb)) > (lb, str(ta)) else (tb, ta)
+        drop_len = max(1, track_length.get(drop, 0))
+        if len(frames) < min_frames and not (drop_len < min_frames and len(frames) >= short_share * drop_len):
+            continue
+        entry = out.setdefault(drop, {"keep": keep, "frames": set()})
+        entry["frames"] |= frames
+    return out
+
+
+def first_visit_order(sequence):
+    """Zones in the order of their FIRST visit, repeats dropped (the idea of the Run 2
+    column `unique_zones_visited`): 2,3,2,3,4 -> 2,3,4."""
+    out = []
+    for z in sequence:
+        z = int(z)
+        if z not in out:
+            out.append(z)
+    return out
+
+
+def classify_movement_robust(sequence):
+    """classify_movement on the cleaned zone sequence; when that gives no Exact/Partial
+    answer, retry on the first-visit order so a vehicle that wobbles across a zone
+    boundary (2-3-2-3-4) is still recognised. Returns (movement_id, status) with status
+    Exact | Partial | Exact_AfterDedupe | Partial_AfterDedupe | Ambiguous |
+    Unclassified | Insufficient. An Exact/Partial answer of the plain sequence is never
+    changed."""
+    movement, status = classify_movement(sequence)
+    if status in ("Exact", "Partial"):
+        return movement, status
+    plain = []
+    for z in sequence:
+        if not plain or plain[-1] != int(z):
+            plain.append(int(z))
+    uniq = first_visit_order(sequence)
+    if uniq != plain:
+        movement2, status2 = classify_movement(uniq)
+        if status2 == "Exact":
+            return movement2, "Exact_AfterDedupe"
+        if status2 == "Partial":
+            return movement2, "Partial_AfterDedupe"
+    return movement, status
+
+
+# ---- Gap Acceptance (design of v26(5.14.11) "PASS", SPEC v28 section 6.1) ----
+# Subject movement -> zones where the driver waits, conflict ("middle") zones and the target zone.
+GAP_PATHS = {
+    "1-3-4":   {"wait": (1,), "middle": (3,),   "target": 4},
+    "1-3-6-7": {"wait": (1,), "middle": (3, 6), "target": 7},
+    "5-6-3-1": {"wait": (5,), "middle": (6, 3), "target": 1},
+}
+# Fallback reference time of a conflicting stream when no Line is usable: the first time
+# a vehicle of that stream is seen in the stream's origin zone.
+GAP_REFERENCE_ZONE = {"2-3-4": 2, "5-6-7": 5, "5-6-3-1": 5, "1-3-6-7": 1, "1-3-4": 1, "2-3-1": 2}   # the last two are only used by Headway
+GAP_HOLD_SPEED_KMH = 5.0      # default: "stopped" = speed <= this ...
+GAP_HOLD_MIN_S = 0.30         # ... for at least this long (inside the conflict zones)
+
+
+def find_hold(samples, speed_kmh=GAP_HOLD_SPEED_KMH, min_duration_s=GAP_HOLD_MIN_S):
+    """Did the subject stop inside the conflict zones after entering them?
+
+    samples = [(t, x_m, y_m, in_middle), ...] in time order, starting at the first
+    sample inside the conflict zones. A stop = consecutive samples inside the
+    conflict zones with speed <= speed_kmh lasting >= min_duration_s. No interpolation.
+    Returns {"state": ..., "stop_start": t or None, "resume_time": t or None} with state
+      "Continued"           - never stopped there
+      "Stopped_then_Resumed"- resume_time = first observed sample after the stop that is
+                              faster than the threshold or outside the conflict zones
+      "Stopped_Censored"    - still stopped at the last observed sample"""
+    prev = None
+    run_start = None
+    stop_start = None
+    for t, x, y, inside in samples:
+        if not inside:
+            if stop_start is not None:
+                return {"state": "Stopped_then_Resumed", "stop_start": stop_start, "resume_time": t}
+            return {"state": "Continued", "stop_start": None, "resume_time": None}
+        if prev is None:
+            prev = (t, x, y)
+            continue
+        dt = t - prev[0]
+        if dt <= 0:
+            prev = (t, x, y)
+            continue
+        speed = math.hypot(x - prev[1], y - prev[2]) / dt * 3.6
+        if speed <= speed_kmh:
+            if run_start is None:
+                run_start = prev[0]
+            if stop_start is None and t - run_start >= min_duration_s:
+                stop_start = run_start
+        else:
+            if stop_start is not None:
+                return {"state": "Stopped_then_Resumed", "stop_start": stop_start, "resume_time": t}
+            run_start = None
+        prev = (t, x, y)
+    if stop_start is not None:
+        return {"state": "Stopped_Censored", "stop_start": stop_start, "resume_time": None}
+    return {"state": "Continued", "stop_start": None, "resume_time": None}
+
+
+def build_gap_intervals(events):
+    """events = [(time, vehicle_id, class_name, reference_label, qc_flag), ...] of ONE
+    conflicting stream. One event per vehicle (its earliest); gaps are the time between
+    consecutive vehicles of the stream (different vehicles, positive length)."""
+    first = {}
+    for ev in events:
+        vid = str(ev[1])
+        if vid not in first or ev[0] < first[vid][0]:
+            first[vid] = ev
+    ordered = sorted(first.values(), key=lambda e: e[0])
+    out = []
+    for a, b in zip(ordered, ordered[1:]):
+        if b[0] > a[0]:
+            out.append({"gap_start": float(a[0]), "gap_end": float(b[0]),
+                        "id_a": str(a[1]), "class_a": a[2], "id_b": str(b[1]), "class_b": b[2],
+                        "reference": a[3], "qc": ";".join(dict.fromkeys(x for x in (a[4], b[4]) if x))})
+    return out
+
+
+def replace_with_retry(src, dst, tries=6, delay_s=0.5, replace=None, sleep=None):
+    """Move `src` over `dst` (os.replace). A video that a player (or an antivirus scan) still holds cannot be replaced for a moment:
+    try `tries` times, `delay_s` apart. True = done, False = still locked after the last try."""
+    import os
+    import time
+    replace = replace or os.replace
+    sleep = sleep or time.sleep
+    for k in range(max(1, int(tries))):
+        try:
+            replace(src, dst)
+            return True
+        except OSError:
+            if k + 1 < tries:
+                sleep(delay_s)
+    return False
+
+
+def point_polyline_distance(p, pts):
+    """Shortest distance (same unit as the input) from the point p = (x, y) to the polyline `pts` (N x 2); None when pts has no point."""
+    P = np.asarray(pts, dtype=float).reshape(-1, 2)
+    if len(P) == 0:
+        return None
+    q = np.asarray(p, dtype=float)
+    if len(P) == 1:
+        return float(np.hypot(*(P[0] - q)))
+    a, b = P[:-1], P[1:]
+    ab = b - a
+    denom = np.einsum("ij,ij->i", ab, ab)
+    t = np.where(denom > 0, np.einsum("ij,ij->i", q - a, ab) / np.where(denom > 0, denom, 1.0), 0.0)
+    proj = a + np.clip(t, 0.0, 1.0)[:, None] * ab
+    return float(np.min(np.hypot(*(proj - q).T)))
+
+
+# The edge two zones share is the reference line of a Movement (user's choice, 2026-10-07): the Movement -> the two zones of its entry edge.
+ZONE_EDGE_DEFAULT = {"1-3-4": (1, 3), "1-3-6-7": (1, 3), "2-3-1": (2, 3), "2-3-4": (2, 3), "5-6-7": (5, 6), "5-6-3-1": (3, 6)}
+
+
+def shared_edge(poly_a, poly_b, tol=6.0):
+    """The edge two zone polygons share, as ((x1, y1), (x2, y2)) or None. The shared nodes = the corners of one polygon that lie within `tol` of the
+    boundary of the other (a corner touching the other zone's side counts too); corners closer than `tol` to each other are one node. With two or
+    more nodes the two that are farthest apart give the edge (a straight edge: the ends of the common side)."""
+    A = np.asarray(poly_a, dtype=float).reshape(-1, 2)
+    B = np.asarray(poly_b, dtype=float).reshape(-1, 2)
+    if len(A) < 3 or len(B) < 3:
+        return None
+    closed_a, closed_b = np.vstack([A, A[:1]]), np.vstack([B, B[:1]])
+    nodes = [v for v in A if point_polyline_distance(v, closed_b) <= tol] + [v for v in B if point_polyline_distance(v, closed_a) <= tol]
+    merged = []
+    for v in nodes:
+        for k, (mean, n) in enumerate(merged):
+            if np.hypot(*(mean - v)) <= tol:
+                merged[k] = ((mean * n + v) / (n + 1), n + 1)
+                break
+        else:
+            merged.append((np.asarray(v, dtype=float), 1))
+    pts = [m for m, _ in merged]
+    if len(pts) < 2:
+        return None
+    best = max(((a, b) for ia, a in enumerate(pts) for b in pts[ia + 1:]), key=lambda ab: float(np.hypot(*(ab[0] - ab[1]))))
+    return ((float(best[0][0]), float(best[0][1])), (float(best[1][0]), float(best[1][1])))
+
+
+def critical_gap_groups(gap_rows, by_subject=True, by_lag=False):
+    """Gap Acceptance rows -> the data of each Critical Gap estimate.
+
+    Every waiting driver (Subject_ID + Movement + Stage_No) with BOTH a rejected and an accepted gap gives one interval (its largest rejected gap,
+    its last accepted gap) to the group of its class: `by_subject` = the class of the waiting driver (False: "All"), `by_lag` = the class of the
+    vehicle behind the accepted gap (Conflicting_Class_B, the one that arrives; False: "All"). A driver with only one kind is counted as
+    accepted-only / rejected-only (left out of the estimate). Returns {(subject_class, lag_class, movement, stage): {"accepted": [...],
+    "rejected": [...], "intervals": [(max_rejected, accepted), ...], "accepted_only": n, "rejected_only": n}}."""
+    drivers = {}
+    for r in gap_rows:
+        key = (r["Subject_Class"], r["Subject_Movement"], r["Stage_No"], r["Subject_ID"])
+        d = drivers.setdefault(key, {"acc": [], "rej": []})
+        d["acc" if r["Gap_Acceptance"] == 1 else "rej"].append((float(r["Available_Gap_s"]), r.get("Conflicting_Class_B", "")))
+    groups = {}
+    for (cls, movement, stage, _sid), d in drivers.items():
+        lead = d["acc"][-1] if d["acc"] else max(d["rej"], key=lambda x: x[0])         # the gap that names the lag class: the accepted one, else the largest rejected
+        gkey = (cls if by_subject else "All", lead[1] if by_lag else "All", movement, stage)
+        g = groups.setdefault(gkey, {"accepted": [], "rejected": [], "intervals": [], "accepted_only": 0, "rejected_only": 0})
+        if d["acc"] and d["rej"]:
+            rej = max(v for v, _ in d["rej"])
+            g["accepted"].append(d["acc"][-1][0]); g["rejected"].append(rej); g["intervals"].append((rej, d["acc"][-1][0]))
+        elif d["acc"]:
+            g["accepted_only"] += 1
+        else:
+            g["rejected_only"] += 1
+    return groups
+
+
+def headway_pairs(events, ref_position, path_of, half_width_sum, max_headway_s=None):
+    """Pairs of vehicles that FOLLOW each other (SPEC 9.1). events = [(time, vehicle_id, class_name, reference_label, qc_flag), ...] of ONE Movement.
+
+    Every vehicle (its earliest event) is the follower of the nearest earlier vehicle that drove in the same path: the follower's position at its
+    reference time (`ref_position(id, time)`) is at most (W_lead + W_follower) / 2 (`half_width_sum(class_lead, class_follower)`) from the lead's
+    trajectory (`path_of(id)` = N x 2 metres). A vehicle driving beside the follower is skipped over, so the pairs are lead -> next in the same path.
+    A pair with a missing position/path cannot be checked: it is kept and flagged No_Path_Check. max_headway_s (None = no limit) stops the search
+    for a lead that passed longer ago. Returns dicts like build_gap_intervals plus "lateral_m"."""
+    first = {}
+    for ev in events:
+        vid = str(ev[1])
+        if vid not in first or ev[0] < first[vid][0]:
+            first[vid] = ev
+    ordered = sorted(first.values(), key=lambda e: e[0])
+    out = []
+    for k, b in enumerate(ordered):
+        for j in range(k - 1, -1, -1):
+            a = ordered[j]
+            if not b[0] > a[0]:
+                continue
+            if max_headway_s is not None and b[0] - a[0] > max_headway_s:
+                break
+            pos, path = ref_position(str(b[1]), b[0]), path_of(str(a[1]))
+            lateral = None if pos is None or path is None else point_polyline_distance(pos, path)
+            if lateral is not None and lateral > half_width_sum(a[2], b[2]):
+                continue                                              # beside the lead's path (parallel / another lane): not following
+            qc = [a[4], b[4]] + (["No_Path_Check"] if lateral is None else [])
+            out.append({"gap_start": float(a[0]), "gap_end": float(b[0]), "id_a": str(a[1]), "class_a": a[2], "id_b": str(b[1]), "class_b": b[2],
+                        "reference": a[3], "lateral_m": lateral, "qc": ";".join(dict.fromkeys(x for x in qc if x))})
+            break
+    return out
+
+
+def excel_safe_value(value):
+    """Excel turns text such as 2-3-4 into a date (2 Mar 2004) and 5-6-7 into a number. A
+    movement / zone sequence (zone numbers 1-7 joined by hyphens) is therefore written with
+    arrows (2→3→4) in the Run 3 CSV files."""
+    if isinstance(value, str) and re.fullmatch(r"[1-7](?:-[1-7])+", value):
+        return value.replace("-", "→")
+    return value
+
+def is_speed_outlier(speed_kmh, max_kmh):
+    """True when a Speed value is above the plausible maximum (max_kmh <= 0 = check off)."""
+    return bool(max_kmh) and max_kmh > 0 and speed_kmh > max_kmh
+
+
+def parse_clock_time(text):
+    """Time typed by the user -> seconds. '' -> None; '75', '75.5' (seconds), '1:15', '01:15.5',
+    '1:02:03' (h:m:s). Raises ValueError for anything else or a negative time."""
+    s = str(text if text is not None else "").strip()
+    if not s:
+        return None
+    parts = s.split(":")
+    if len(parts) > 3:
+        raise ValueError(f"time '{s}' is not valid (use seconds, m:ss or h:mm:ss)")
+    try:
+        nums = [float(x) for x in parts]
+    except ValueError:
+        raise ValueError(f"time '{s}' is not valid (use seconds, m:ss or h:mm:ss)")
+    if any((x != x) or x < 0 or x in (float("inf"),) for x in nums):
+        raise ValueError(f"time '{s}' is not valid")
+    if len(nums) > 1 and any(x >= 60 for x in nums[1:]):
+        raise ValueError(f"time '{s}': minutes and seconds must be below 60")
+    secs = 0.0
+    for x in nums:
+        secs = secs * 60.0 + x
+    return secs
+
+
+def format_clock_time(seconds):
+    """Seconds -> 'm:ss.s' or 'h:mm:ss.s' (what the player shows and what parse_clock_time reads back)."""
+    seconds = max(0.0, float(seconds))
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = seconds - h * 3600 - m * 60
+    return f"{h}:{m:02d}:{s:04.1f}" if h else f"{m}:{s:04.1f}"
+
+
+def window_frames(start_s, end_s, fps, total_frames):
+    """Time window -> (first_frame, last_frame), 1-based and inclusive; frame N is at time (N-1)/fps
+    (SPEC: timestamps start at 0). start_s / end_s None = from the beginning / to the end.
+    last_frame is None when the end is unknown (total_frames <= 0 and no end given).
+    Raises ValueError when the window is empty or starts after the video ends."""
+    first = 1
+    if start_s is not None:
+        first = int(math.ceil(start_s * fps - 1e-6)) + 1
+    last = total_frames if total_frames and total_frames > 0 else None
+    if end_s is not None:
+        last_by_time = int(math.floor(end_s * fps + 1e-6)) + 1
+        last = last_by_time if last is None else min(last, last_by_time)
+    if total_frames and total_frames > 0 and first > total_frames:
+        raise ValueError("the start time is after the end of the video")
+    if last is not None and last < first:
+        raise ValueError("the end time is before the start time")
+    return first, last
+
+
+def homography_from_points(src, dst):
+    """3x3 homography mapping src -> dst (4 or more point pairs, direct linear transform)."""
+    rows = []
+    for (x, y), (u, v) in zip(src, dst):
+        rows.append([x, y, 1, 0, 0, 0, -u * x, -u * y, -u])
+        rows.append([0, 0, 0, x, y, 1, -v * x, -v * y, -v])
+    _, _, vt = np.linalg.svd(np.array(rows, dtype=float))
+    h = vt[-1].reshape(3, 3)
+    return h / h[2, 2]
+
+
+def apply_homography(h, pts):
+    p = np.asarray(pts, dtype=float).reshape(-1, 2)
+    q = np.c_[p, np.ones(len(p))] @ np.asarray(h, dtype=float).T
+    return q[:, :2] / q[:, 2:3]
+
+
+def zone_metric_transform(src_pts, lengths, base_pts):
+    """Per-zone calibration. src_pts = the 4 corners P1..P4 of the zone's own reference quadrilateral (image
+    pixels); lengths = the real sides P1-P2, P2-P3, P3-P4, P4-P1 (m); base_pts = the same 4 corners in the common
+    metric frame of the base calibration. The quadrilateral is mapped to its true rectangle with its own
+    homography (so this zone gets its own scale and perspective), and that rectangle is then moved (rotation /
+    mirror + shift, NO scaling) to the place where the base calibration puts the corners, so that positions of
+    different zones stay in one common frame. 'rms' = how far the rigidly placed rectangle is from the base
+    corners (m): a check that the zone reference and the base calibration describe the same patch of road."""
+    l12, l23, l34, l41 = [float(v) for v in lengths]
+    length, width = (l12 + l34) / 2.0, (l23 + l41) / 2.0
+    rect = np.array([[0, 0], [length, 0], [length, width], [0, width]], dtype=float)
+    h = homography_from_points(src_pts, rect)
+    g = np.asarray(base_pts, dtype=float).reshape(4, 2)
+    u, _, vt = np.linalg.svd((rect - rect.mean(0)).T @ (g - g.mean(0)))
+    q = u @ vt
+    t = g.mean(0) - rect.mean(0) @ q
+    rms = float(np.sqrt(np.mean(np.sum((rect @ q + t - g) ** 2, axis=1))))
+    return {"H": h, "Q": q, "t": t, "rms": rms, "length_m": length, "width_m": width}
+
+
+def zone_metric_points(transform, pts):
+    return apply_homography(transform["H"], pts) @ transform["Q"] + transform["t"]
+
+# ---------------- Topview (road-plane) drawing helpers ----------------
+TOPVIEW_CLASS_COLORS = {            # BGR
+    "Motorcycle": (0, 165, 255), "Car": (255, 160, 40), "Pickup": (200, 120, 255), "Bus": (60, 60, 255),
+    "Truck": (60, 200, 60), "Van": (200, 200, 60), "Sidecar": (0, 220, 220),
+}
+TOPVIEW_DEFAULT_COLOR = (230, 230, 230)
+
+
+def topview_canvas(points_m, max_px=1280, margin_m=3.0, min_span_m=10.0, aspect=None):
+    """Canvas for a Topview picture of metric points (N x 2): px/m, the metric origin of the top-left pixel and the
+    picture size. Outliers are ignored (0.5 / 99.5 percentiles); the picture size is made even."""
+    p = np.asarray(points_m, dtype=float).reshape(-1, 2)
+    p = p[np.all(np.isfinite(p), axis=1)]
+    if len(p) == 0:
+        p = np.zeros((1, 2))
+    lo = np.percentile(p, 0.5, axis=0) - margin_m
+    hi = np.percentile(p, 99.5, axis=0) + margin_m
+    span = np.maximum(hi - lo, min_span_m)
+    if aspect:                                  # same width : height as the video (e.g. 16:9), the area is centred in it
+        want = np.array([max(span[0], span[1] * aspect), max(span[1], span[0] / aspect)])
+        lo = lo - (want - span) / 2.0
+        span = want
+    scale = float(max_px) / float(span.max())
+    w, h = int(math.ceil(span[0] * scale)), int(math.ceil(span[1] * scale))
+    return {"scale": scale, "xmin": float(lo[0]), "ymin": float(lo[1]), "w": w + (w % 2), "h": h + (h % 2)}
+
+
+def topview_px(canvas, pts_m):
+    """Metric points (N x 2) -> canvas pixels (N x 2, float)."""
+    p = np.asarray(pts_m, dtype=float).reshape(-1, 2)
+    return (p - np.array([canvas["xmin"], canvas["ymin"]])) * canvas["scale"]
+
+
+def oriented_rect(center, heading, length, width):
+    """Corners (4 x 2) of a length x width rectangle centred on `center`, its long side along `heading`
+    (unit vector; None = along +x)."""
+    hx, hy = heading if heading else (1.0, 0.0)
+    ux, uy = np.array([hx, hy]), np.array([-hy, hx])
+    c = np.asarray(center, dtype=float)
+    hl, hw = length / 2.0, width / 2.0
+    return np.array([c + hl * ux + hw * uy, c + hl * ux - hw * uy, c - hl * ux - hw * uy, c - hl * ux + hw * uy])
+def outside_zone_plan(mode, inside, zones_available=True):
+    """What is drawn for a vehicle. A vehicle inside a zone (or any vehicle when no zone is drawn) is always drawn in full.
+    Outside every zone:  mode 'dot'  = only the decision point (box, labels, trajectory hidden);
+                         mode 'hide' = nothing at all;   mode 'show' = in full, like a vehicle in a zone.
+    Returns {"point": draw the point, "object": draw box / labels / trajectory}."""
+    if not zones_available or inside:
+        return {"point": True, "object": True}
+    if mode == "hide":
+        return {"point": False, "object": False}
+    if mode == "show":
+        return {"point": True, "object": True}
+    return {"point": True, "object": False}
+
+
+# ---------------- Align: video pixels -> the drone picture (like the georeferencer of a GIS / ALIGN in CAD) ----------------
+# Pairs of points (the same ground spot in the video frame and in the drone picture) give a transformation; the kind is chosen like in QGIS:
+# helmert (move + turn + scale), affine, projective (camera tilt), lens (radial trend + projective), poly2, poly3, tps (thin plate spline,
+# "rubber sheet": exact at the points, free between them). The drone picture is used ONLY to make the pairs, never at analysis time.
+ALIGN_KINDS = {
+    "helmert": (2, "ย้าย + หมุน + ย่อขยาย (Helmert)"),
+    "affine": (3, "ยืดเอียง (Affine, Polynomial 1)"),
+    "projective": (4, "แก้มุมกล้อง (Projective)"),
+    "lens": (6, "แก้มุมกล้อง + ความโค้งแบบรัศมี (Projective + เลนส์)"),
+    "poly2": (6, "ยืดโค้ง (Polynomial 2)"),
+    "poly3": (10, "ยืดโค้งมาก (Polynomial 3)"),
+    "tps": (6, "ยืดเป็นช่วง (Thin Plate Spline / rubber sheet)"),
+}
+
+
+def radial_undistort(pts, size, k1, k2=0.0):
+    """Radial trend of a wide lens: a recorded point at the normalised radius r (r = 1 at the left / right edge, from the centre of the
+    picture) stands for the straightened radius r (1 + k1 r^2 + k2 r^4). The centre stays exact."""
+    p = np.asarray(pts, dtype=float).reshape(-1, 2)
+    c = np.array([size[0] / 2.0, size[1] / 2.0])
+    half = size[0] / 2.0
+    x = (p - c) / half
+    r2 = (x ** 2).sum(axis=1, keepdims=True)
+    return x * (1.0 + k1 * r2 + k2 * r2 ** 2) * half + c
+
+
+def _al_norm(p):
+    p = np.asarray(p, dtype=float).reshape(-1, 2)
+    c = p.mean(axis=0)
+    sc = max(float(np.abs(p - c).max()), 1e-9)
+    return (p - c) / sc, c, sc
+
+
+def _al_terms(x, y, degree):
+    cols = [np.ones_like(x)]
+    for d in range(1, degree + 1):
+        for i in range(d + 1):
+            cols.append(x ** (d - i) * y ** i)
+    return np.stack(cols, axis=1)
+
+
+def _al_tps_kernel(r2):
+    return np.where(r2 > 1e-18, 0.5 * r2 * np.log(np.where(r2 > 1e-18, r2, 1.0)), 0.0)
+
+
+def fit_transform(kind, src, dst, size=None):
+    """Fit one transformation from the pairs src (video pixels) -> dst (drone pixels). Returns a model dict or {"error": text}."""
+    src = np.asarray(src, dtype=float).reshape(-1, 2)
+    dst = np.asarray(dst, dtype=float).reshape(-1, 2)
+    n = len(src)
+    if kind not in ALIGN_KINDS:
+        return {"error": f"unknown kind {kind}"}
+    need = ALIGN_KINDS[kind][0]
+    if n < need or len(dst) != n:
+        return {"error": f"ต้องมีคู่จุดอย่างน้อย {need} คู่ (ตอนนี้ {n})"}
+    if kind == "lens":
+        if size is None:
+            return {"error": "lens needs the picture size"}
+        best = None
+        for k1 in np.arange(-0.10, 0.80 + 1e-9, 0.02):
+            m_ = fit_transform("projective", radial_undistort(src, size, float(k1)), dst)
+            if "error" in m_:
+                continue
+            e = float(np.sqrt(np.mean(np.sum((apply_transform(m_, radial_undistort(src, size, float(k1))) - dst) ** 2, axis=1))))
+            if best is None or e < best[0]:
+                best = (e, float(k1), m_)
+        if best is None:
+            return {"error": "projective part failed"}
+        step = 0.01
+        for _ in range(8):
+            improved = False
+            for cand in (best[1] + step, best[1] - step):
+                m_ = fit_transform("projective", radial_undistort(src, size, cand), dst)
+                if "error" in m_:
+                    continue
+                e = float(np.sqrt(np.mean(np.sum((apply_transform(m_, radial_undistort(src, size, cand)) - dst) ** 2, axis=1))))
+                if e < best[0] - 1e-12:
+                    best, improved = (e, cand, m_), True
+            if not improved:
+                step /= 2.0
+        return {"kind": "lens", "k1": best[1], "size": tuple(size), "inner": best[2]}
+    sn, sc_, ss = _al_norm(src)
+    dn, dc_, ds = _al_norm(dst)
+    model = {"kind": kind, "sc": sc_, "ss": ss, "dc": dc_, "ds": ds}
+    x, y = sn[:, 0], sn[:, 1]
+    if kind == "helmert":
+        a = np.zeros((2 * n, 4))
+        a[0::2] = np.stack([x, -y, np.ones(n), np.zeros(n)], axis=1)
+        a[1::2] = np.stack([y, x, np.zeros(n), np.ones(n)], axis=1)
+        sol = np.linalg.lstsq(a, dn.reshape(-1), rcond=None)[0]
+        model["p"] = sol
+    elif kind in ("affine", "poly2", "poly3"):
+        degree = {"affine": 1, "poly2": 2, "poly3": 3}[kind]
+        t = _al_terms(x, y, degree)
+        if n < t.shape[1]:
+            return {"error": f"ต้องมีคู่จุดอย่างน้อย {t.shape[1]} คู่"}
+        model["p"] = np.linalg.lstsq(t, dn, rcond=None)[0]
+        model["degree"] = degree
+    elif kind == "projective":
+        h = homography_from_points(sn, dn)
+        if not np.all(np.isfinite(h)):
+            return {"error": "คำนวณ Projective ไม่ได้ (จุดอยู่ในแนวเดียวกัน?)"}
+        model["h"] = h
+    elif kind == "tps":
+        k = _al_tps_kernel(((sn[:, None, :] - sn[None, :, :]) ** 2).sum(axis=2))
+        lam = 1e-4
+        p_ = np.c_[np.ones(n), x, y]
+        big = np.zeros((n + 3, n + 3))
+        big[:n, :n] = k + lam * np.eye(n)
+        big[:n, n:] = p_
+        big[n:, :n] = p_.T
+        rhs = np.zeros((n + 3, 2))
+        rhs[:n] = dn
+        try:
+            sol = np.linalg.solve(big, rhs)
+        except np.linalg.LinAlgError:
+            return {"error": "คำนวณ TPS ไม่ได้ (จุดซ้ำหรืออยู่ในแนวเดียวกัน)"}
+        model["w"], model["a"], model["sn"] = sol[:n], sol[n:], sn
+    return model
+
+
+def apply_transform(model, pts):
+    """Video pixels -> drone pixels with a fitted model."""
+    p = np.asarray(pts, dtype=float).reshape(-1, 2)
+    if model["kind"] == "lens":
+        return apply_transform(model["inner"], radial_undistort(p, model["size"], model["k1"]))
+    pn = (p - model["sc"]) / model["ss"]
+    x, y = pn[:, 0], pn[:, 1]
+    kind = model["kind"]
+    if kind == "helmert":
+        a, b, tx, ty = model["p"]
+        out = np.stack([a * x - b * y + tx, b * x + a * y + ty], axis=1)
+    elif kind in ("affine", "poly2", "poly3"):
+        out = _al_terms(x, y, model["degree"]) @ model["p"]
+    elif kind == "projective":
+        out = apply_homography(model["h"], pn)
+    else:                                                                    # tps
+        k = _al_tps_kernel(((pn[:, None, :] - model["sn"][None, :, :]) ** 2).sum(axis=2))
+        out = k @ model["w"] + np.c_[np.ones(len(pn)), x, y] @ model["a"]
+    return out * model["ds"] + model["dc"]
+
+
+def transform_report(kind, src, dst, size=None):
+    """How well a kind fits the pairs: per-pair residual (in the unit of dst) and the leave-one-out residual (each pair predicted by a fit
+    WITHOUT it - the honest accuracy; None for a kind that cannot be fitted without one pair). {"error"} when it cannot be fitted."""
+    src = np.asarray(src, dtype=float).reshape(-1, 2)
+    dst = np.asarray(dst, dtype=float).reshape(-1, 2)
+    model = fit_transform(kind, src, dst, size)
+    if "error" in model:
+        return model
+    res = np.hypot(*(apply_transform(model, src) - dst).T)
+    loo = None
+    if len(src) > ALIGN_KINDS[kind][0]:
+        loo = []
+        for i in range(len(src)):
+            keep = np.arange(len(src)) != i
+            m_ = fit_transform(kind, src[keep], dst[keep], size)
+            loo.append(float(np.hypot(*(apply_transform(m_, src[i:i + 1])[0] - dst[i]))) if "error" not in m_ else None)
+        loo = loo if all(v is not None for v in loo) else None
+    return {"model": model, "residuals": [float(v) for v in res], "rms": float(np.sqrt(np.mean(res ** 2))),
+            "loo": loo, "loo_rms": (float(np.sqrt(np.mean(np.square(loo)))) if loo else None)}
+
+
+def align_build(data):
+    """The saved alignment ({pairs, kind, scale (m per drone pixel), rot_deg, origin, video_size}) -> a usable config or {"error"}."""
+    try:
+        pairs = data["pairs"]
+        src = np.array([q["s"] for q in pairs], dtype=float).reshape(-1, 2)
+        dst = np.array([q["d"] for q in pairs], dtype=float).reshape(-1, 2)
+        kind = data.get("kind", "projective")
+        scale = float(data.get("scale") or 0.0)
+    except (KeyError, TypeError, ValueError):
+        return {"error": "ข้อมูลการจัดแนวอ่านไม่ได้"}
+    if scale <= 0:
+        return {"error": "ยังไม่ได้ตั้งสเกลของภาพโดรน (เมตรต่อพิกเซล)"}
+    model = fit_transform(kind, src, dst, tuple(data["video_size"]) if data.get("video_size") else None)
+    if "error" in model:
+        return model
+    return {"model": model, "kind": kind, "scale": scale, "rot_deg": float(data.get("rot_deg") or 0.0),
+            "origin": tuple(float(v) for v in (data.get("origin") or dst[0])), "n_pairs": int(len(src))}
+
+
+def align_apply(cfg, pts):
+    """Video pixels -> metres in the drone's plane (x along the main road after the rotation, y across, like the picture)."""
+    d = apply_transform(cfg["model"], pts)
+    v = (d - np.array(cfg["origin"])) * cfg["scale"]
+    th = math.radians(cfg["rot_deg"])
+    c, s_ = math.cos(th), math.sin(th)
+    return np.stack([v[:, 0] * c + v[:, 1] * s_, -v[:, 0] * s_ + v[:, 1] * c], axis=1)
+
+
+# ---------------- Zone editing on the drone / X-Y views ----------------
+def invert_transform(model, dst, init, iters=40):
+    """The video pixels whose transformation (apply_transform) is `dst` - Newton iterations from `init` (the video pixels they were before)."""
+    dst = np.asarray(dst, dtype=float).reshape(-1, 2)
+    x = np.asarray(init, dtype=float).reshape(-1, 2).copy()
+    h = 0.5
+    for _ in range(iters):
+        f = apply_transform(model, x) - dst
+        if float(np.abs(f).max()) < 1e-3:
+            break
+        jx = (apply_transform(model, x + [h, 0.0]) - apply_transform(model, x - [h, 0.0])) / (2 * h)
+        jy = (apply_transform(model, x + [0.0, h]) - apply_transform(model, x - [0.0, h])) / (2 * h)
+        a, b, c_, d = jx[:, 0], jy[:, 0], jx[:, 1], jy[:, 1]
+        det = a * d - b * c_
+        det = np.where(np.abs(det) < 1e-12, 1e-12, det)
+        x = x - np.stack([(d * f[:, 0] - b * f[:, 1]) / det, (-c_ * f[:, 0] + a * f[:, 1]) / det], axis=1)
+    return x
+
+
+def align_plane_to_drone(cfg, plane):
+    """Metres in the Align plane -> drone pixels (the inverse of the rotation / scale / origin of align_apply)."""
+    th = math.radians(cfg["rot_deg"])
+    c, s_ = math.cos(th), math.sin(th)
+    o = np.asarray(plane, dtype=float).reshape(-1, 2)
+    v = np.stack([c * o[:, 0] - s_ * o[:, 1], s_ * o[:, 0] + c * o[:, 1]], axis=1)
+    return v / cfg["scale"] + np.array(cfg["origin"])
+
+
+def align_plane_to_video(cfg, plane, init_video):
+    """Metres in the Align plane -> video pixels (init_video = where the points were: the start of the iteration)."""
+    return invert_transform(cfg["model"], align_plane_to_drone(cfg, plane), init_video)
+
+
+def perpendicularize_zones(zones, merge_tol=0.05, vertical_tol_deg=35.0, horizontal_too=False, horizontal_tol_deg=20.0):
+    """Make the cross-road edges of the zones vertical in the plane (the two ends of such an edge get the same x), and shared corners
+    of neighbouring zones stay shared. zones = {name: n x 2 array of plane metres}; an edge within `vertical_tol_deg` of vertical counts
+    as cross-road (the corner chamfers at junctions are left alone). With horizontal_too the along-road edges (within
+    `horizontal_tol_deg` of horizontal) also get one y. Returns ({name: new array}, {"moved_max_m": ..., "edges_fixed": n})."""
+    names = list(zones)
+    nodes = []                                                   # unique corners: [sum_x, sum_y, count]
+    node_of = {}
+    for name in names:
+        for i, q in enumerate(np.asarray(zones[name], dtype=float)):
+            for k, nd in enumerate(nodes):
+                if math.hypot(nd[0] / nd[2] - q[0], nd[1] / nd[2] - q[1]) <= merge_tol:
+                    nd[0] += q[0]; nd[1] += q[1]; nd[2] += 1
+                    node_of[(name, i)] = k
+                    break
+            else:
+                nodes.append([q[0], q[1], 1])
+                node_of[(name, i)] = len(nodes) - 1
+    pos = np.array([[nd[0] / nd[2], nd[1] / nd[2]] for nd in nodes])
+    par_x, par_y = list(range(len(nodes))), list(range(len(nodes)))
+
+    def find(par, a):
+        while par[a] != a:
+            par[a] = par[par[a]]
+            a = par[a]
+        return a
+
+    fixed = 0
+    for name in names:
+        arr = np.asarray(zones[name], dtype=float)
+        n = len(arr)
+        for i in range(n):
+            a, b = node_of[(name, i)], node_of[(name, (i + 1) % n)]
+            if a == b:
+                continue
+            dx, dy = abs(pos[b][0] - pos[a][0]), abs(pos[b][1] - pos[a][1])
+            ang = math.degrees(math.atan2(dy, dx))              # 0 = along the road, 90 = across
+            if ang >= 90.0 - vertical_tol_deg:
+                par_x[find(par_x, a)] = find(par_x, b)
+                fixed += 1
+            elif horizontal_too and ang <= horizontal_tol_deg:
+                par_y[find(par_y, a)] = find(par_y, b)
+                fixed += 1
+    newpos = pos.copy()
+    for par, axis in ((par_x, 0), (par_y, 1)):
+        comp = {}
+        for k in range(len(nodes)):
+            comp.setdefault(find(par, k), []).append(k)
+        for members in comp.values():
+            if len(members) > 1:
+                newpos[members, axis] = float(np.mean(pos[members, axis]))
+    out = {name: np.array([newpos[node_of[(name, i)]] for i in range(len(zones[name]))]) for name in names}
+    moved = max((float(np.hypot(*(out[nm][i] - np.asarray(zones[nm][i], dtype=float)))) for nm in names for i in range(len(zones[nm]))), default=0.0)
+    return out, {"moved_max_m": moved, "edges_fixed": fixed}
+
+
+# ---------------- Risk levels (seminar "Evaluation Approach"; CROW Road Safety Manual 2009) ----------------
+RISK_LEVELS = ("Interaction", "Low", "Moderate", "High")            # ascending severity
+RISK_DEFAULT_LIMITS = {
+    "ttc_s": (1.0, 1.5, 2.0),            # High < 1.0 | Moderate <= 1.5 | Low <= 2.0 | else Interaction   (slide: 0-0.9 / 1.0-1.5 / 1.6-2.0 / > 2.0)
+    "pet_s": (1.0, 2.0, 3.0),            # slide: 0-0.9 / 1.0-2.0 / 2.1-3.0 / > 3.0
+    "ldp_pct": (80.0, 50.0, 30.0),       # High >= 80 | Moderate >= 50 | Low >= 30 | else Interaction
+    "speed_kmh": (50.0, 30.0, 15.0),     # TTC and PET, all vehicle types: >= 50 / 30-49 / 15-29 / 0-14
+    "ldp_speed_kmh": (80.0, 50.0, 30.0), # LDP slide
+}
+
+
+def risk_level_low_is_risky(value, limits):
+    """Level of an index where a SMALL value is risky (TTC, PET). limits = (a, b, c) ascending:
+    High if value < a, Moderate if <= b, Low if <= c, else Interaction (no risk)."""
+    a, b, c_ = limits
+    value = round(float(value), 6)            # the exported precision: 0.99999999999 s is 1.000000 s in the file, so it is Moderate, not High
+    if value < a:
+        return "High"
+    if value <= b:
+        return "Moderate"
+    if value <= c_:
+        return "Low"
+    return "Interaction"
+
+
+def risk_level_high_is_risky(value, limits):
+    """Level of an index where a LARGE value is risky (LDP %, speed km/h). limits = (a, b, c) descending:
+    High if value >= a, Moderate if >= b, Low if >= c, else Interaction."""
+    a, b, c_ = limits
+    value = round(float(value), 6)
+    if value >= a:
+        return "High"
+    if value >= b:
+        return "Moderate"
+    if value >= c_:
+        return "Low"
+    return "Interaction"
+
+
+def combine_risk(level_a, level_b):
+    """Overall risk = the LESS severe of the index level and the speed level (the colour map of the seminar slide: both conditions must be met,
+    e.g. TTC < 1.0 s with 40 km/h is Moderate, TTC 1.2 s with 60 km/h is Moderate). "" when either is unknown."""
+    if level_a not in RISK_LEVELS or level_b not in RISK_LEVELS:
+        return ""
+    return RISK_LEVELS[min(RISK_LEVELS.index(level_a), RISK_LEVELS.index(level_b))]
+
+
+def parse_risk_limits(text, ascending):
+    """'1.0, 1.5, 2.0' -> (1.0, 1.5, 2.0). Exactly three numbers, strictly ascending (or descending when ascending=False)."""
+    parts = [q for q in re.split(r"[,\s;]+", str(text).strip()) if q]
+    if len(parts) != 3:
+        raise ValueError("need three numbers separated by commas")
+    vals = tuple(float(q) for q in parts)
+    ok = vals[0] < vals[1] < vals[2] if ascending else vals[0] > vals[1] > vals[2]
+    if not ok:
+        raise ValueError("the three numbers must be " + ("increasing" if ascending else "decreasing"))
+    return vals
+
+
+def ensure_python_package(module, pip_spec=None, runner=None, finder=None, timeout_s=1800):
+    """True when `module` can be imported; when it is missing it is installed with pip into THIS Python (the one running PK Studio)
+    and checked again. runner / finder are only replaced in tests. Returns (ok, message)."""
+    import importlib
+    import importlib.util
+    import subprocess
+    import sys
+    finder = finder or importlib.util.find_spec
+    if finder(module) is not None:
+        return True, f"{module} is installed"
+    runner = runner or subprocess.run
+    cmd = [sys.executable, "-m", "pip", "install", pip_spec or module]
+    try:
+        res = runner(cmd, capture_output=True, text=True, timeout=timeout_s)
+    except Exception as exc:
+        return False, f"pip install {pip_spec or module} failed: {exc}"
+    if getattr(res, "returncode", 1) != 0:
+        tail = (getattr(res, "stderr", "") or getattr(res, "stdout", "") or "").strip().splitlines()[-3:]
+        return False, f"pip install {pip_spec or module} failed: " + " | ".join(tail)
+    importlib.invalidate_caches()
+    if finder(module) is None:
+        return False, f"{module} was installed but cannot be imported yet (restart PK Studio)"
+    return True, f"{module} installed with pip"
+
+
+def gpu_vendor(name):
+    """"nvidia" / "amd" / "intel" / "other" from the name of a video controller."""
+    n = str(name or "").lower()
+    if any(k in n for k in ("nvidia", "geforce", "quadro", "tesla", "rtx", "gtx")):
+        return "nvidia"
+    if any(k in n for k in ("amd", "radeon", "advanced micro")):
+        return "amd"
+    if "intel" in n:
+        return "intel"
+    return "other"
+
+
+def tensorrt_engine_name(model_path, imgsz, half, capability, trt_version):
+    """File name of a TensorRT engine: an engine only works on the GPU generation (compute capability) and the TensorRT it was built with, so both are in the
+    name (a project folder shared with a computer that has another GPU builds its own engine instead of loading a wrong one)."""
+    base = os.path.splitext(str(model_path))[0]
+    try:
+        cc = "sm%d%d" % (int(capability[0]), int(capability[1]))
+    except (TypeError, ValueError, IndexError):
+        cc = "smXX"
+    major = str(trt_version or "").split(".")[0] or "x"
+    return f"{base}_{int(imgsz)}_{'fp16' if half else 'fp32'}_{cc}_trt{major}.engine"
+
+
+def directml_onnx_name(model_path, imgsz):
+    """File name of the ONNX model used by the DirectML backend (fixed input size = imgsz)."""
+    return os.path.splitext(str(model_path))[0] + f"_{int(imgsz)}_dml.onnx"
+
+
+def tensorrt_pip_spec(torch_cuda):
+    """The pip package of TensorRT that matches the CUDA of PyTorch. `pip install tensorrt` alone gives the newest TensorRT built for CUDA 13, which needs a newer
+    NVIDIA driver than a PyTorch cu12x install runs on (it crashes the whole program while the engine is built): CUDA 12 -> tensorrt-cu12 below 11 (10.x)."""
+    try:
+        major = int(str(torch_cuda).split(".")[0])
+    except (TypeError, ValueError):
+        return "tensorrt<11"
+    if major == 12:
+        return "tensorrt-cu12<11"
+    if major >= 13:
+        return "tensorrt-cu13"
+    return "tensorrt<11"
+
+
+def tensorrt_build_mismatch(torch_cuda, installed):
+    """True when the installed TensorRT packages (`installed` = {distribution name: version}) are built for another CUDA than PyTorch's: the CUDA 13 build
+    (tensorrt_cu13*) or TensorRT 11 on a CUDA 12 PyTorch."""
+    try:
+        major = int(str(torch_cuda).split(".")[0])
+    except (TypeError, ValueError):
+        return False
+    if major != 12:
+        return False
+    names = {k.lower().replace("-", "_") for k in installed}
+    if any(n.startswith("tensorrt_cu13") for n in names):
+        return True
+    for k, v in installed.items():
+        if k.lower() == "tensorrt" and str(v).split(".")[0].isdigit() and int(str(v).split(".")[0]) >= 11:
+            return True
+    return False
+
+
+def prepare_tensorrt_packages(torch_cuda):
+    """Make sure the TensorRT that is installed fits this CUDA (a wrong build is replaced) and that onnx is there. Returns (ok, message)."""
+    import importlib.metadata
+    import subprocess
+    import sys
+    installed = {}
+    for dist in importlib.metadata.distributions():
+        name = (dist.metadata["Name"] or "")
+        if name.lower().replace("-", "_").startswith("tensorrt"):
+            installed[name] = dist.version
+    spec = tensorrt_pip_spec(torch_cuda)
+    if tensorrt_build_mismatch(torch_cuda, installed):
+        print("TensorRT    : the installed TensorRT is built for another CUDA (" + ", ".join(sorted(installed)) + "); replacing it with " + spec)
+        subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", *installed], capture_output=True, text=True, timeout=600)
+        res = subprocess.run([sys.executable, "-m", "pip", "install", spec], capture_output=True, text=True, timeout=1800)
+        if res.returncode != 0:
+            return False, f"pip install {spec} failed: " + " | ".join((res.stderr or res.stdout or "").strip().splitlines()[-3:])
+        import importlib
+        importlib.invalidate_caches()
+    ok, msg = ensure_python_package("tensorrt", spec)
+    if not ok:
+        return False, msg
+    print("TensorRT    :", msg)
+    ok, msg = ensure_python_package("onnx", "onnx")
+    print("TensorRT    :", msg)
+    return ok, msg
+
+
+def build_tensorrt_engine(model_path, engine, imgsz, device, timeout_s=3600, half=True):
+    """Build the engine in a SEPARATE Python process: a crash of TensorRT / the driver then cannot take PK Studio down with it, it only means no engine
+    (the caller goes on with the .pt model). Raises RuntimeError with the end of the log when it fails."""
+    import subprocess
+    import sys
+    code = ("import sys, os; from ultralytics import YOLO; "
+            "b = YOLO(sys.argv[1]).export(format='engine', imgsz=int(sys.argv[2]), device=sys.argv[3], half=(sys.argv[5] == '1'), verbose=False); "
+            "os.replace(str(b), sys.argv[4]) if os.path.abspath(str(b)) != os.path.abspath(sys.argv[4]) else None")
+    res = subprocess.run([sys.executable, "-c", code, str(model_path), str(int(imgsz)), str(device), str(engine), "1" if half else "0"], capture_output=True, text=True, timeout=timeout_s)
+    if res.returncode != 0 or not os.path.isfile(engine):
+        tail = " | ".join(((res.stderr or "") + (res.stdout or "")).strip().splitlines()[-4:])
+        raise RuntimeError(f"building the TensorRT engine failed (exit code {res.returncode}): {tail}")
+    return engine
+
+
+def scaled_video_size(width, height, max_width):
+    """(w, h) of the result video: the input size, scaled down (keeping the shape, even numbers for the encoder) when it is wider than max_width;
+    max_width 0 / blank / invalid = the input size."""
+    try:
+        mw = int(float(str(max_width).strip() or 0))
+    except ValueError:
+        mw = 0
+    if mw <= 0 or width <= mw:
+        return (int(width), int(height))
+    w = mw - (mw % 2)
+    h = int(round(height * w / float(width)))
+    return (w, h - (h % 2))
+
+
+def pairs_within_radius(points, radius):
+    """(pairs, n_far) for the points of one frame: pairs = [(i, j), ...] with i < j in the order of a plain double loop whose distance is
+    <= radius (with a hair of tolerance: the caller checks the exact distance again), n_far = the number of the other pairs.
+    radius None = every pair."""
+    P = np.asarray(points, dtype=float).reshape(-1, 2)
+    n = len(P)
+    if n < 2:
+        return [], 0
+    iu, ju = np.triu_indices(n, 1)
+    if radius is None:
+        return list(zip(iu.tolist(), ju.tolist())), 0
+    d = np.hypot(P[ju, 0] - P[iu, 0], P[ju, 1] - P[iu, 1])
+    keep = d <= float(radius) * (1.0 + 1e-9) + 1e-9
+    return list(zip(iu[keep].tolist(), ju[keep].tolist())), int((~keep).sum())
+
+
+def boxes_overlap(A, B):
+    """Do the bounding boxes of two paths (N x 2) touch? Two paths whose boxes do not touch can never cross."""
+    A = np.asarray(A, dtype=float).reshape(-1, 2)
+    B = np.asarray(B, dtype=float).reshape(-1, 2)
+    if len(A) == 0 or len(B) == 0:
+        return False
+    amin, amax = A.min(axis=0), A.max(axis=0)
+    bmin, bmax = B.min(axis=0), B.max(axis=0)
+    return bool(np.all(amin <= bmax) and np.all(bmin <= amax))
+
+
+def path_crossing(A, B):
+    """Where two paths (N x 2 arrays of metric points, joined by straight segments) cross: of all the crossings the one whose nearest samples are
+    closest to it (the V26 choice). None when they never cross. Returns {"score", "ia", "ib" (nearest sample of each path), "ip" (x, y),
+    "seg_a" / "seg_b" = (segment index, fraction 0-1 along it) so the time the vehicle passes the crossing can be interpolated}."""
+    if len(A) < 2 or len(B) < 2:
+        return None
+    a0 = A[:-1, None, :]; a1 = A[1:, None, :]
+    b0 = B[None, :-1, :]; b1 = B[None, 1:, :]
+    x1, y1 = a0[..., 0], a0[..., 1]; x2, y2 = a1[..., 0], a1[..., 1]
+    x3, y3 = b0[..., 0], b0[..., 1]; x4, y4 = b1[..., 0], b1[..., 1]
+    den = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+    ok = np.abs(den) >= 1e-9
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / den
+        u = -((x1 - x2) * (y1 - y3) - (y1 - y2) * (x1 - x3)) / den
+    hit = ok & (t >= 0) & (t <= 1) & (u >= 0) & (u <= 1)
+    if not hit.any():
+        return None
+    with np.errstate(invalid="ignore"):
+        ipx = x1 + t * (x2 - x1); ipy = y1 + t * (y2 - y1)
+    da0 = np.hypot(x1 - ipx, y1 - ipy); da1 = np.hypot(x2 - ipx, y2 - ipy)
+    db0 = np.hypot(x3 - ipx, y3 - ipy); db1 = np.hypot(x4 - ipx, y4 - ipy)
+    score = np.maximum(np.minimum(da0, da1), np.minimum(db0, db1))
+    score = np.where(hit, score, np.inf)
+    flat = int(np.argmin(score))
+    i, j = np.unravel_index(flat, score.shape)
+    ia = i if da0[i, j] <= da1[i, j] else i + 1
+    ib = j if db0[i, j] <= db1[i, j] else j + 1
+    return {"score": float(score[i, j]), "ia": int(ia), "ib": int(ib), "ip": (float(ipx[i, j]), float(ipy[i, j])),
+            "seg_a": (int(i), float(t[i, j])), "seg_b": (int(j), float(u[i, j]))}
+
+
+def path_pass_time(times, seg):
+    """The time a vehicle is at a point on its path given as (segment index, fraction): linear between the two samples of that segment."""
+    i, f = seg
+    return float(times[i] + f * (times[i + 1] - times[i]))
+
+
+# Names of the columns as the CSV files show them (v28(129)): the code keeps its own keys, `apply_csv_renames` translates them when a file is written.
+# Convention: every time column ends in _s, every speed column says WHEN the speed is taken (Speed_A_At_Crossing_kmh ...), A/B vehicle columns are
+# Vehicle_A_ID / Vehicle_A_Class / Movement_A in every file.
+# Columns that are NOT written (v28(131)): the same information is in another column of the file, the value is the same on every row of a run
+# (it is in Summary.json / Settings.json), or it can be worked out from other columns. "*" = every file written by Run 3.
+CSV_COLUMN_DROPS = {
+    "*": ("Site_ID", "Calibration_Mode"),
+    "Gap_Acceptance.csv": ("Gap_Acceptance", "Gap_Evaluation_Time"),              # = Gap_Role (Accepted / Rejected); = Decision_Time
+    "PET.csv": ("Interaction_Start", "Interaction_End"),                          # = T1_Exit_Time / T2_Entry_Time
+    "LDP.csv": ("Side", "Lane_Width_W_m", "Chord_Length_m"),                      # Movement tells the side; the widths are in Settings; = |P_out - P_in|
+    "Lateral_Clearance.csv": ("Width_A_m", "Width_B_m", "Length_A_m", "Length_B_m", "Zone_Sequence_A", "Zone_Sequence_B"),   # per class / per pair
+    "Detection_Records_Topview.csv": ("calibration_mode",),
+}
+
+CSV_COLUMN_RENAMES = {
+    "LDP.csv": {"Start_Time": "Start_Time_s", "End_Time": "End_Time_s", "Mean_Speed_kmh": "Mean_Speed_In_Zone_kmh"},
+    "Lateral_Clearance.csv": {"Timestamp": "Time_s", "LS_Meter": "LS_m"},
+    "Lateral_Clearance_Pairs.csv": {"Start_Time": "Start_Time_s", "End_Time": "End_Time_s"},
+    "Gap_Acceptance.csv": {"Gap_Start_Time": "Gap_Start_Time_s", "Gap_End_Time": "Gap_End_Time_s",
+                           "Decision_Time": "Decision_Time_s", "Subject_Speed_kmh": "Subject_Speed_At_Decision_kmh",
+                           "Decision_Zone": "Subject_Zone_At_Decision",       # the zone the subject is in when the gap is evaluated (Decision_Stage says which zone it wants to enter)
+                           # A = the vehicle that crosses first (gap start) = Lead, B = the next one (gap end) = Lag
+                           "Conflicting_ID_A": "Lead_Vehicle_ID", "Conflicting_Class_A": "Lead_Vehicle_Class",
+                           "Conflicting_ID_B": "Lag_Vehicle_ID", "Conflicting_Class_B": "Lag_Vehicle_Class",
+                           "Conflict_Speed_A_kmh": "Lead_Speed_At_Gap_Start_kmh", "Conflict_Speed_B_kmh": "Lag_Speed_At_Gap_End_kmh"},
+    "TTC.csv": {"Event_Start": "Start_Time_s", "Event_End": "End_Time_s", "TTCmin_Time": "TTCmin_Time_s",
+                "Speed_A_kmh": "Speed_A_At_TTCmin_kmh", "Speed_B_kmh": "Speed_B_At_TTCmin_kmh"},
+    "PET.csv": {"Vehicle_ID_A": "Vehicle_A_ID", "Vehicle_Class_A": "Vehicle_A_Class", "Vehicle_ID_B": "Vehicle_B_ID", "Vehicle_Class_B": "Vehicle_B_Class",
+                "T1_Exit_Time": "T1_Exit_Time_s", "T2_Entry_Time": "T2_Entry_Time_s",
+                "Speed_A_kmh": "Speed_A_At_Crossing_kmh", "Speed_B_kmh": "Speed_B_At_Crossing_kmh"},
+}
+
+
+def apply_csv_renames(filename, fields, rows):
+    """(fields, rows) as the file shows them: the columns of `CSV_COLUMN_DROPS` removed, then the names of `CSV_COLUMN_RENAMES[filename]` applied;
+    a file that is in neither table passes through unchanged."""
+    drop = set(CSV_COLUMN_DROPS.get("*", ())) | set(CSV_COLUMN_DROPS.get(filename, ()))
+    ren = CSV_COLUMN_RENAMES.get(filename, {})
+    fields = [ren.get(f, f) for f in fields if f not in drop]
+    rows = [{ren.get(k, k): v for k, v in r.items() if k not in drop} for r in rows]
+    return fields, rows
+
+
+def path_velocity_at(points, times, t, window_s, seg=None):
+    """The velocity vector (m/s) of a vehicle around time `t`: the straight displacement between the first and the last sample within +-window_s/2
+    divided by their time difference. With fewer than 2 samples in the window: the direction of the segment `seg` = (index, fraction) it is on
+    (None for it = (0, 0))."""
+    P = np.asarray(points, dtype=float).reshape(-1, 2)
+    T = np.asarray(times, dtype=float)
+    idx = np.flatnonzero(np.abs(T - t) <= window_s / 2.0)
+    if len(idx) >= 2 and T[idx[-1]] > T[idx[0]]:
+        v = (P[idx[-1]] - P[idx[0]]) / (T[idx[-1]] - T[idx[0]])
+        return float(v[0]), float(v[1])
+    if seg is not None and seg[0] + 1 < len(T) and T[seg[0] + 1] > T[seg[0]]:
+        v = (P[seg[0] + 1] - P[seg[0]]) / (T[seg[0] + 1] - T[seg[0]])
+        return float(v[0]), float(v[1])
+    return 0.0, 0.0
+
+
+def frame_speeds_kmh(times, points, window_s=0.5, smoothing=1):
+    """The speed of a vehicle at every one of its samples (km/h; None where it cannot be told): the positions are smoothed with a rolling median
+    (`smoothing` samples, 1 = off; the first and last samples keep their own position), then the speed at a sample is the straight distance between the first and the last sample inside +-window_s/2
+    around it, divided by their time difference (shrinks to one side at the ends of the track)."""
+    t = np.asarray(times, dtype=float)
+    P = np.asarray(points, dtype=float).reshape(-1, 2)
+    n = len(t)
+    if n < 2:
+        return [None] * n
+    k = int(smoothing) if smoothing else 1
+    if k > 1:
+        k = k + 1 if k % 2 == 0 else k
+        h = k // 2
+        if n >= 2 * h + 1:                     # only FULL symmetric windows: a shrinking window at the ends would shift the position and bias the edge speeds
+            sm = P.copy()
+            for i in range(h, n - h):
+                sm[i] = np.median(P[i - h:i + h + 1], axis=0)
+            P = sm
+    half = max(1e-6, float(window_s)) / 2.0
+    lo = np.searchsorted(t, t - half, side="left")
+    hi = np.searchsorted(t, t + half, side="right") - 1
+    out = []
+    for i in range(n):
+        a, b = int(lo[i]), int(hi[i])
+        dt = t[b] - t[a] if b > a else 0.0
+        out.append(None if dt <= 0 else float(np.hypot(*(P[b] - P[a])) / dt * 3.6))
+    return out
+
+
+def output_fps_ratio(out_fps_text, src_fps):
+    """The share of the frames a result video keeps (0 < ratio <= 1) so that it plays at out_fps; the video still lasts as long as the real one.
+    Blank / 0 / not a number / not below the source rate = 1.0 (every frame)."""
+    try:
+        v = float(str(out_fps_text).strip() or 0)
+    except ValueError:
+        return 1.0
+    try:
+        src = float(src_fps)
+    except (TypeError, ValueError):
+        return 1.0
+    if v <= 0 or src <= 0 or v >= src:
+        return 1.0
+    return v / src
+
+
+def output_frame_offset(i, ratio):
+    """The offset (0-based, counted in the frames that come in) of the i-th frame a result video keeps when it keeps `ratio` of them:
+    ratio 1 -> 0, 1, 2...; ratio 0.5 -> 0, 2, 4...; ratio 0.4 -> 0, 3, 5, 8..."""
+    if ratio >= 1.0:
+        return int(i)
+    return int(math.ceil(i / ratio - 1e-9))
+
+
+def topview_px_setting(text, default=1280):
+    """The longest side (px) of the X-Y / drone result video: a positive number, else the default."""
+    try:
+        v = int(float(str(text).strip()))
+    except ValueError:
+        return int(default)
+    return v if v > 0 else int(default)
+
+
+# ==== CORE-END ====
+
+RUN3_ALL_MOVEMENTS = MOVEMENT_IDS
+# Gap Acceptance: subject movement -> conflicting movements whose line-crossing times
+# form the available gaps (each needs a Reference Line Mapping entry).
+# Confirmed by the user (2026-10-01): a subject may meet any of these streams, also several at once.
+RUN3_GAP_CONFLICT_MAP = {
+    "1-3-4": ["2-3-4"],
+    "1-3-6-7": ["2-3-4", "5-6-7", "5-6-3-1"],
+    "5-6-3-1": ["2-3-4", "1-3-6-7"],
+}
+# Streams met at each decision stage (= the middle zone the subject is about to enter), SPEC 6.1.
+GAP_STAGE_CONFLICTS = {
+    "1-3-4":   {3: ["2-3-4"]},
+    "1-3-6-7": {3: ["2-3-4", "5-6-3-1"], 6: ["5-6-7", "5-6-3-1"]},
+    "5-6-3-1": {6: ["1-3-6-7"], 3: ["2-3-4", "1-3-6-7"]},
+}
+LINE_NAMES = [f"Line {i}" for i in range(1, 7)]
+
+
+class _NoLinesToSave(Exception):
+    """Every stream of the Line window uses its zone edge: nothing to write into the Zone file."""
+
+
+VIDEO_FILETYPES = [("วิดีโอ", "*.mp4 *.mov *.avi *.mkv *.m4v"), ("ทั้งหมด", "*.*")]
+
+
+def clip_video_choices(app):
+    """The roadside videos the editors can show: every clip of the clip list, then the video chosen in the main window (existing files, no repeats)."""
+    paths = []
+    panel = getattr(app, "clips_panel", None)
+    for c in (getattr(panel, "clips", None) or []):
+        paths.append(str(c.get("video", "") or ""))
+    try:
+        paths.append(str(app.video_var.get() or "").strip())
+    except Exception:
+        pass
+    out = []
+    for q in paths:
+        if q and os.path.isfile(q) and q not in out:
+            out.append(q)
+    return out
+
+
+def choose_background_video(app, parent, current=""):
+    """A small window: pick one of the clips of the clip list or browse for another video file. Returns the path or None (cancelled)."""
+    choices = clip_video_choices(app)
+    result = {"path": None}
+    dlg = tk.Toplevel(parent)
+    dlg.title("เลือกวิดีโอข้างทาง")
+    dlg.transient(parent)
+    ttk.Label(dlg, text="เลือกวิดีโอที่จะใช้เป็นภาพพื้นหลัง (ดับเบิลคลิก = ใช้เลย)", padding=(10, 8, 10, 2)).pack(anchor="w")
+    lb = tk.Listbox(dlg, width=90, height=min(12, max(4, len(choices))), exportselection=False)
+    for q in choices:
+        lb.insert("end", q)
+    if current in choices:
+        lb.selection_set(choices.index(current))
+    elif choices:
+        lb.selection_set(0)
+    lb.pack(padx=10, pady=4, fill="both", expand=True)
+
+    def use_selected(*_):
+        sel = lb.curselection()
+        if sel:
+            result["path"] = choices[sel[0]]
+            dlg.destroy()
+
+    def browse():
+        path = filedialog.askopenfilename(parent=dlg, title="เลือกวิดีโอข้างทาง", filetypes=VIDEO_FILETYPES)
+        if path:
+            result["path"] = path
+            dlg.destroy()
+
+    lb.bind("<Double-Button-1>", use_selected)
+    row = ttk.Frame(dlg, padding=10)
+    row.pack(fill="x")
+    ttk.Button(row, text="ใช้วิดีโอที่เลือก", command=use_selected).pack(side="left")
+    ttk.Button(row, text="เลือกไฟล์อื่น…", command=browse).pack(side="left", padx=6)
+    ttk.Button(row, text="ยกเลิก", command=dlg.destroy).pack(side="right")
+    dlg.grab_set()
+    dlg.wait_window()
+    return result["path"]
+
+
+def video_size_of(path):
+    """(width, height) of a video file or None."""
+    cap = cv2.VideoCapture(str(path))
+    try:
+        w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        return (w, h) if w > 0 and h > 0 else None
+    finally:
+        cap.release()
+
+
+class LineEditorDialog:
+    """Click two points on a video frame to place the Reference Lines that Gap
+    Acceptance needs (one per conflicting stream). Saves the Lines into the Zone
+    JSON file and fills the Reference Line Mapping text."""
+
+    def __init__(self, app, frame_bgr, frame_index, movements, assignments, lines, modes=None, video_path=""):
+        self.app = app
+        self.video_path = video_path
+        self.frame_index = frame_index
+        self.h, self.w = frame_bgr.shape[:2]
+        self.movements = list(movements)
+        self.assign = dict(assignments)
+        # per stream: "edge" = the edge the stream's two zones share (nothing to draw) / "drawn" = a Line drawn here
+        try:
+            tol = float(app.run3_zone_edge_tol_var.get() or 6.0)
+        except Exception:
+            tol = 6.0
+        self.edge_name = {mv: "Edge %d-%d" % ZONE_EDGE_DEFAULT[mv] for mv in self.movements if mv in ZONE_EDGE_DEFAULT}
+        self.edge_pts = {mv: [tuple(q) for q in app._run3_named_line(nm, tol)] for mv, nm in self.edge_name.items()}
+        self.mode = {mv: ((modes or {}).get(mv, "drawn") if len(self.edge_pts.get(mv, [])) == 2 else "drawn") for mv in self.movements}
+        self.points = {mv: [tuple(pt) for pt in lines.get(self.assign[mv], [])][:2] for mv in self.movements}
+        self.pending = None
+        self.current = next((mv for mv in self.movements if len(self.points[mv]) != 2), self.movements[0])
+
+        self.top = tk.Toplevel(app.root)
+        self.top.title("วาด Line สำหรับ Gap Acceptance")
+        max_w = max(640, min(1300, self.top.winfo_screenwidth() - 340))
+        max_h = max(360, min(820, self.top.winfo_screenheight() - 240))
+        self.scale = min(1.0, max_w / float(self.w), max_h / float(self.h))
+        shown = cv2.resize(frame_bgr, (int(self.w * self.scale), int(self.h * self.scale)))
+        self._draw_zones(shown)
+        ok, buf = cv2.imencode(".png", shown)
+        self.photo = tk.PhotoImage(data=base64.b64encode(buf.tobytes()))
+
+        side = ttk.Frame(self.top, padding=8)
+        side.grid(row=0, column=0, sticky="ns")
+        ttk.Label(side, text="1) เลือกกระแสรถ\n2) คลิก 2 จุดบนภาพ วางเส้นขวางทาง\n    ที่รถกระแสนั้นวิ่งผ่าน (ให้ยาวพอ\n    ที่รถทุกคันข้ามเส้นชัดเจน)\n3) กด \"บันทึก\"", justify="left").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        self.choice = tk.StringVar(value=self.current)
+        self.status_labels = {}
+        self.mode_vars = {}
+        for i, mv in enumerate(self.movements, start=1):
+            ttk.Radiobutton(side, text=f"กระแส {mv}", value=mv, variable=self.choice,
+                            command=lambda m=mv: self.select(m)).grid(row=i * 3 - 2, column=0, sticky="w")
+            ttk.Button(side, text="ล้าง", width=5, command=lambda m=mv: self.clear(m)).grid(row=i * 3 - 2, column=1, padx=(6, 0))
+            if mv in self.edge_name:
+                fr = ttk.Frame(side)
+                fr.grid(row=i * 3 - 1, column=0, columnspan=2, sticky="w", padx=(22, 0))
+                var = tk.StringVar(value=self.mode[mv])
+                self.mode_vars[mv] = var
+                ttk.Radiobutton(fr, text="ขอบโซน %d|%d ที่ติดกัน" % ZONE_EDGE_DEFAULT[mv], value="edge", variable=var,
+                                command=lambda m=mv: self.set_mode(m, self.mode_vars[m].get())).pack(side="left")
+                ttk.Radiobutton(fr, text=f"วาดเอง ({self.assign[mv]})", value="drawn", variable=var,
+                                command=lambda m=mv: self.set_mode(m, self.mode_vars[m].get())).pack(side="left", padx=(8, 0))
+            lab = ttk.Label(side, text="", foreground="#555555")
+            lab.grid(row=i * 3, column=0, columnspan=2, sticky="w", padx=(22, 0), pady=(0, 4))
+            self.status_labels[mv] = lab
+        nrow = len(self.movements) * 3 + 1
+        ttk.Separator(side, orient="horizontal").grid(row=nrow, column=0, columnspan=2, sticky="ew", pady=8)
+        self.frame_label = ttk.Label(side, text="", foreground="#555555", wraplength=300, justify="left")
+        self.frame_label.grid(row=nrow + 1, column=0, columnspan=2, sticky="w")
+        self._set_frame_label()
+        ttk.Button(side, text="เปลี่ยนวิดีโอ…", command=self.change_video).grid(row=nrow + 2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        ttk.Button(side, text="บันทึก", command=self.save).grid(row=nrow + 3, column=0, columnspan=2, sticky="ew", pady=(10, 2))
+        ttk.Button(side, text="ปิด", command=self.top.destroy).grid(row=nrow + 4, column=0, columnspan=2, sticky="ew")
+
+        self.canvas = tk.Canvas(self.top, width=shown.shape[1], height=shown.shape[0], highlightthickness=0, cursor="crosshair")
+        self.canvas.grid(row=0, column=1, sticky="nsew")
+        self.canvas.create_image(0, 0, anchor="nw", image=self.photo)
+        self.canvas.bind("<Button-1>", lambda e: self.add_point(e.x, e.y))
+        self.canvas.bind("<Button-3>", lambda e: self.clear(self.current))
+        self.redraw()
+
+    def _set_frame_label(self):
+        name = os.path.basename(str(self.video_path or "")) or "วิดีโอ"
+        text = f"{name}\nเฟรมที่ {self.frame_index} ({self.w}×{self.h})"
+        zw, zh = getattr(self.app, "zone_source_width", None), getattr(self.app, "zone_source_height", None)
+        if zw and zh and (int(zw), int(zh)) != (self.w, self.h):
+            text += f"\n⚠ ขนาดต่างจากภาพที่วาดโซน ({int(zw)}×{int(zh)})"
+        self.frame_label.config(text=text)
+
+    def show_frame(self, frame_bgr, frame_index, video_path):
+        """Show another picture under the zones and Lines (the Lines keep their pixel positions)."""
+        self.video_path, self.frame_index = video_path, frame_index
+        self.h, self.w = frame_bgr.shape[:2]
+        self.scale = min(1.0, max(640, min(1300, self.top.winfo_screenwidth() - 340)) / float(self.w), max(360, min(820, self.top.winfo_screenheight() - 240)) / float(self.h))
+        shown = cv2.resize(frame_bgr, (int(self.w * self.scale), int(self.h * self.scale)))
+        self._draw_zones(shown)
+        ok, buf = cv2.imencode(".png", shown)
+        self.photo = tk.PhotoImage(data=base64.b64encode(buf.tobytes()))
+        self.canvas.config(width=shown.shape[1], height=shown.shape[0])
+        self.canvas.delete("all")
+        self.canvas.create_image(0, 0, anchor="nw", image=self.photo)
+        self.pending = None
+        self._set_frame_label()
+        self.redraw()
+
+    def change_video(self, path=None):
+        """Another roadside video as the background (from the clip list or a file). Returns True when it was shown."""
+        path = path or choose_background_video(self.app, self.top, self.video_path)
+        if not path:
+            return False
+        img = read_picture_any(path, None)
+        if img is None:
+            messagebox.showerror("วาด Line", "อ่านเฟรมจากวิดีโอนี้ไม่ได้", parent=self.top)
+            return False
+        self.app.edit_video = path
+        self.show_frame(img, 0, path)
+        return True
+
+    # ---- drawing ----
+    def _draw_zones(self, img):
+        overlay = img.copy()
+        for name, pts in self.app.zones.items():
+            if len(pts) < 3:
+                continue
+            arr = (np.array(pts, dtype=float) * self.scale).astype(np.int32)
+            cv2.fillPoly(overlay, [arr], (0, 200, 255))
+            cv2.polylines(img, [arr], True, (0, 120, 255), 2)
+            cx, cy = arr.mean(axis=0).astype(int)
+            cv2.putText(img, name.replace("Zone ", ""), (int(cx) - 6, int(cy) + 6), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.addWeighted(overlay, 0.25, img, 0.75, 0, img)
+
+    def redraw(self):
+        self.canvas.delete("ov")
+        colors = ["#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4", "#008080"]
+        for i, mv in enumerate(self.movements):
+            col = colors[i % len(colors)]
+            edge_mode = self.mode.get(mv) == "edge"
+            pts = self.edge_pts[mv] if edge_mode else self.points[mv]       # a stream on its zone edge shows the edge (and its drawn Line is hidden)
+            if len(pts) == 2:
+                (x1, y1), (x2, y2) = pts
+                self.canvas.create_line(x1 * self.scale, y1 * self.scale, x2 * self.scale, y2 * self.scale, fill=col, width=4,
+                                        dash=((8, 5) if edge_mode else None), tags="ov")
+                for x, y in pts:
+                    self.canvas.create_oval(x * self.scale - 5, y * self.scale - 5, x * self.scale + 5, y * self.scale + 5, fill=col, outline="white", tags="ov")
+                label = self.edge_name[mv] if edge_mode else self.assign[mv]
+                self.canvas.create_text((x1 + x2) / 2 * self.scale + 6, (y1 + y2) / 2 * self.scale - 10, text=f"{mv} ({label})", fill=col, anchor="w", font=("Segoe UI", 10, "bold"), tags="ov")
+                self.status_labels[mv].config(text=("ใช้ขอบโซนที่ติดกัน ✓ (ไม่ต้องวาด)" if edge_mode else "วาดแล้ว ✓"), foreground="#0a7a0a")
+            else:
+                msg = "ยังไม่ได้วาด" if mv not in self.edge_name or len(self.edge_pts.get(mv, [])) == 2 else "ยังไม่ได้วาด (โซนสองโซนนี้ไม่มีขอบที่ติดกัน)"
+                self.status_labels[mv].config(text=msg, foreground="#b00020")
+        if self.pending is not None:
+            x, y = self.pending
+            self.canvas.create_oval(x * self.scale - 6, y * self.scale - 6, x * self.scale + 6, y * self.scale + 6, outline="yellow", width=3, tags="ov")
+
+    # ---- interaction (also called directly by the tests) ----
+    def select(self, mv):
+        self.current = mv
+        self.choice.set(mv)
+        self.pending = None
+        self.redraw()
+
+    def clear(self, mv):
+        self.points[mv] = []
+        if mv == self.current:
+            self.pending = None
+        self.redraw()
+
+    def set_mode(self, mv, mode):
+        """Stream `mv` uses the shared zone edge ("edge") or the Line drawn here ("drawn")."""
+        if mode == "edge" and len(self.edge_pts.get(mv, [])) != 2:
+            mode = "drawn"                                             # the zones share no edge: nothing to use
+        self.mode[mv] = mode
+        if mv in self.mode_vars:
+            self.mode_vars[mv].set(mode)
+        if mv == self.current:
+            self.pending = None
+        self.redraw()
+
+    def _done(self, mv):
+        return len(self.edge_pts.get(mv, [])) == 2 if self.mode.get(mv) == "edge" else len(self.points[mv]) == 2
+
+    def add_point(self, cx, cy):
+        if self.mode.get(self.current) == "edge":
+            self.set_mode(self.current, "drawn")                       # clicking on the picture = the user wants to draw this one
+        x, y = canvas_to_video(cx, cy, self.scale, self.w, self.h)
+        if self.pending is None:
+            self.pending = (x, y)
+            self.points[self.current] = []
+        else:
+            if (x, y) == self.pending:
+                return
+            self.points[self.current] = [self.pending, (x, y)]
+            self.pending = None
+            nxt = next((m for m in self.movements if not self._done(m)), None)
+            if nxt:
+                self.select(nxt)
+                return
+        self.redraw()
+
+    def save(self):
+        edge = [mv for mv in self.movements if self.mode.get(mv) == "edge" and self._done(mv)]
+        drawn = [mv for mv in self.movements if self.mode.get(mv) != "edge" and len(self.points[mv]) == 2]
+        if not drawn and not edge:
+            messagebox.showwarning("Line", "ยังไม่ได้วาดเส้นใดเลย", parent=self.top)
+            return False
+        missing = [mv for mv in self.movements if mv not in drawn and mv not in edge]
+        if missing and not messagebox.askyesno(
+                "Line", "ยังไม่ได้วาดเส้นของกระแส: " + ", ".join(missing) + "\n\nบันทึกเฉพาะที่วาดแล้วหรือไม่?", parent=self.top):
+            return False
+        assignments = {mv: (self.edge_name[mv] if mv in edge else self.assign[mv]) for mv in self.movements if mv in drawn or mv in edge}
+        ok = self.app.apply_editor_lines({self.assign[mv]: self.points[mv] for mv in drawn}, assignments, self.w, self.h)
+        if ok:
+            if self.app.run3_ref_line_source_var.get() != "per_stream":
+                self.app.run3_ref_line_source_var.set("per_stream")   # each stream now uses what was chosen here
+            self.top.destroy()
+        return ok
+
+
+class ClipPlayerDialog:
+    """Play a video inside the program and choose, for this clip, the time range to analyse and what to
+    record. Result (self.result, None when cancelled):
+      analysis_start_s / analysis_end_s   text, '' = from the beginning / to the end
+      save_video                          False = record nothing
+      record_start_s / record_end_s       text, '' = same as the analysis window
+      xy_video / xy_start_s / xy_end_s    the same for the X-Y video (Tracking_Topview.mp4)
+      drone_video / drone_start_s / drone_end_s   the same for the X-Y-on-drone video (Tracking_Topview_Drone.mp4)
+    Times are video times (m:ss.s); frame N is at (N-1)/fps like in every CSV file."""
+
+    SHOW_W, SHOW_H = 900, 500
+
+    def __init__(self, app, video_path, plan=None, title=None, modal=True):
+        plan = plan or {}
+        self.app = app
+        self.video_path = video_path
+        self.result = None
+        self.cap = cv2.VideoCapture(video_path)
+        if not self.cap.isOpened():
+            raise RuntimeError("Unable to open video")
+        self.fps = self.cap.get(cv2.CAP_PROP_FPS) or 30.0
+        if self.fps <= 0:
+            self.fps = 30.0
+        self.total = max(1, int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT)))
+        self.duration = self.total / self.fps
+        self.pos = -1
+        self.playing = False
+        self._after = None
+        self._busy = False
+
+        self.top = tk.Toplevel(app.root)
+        self.top.title(title or ("ดูวิดีโอและกำหนดช่วงเวลา — " + os.path.basename(video_path)))
+        self.top.protocol("WM_DELETE_WINDOW", self.cancel)
+        # The picture shrinks to fit the screen so that the OK / Cancel buttons at the bottom are always visible.
+        sw, sh = self.top.winfo_screenwidth(), self.top.winfo_screenheight()
+        self.SHOW_H = max(220, min(500, sh - 540))
+        self.SHOW_W = max(480, min(900, sw - 80, int(self.SHOW_H * 1.8)))
+        self.top.geometry("+10+10")
+
+        self.a_start = tk.StringVar(value=str(plan.get("analysis_start_s", "") or ""))
+        self.a_end = tk.StringVar(value=str(plan.get("analysis_end_s", "") or ""))
+        self.r_start = tk.StringVar(value=str(plan.get("record_start_s", "") or ""))
+        self.r_end = tk.StringVar(value=str(plan.get("record_end_s", "") or ""))
+        if not plan.get("save_video", True):
+            mode = "none"
+        elif self.r_start.get().strip() or self.r_end.get().strip():
+            mode = "range"
+        else:
+            mode = "window"
+        self.rec_mode = tk.StringVar(value=mode)
+        # the X-Y video and the X-Y-on-drone video: the same choice (none / whole analysed part / only a range) of their own
+        self.xy_start = tk.StringVar(value=str(plan.get("xy_start_s", "") or ""))
+        self.xy_end = tk.StringVar(value=str(plan.get("xy_end_s", "") or ""))
+        self.drone_start = tk.StringVar(value=str(plan.get("drone_start_s", "") or ""))
+        self.drone_end = tk.StringVar(value=str(plan.get("drone_end_s", "") or ""))
+
+        def mode_of(on, v0, v1):
+            return "none" if not on else ("range" if (v0.get().strip() or v1.get().strip()) else "window")
+        self.xy_mode = tk.StringVar(value=mode_of(plan.get("xy_video", True), self.xy_start, self.xy_end))
+        self.drone_mode = tk.StringVar(value=mode_of(plan.get("drone_video", False), self.drone_start, self.drone_end))
+        self.time_text = tk.StringVar(value="")
+
+        self.canvas = tk.Canvas(self.top, width=self.SHOW_W, height=self.SHOW_H, bg="#111111", highlightthickness=0)
+        self.canvas.grid(row=0, column=0, columnspan=2, padx=8, pady=(8, 4))
+        self.slider = tk.Scale(self.top, from_=0, to=self.total - 1, orient="horizontal", showvalue=False,
+                               length=self.SHOW_W, command=self._on_slider)
+        self.slider.grid(row=1, column=0, columnspan=2, padx=8, sticky="ew")
+        ttk.Label(self.top, textvariable=self.time_text, font=("Consolas", 11)).grid(row=2, column=0, columnspan=2, pady=(0, 2))
+
+        bar = ttk.Frame(self.top)
+        bar.grid(row=3, column=0, columnspan=2, pady=2)
+        for text, delta in (("◀◀ -5 วิ", -5 * self.fps), ("◀ -1 เฟรม", -1), ("+1 เฟรม ▶", 1), ("+5 วิ ▶▶", 5 * self.fps)):
+            ttk.Button(bar, text=text, command=lambda d=delta: self.step(int(round(d)))).pack(side="left", padx=2)
+        self.play_button = ttk.Button(bar, text="▶ เล่น", width=9, command=self.toggle_play)
+        self.play_button.pack(side="left", padx=(12, 2))
+
+        boxes = ttk.Frame(self.top)
+        boxes.grid(row=4, column=0, columnspan=2, sticky="nsew", padx=8, pady=6)
+        a_box = ttk.LabelFrame(boxes, text="ช่วงที่ให้โปรแกรมวิเคราะห์ (ว่าง = ทั้งคลิป)", padding=6)
+        a_box.pack(side="left", fill="y", padx=(0, 4))
+        self._time_row(a_box, 0, "เริ่ม", self.a_start)
+        self._time_row(a_box, 1, "สิ้นสุด", self.a_end)
+        ttk.Label(a_box, text="เลื่อนวิดีโอไปจุดที่ต้องการ\nแล้วกด \"ใช้เวลานี้\"", foreground="#666666").grid(row=2, column=0, columnspan=4, sticky="w")
+
+        def rec_box(title, mode_var, v_start, v_end):
+            box = ttk.LabelFrame(boxes, text=title, padding=6)
+            box.pack(side="left", fill="y", padx=4)
+            ttk.Radiobutton(box, text="ไม่บันทึก", value="none", variable=mode_var, command=self._redraw_timeline).grid(row=0, column=0, columnspan=4, sticky="w")
+            ttk.Radiobutton(box, text="ตลอดช่วงที่วิเคราะห์", value="window", variable=mode_var, command=self._redraw_timeline).grid(row=1, column=0, columnspan=4, sticky="w")
+            ttk.Radiobutton(box, text="เฉพาะช่วง:", value="range", variable=mode_var, command=self._redraw_timeline).grid(row=2, column=0, columnspan=4, sticky="w")
+            self._time_row(box, 3, "เริ่ม", v_start)
+            self._time_row(box, 4, "สิ้นสุด", v_end)
+            return box
+        rec_box("วิดีโอปกติ (ข้างทาง)", self.rec_mode, self.r_start, self.r_end)
+        rec_box("วิดีโอ X–Y (ผังเมตร)", self.xy_mode, self.xy_start, self.xy_end)
+        rec_box("วิดีโอ X–Y บนภาพโดรน", self.drone_mode, self.drone_start, self.drone_end)
+
+        self.timeline = tk.Canvas(self.top, width=self.SHOW_W, height=44, bg="#dddddd", highlightthickness=0)
+        self.timeline.grid(row=5, column=0, columnspan=2, padx=8, pady=(0, 2))
+        ttk.Label(self.top, text="แถบเวลา: ฟ้า = ช่วงวิเคราะห์ · แดง = วิดีโอปกติ · เขียว = X–Y · ส้ม = X–Y บนภาพโดรน · ขีดดำ = ตำแหน่งปัจจุบัน",
+                  foreground="#666666").grid(row=6, column=0, columnspan=2)
+        btns = ttk.Frame(self.top)
+        btns.grid(row=7, column=0, columnspan=2, pady=8)
+        self.ok_button = ttk.Button(btns, text="✔ บันทึกช่วงเวลานี้", width=20, command=self.apply)
+        self.ok_button.pack(side="left", padx=6)
+        ttk.Button(btns, text="ยกเลิก (ไม่บันทึก)", width=18, command=self.cancel).pack(side="left", padx=6)
+
+        for var in (self.a_start, self.a_end, self.r_start, self.r_end, self.xy_start, self.xy_end, self.drone_start, self.drone_end):
+            var.trace_add("write", lambda *_: self._redraw_timeline())
+        self.top.bind("<Left>", lambda e: self.step(-1))
+        self.top.bind("<Right>", lambda e: self.step(1))
+        self.top.bind("<space>", lambda e: self.toggle_play())
+        self.top.bind("<Return>", lambda e: self.apply())
+        self.top.bind("<Escape>", lambda e: self.cancel())
+
+        first = self._seconds(self.a_start.get())
+        self.show_frame(int(round(first * self.fps)) if first is not None else 0)
+        if modal:
+            self.top.transient(app.root)
+            self.top.grab_set()
+            self.top.wait_window()
+
+    # ---- building blocks ----
+    def _time_row(self, parent, row, label, var):
+        ttk.Label(parent, text=label, width=8).grid(row=row, column=0, sticky="w", pady=2)
+        ttk.Entry(parent, textvariable=var, width=10).grid(row=row, column=1, sticky="w", pady=2)
+        ttk.Button(parent, text="ใช้เวลานี้", command=lambda v=var: v.set(format_clock_time(self.current_time()))).grid(
+            row=row, column=2, padx=4)
+        ttk.Button(parent, text="ล้าง", width=5, command=lambda v=var: v.set("")).grid(row=row, column=3)
+
+    @staticmethod
+    def _seconds(text):
+        try:
+            return parse_clock_time(text)
+        except ValueError:
+            return None
+
+    def current_time(self):
+        return max(0, self.pos) / self.fps
+
+    # ---- playback ----
+    def show_frame(self, idx):
+        idx = max(0, min(self.total - 1, int(idx)))
+        if idx != self.pos + 1:
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        ok, frame = self.cap.read()
+        if not ok or frame is None:
+            self.playing = False
+            self.play_button.config(text="▶ เล่น")
+            return False
+        self.pos = idx
+        h, w = frame.shape[:2]
+        scale = min(self.SHOW_W / float(w), self.SHOW_H / float(h))
+        shown = cv2.resize(frame, (max(1, int(w * scale)), max(1, int(h * scale))))
+        okp, buf = cv2.imencode(".png", shown)
+        self.photo = tk.PhotoImage(data=base64.b64encode(buf.tobytes()))
+        self.canvas.delete("all")
+        self.canvas.create_image(self.SHOW_W // 2, self.SHOW_H // 2, image=self.photo)
+        self._busy = True
+        self.slider.set(idx)
+        self._busy = False
+        self.time_text.set(f"{format_clock_time(self.current_time())} / {format_clock_time(self.duration)}    เฟรม {idx + 1}/{self.total}")
+        self._redraw_timeline()
+        return True
+
+    def _on_slider(self, value):
+        if self._busy:
+            return
+        idx = int(float(value))
+        if idx != self.pos:
+            self.show_frame(idx)
+
+    def step(self, delta):
+        self.playing = False
+        self.play_button.config(text="▶ เล่น")
+        self.show_frame(self.pos + delta)
+
+    def toggle_play(self):
+        self.playing = not self.playing
+        self.play_button.config(text="⏸ หยุด" if self.playing else "▶ เล่น")
+        if self.playing:
+            self._tick()
+
+    def _tick(self):
+        if not self.playing:
+            return
+        skip = max(1, int(round(self.fps / 25.0)))
+        for _ in range(skip - 1):
+            self.cap.grab()
+            self.pos += 1
+        if not self.show_frame(self.pos + 1):
+            return
+        self._after = self.top.after(40, self._tick)
+
+    # ---- timeline ----
+    def _redraw_timeline(self):
+        c = self.timeline
+        c.delete("all")
+        w = self.SHOW_W
+        x = lambda t: max(0, min(w, int(w * t / self.duration)))
+        a0 = self._seconds(self.a_start.get())
+        a1 = self._seconds(self.a_end.get())
+        a0 = 0.0 if a0 is None else a0
+        a1 = self.duration if a1 is None else a1
+        c.create_rectangle(x(a0), 3, x(a1), 12, fill="#4a90e2", outline="")
+        for k, (mode_var, v_start, v_end, color) in enumerate(((self.rec_mode, self.r_start, self.r_end, "#d9534f"), (self.xy_mode, self.xy_start, self.xy_end, "#3c9d4a"),
+                                                                 (self.drone_mode, self.drone_start, self.drone_end, "#f0ad4e"))):
+            mode = mode_var.get()
+            if mode != "none":
+                r0, r1 = a0, a1
+                if mode == "range":
+                    q0, q1 = self._seconds(v_start.get()), self._seconds(v_end.get())
+                    r0 = a0 if q0 is None else max(a0, q0)
+                    r1 = a1 if q1 is None else min(a1, q1)
+                c.create_rectangle(x(r0), 14 + k * 10, x(r1), 22 + k * 10, fill=color, outline="")
+        c.create_line(x(self.current_time()), 0, x(self.current_time()), 44, fill="black", width=2)
+
+    # ---- result ----
+    def _validated(self):
+        def get(var, label):
+            try:
+                return parse_clock_time(var.get())
+            except ValueError as exc:
+                raise ValueError(f"{label}: {exc}")
+        a0, a1 = get(self.a_start, "เริ่มวิเคราะห์"), get(self.a_end, "สิ้นสุดวิเคราะห์")
+        r0, r1 = get(self.r_start, "เริ่มบันทึก"), get(self.r_end, "สิ้นสุดบันทึก")
+        if a0 is not None and a0 >= self.duration:
+            raise ValueError("เวลาเริ่มวิเคราะห์อยู่หลังจบวิดีโอ")
+        if a0 is not None and a1 is not None and a1 <= a0:
+            raise ValueError("เวลาสิ้นสุดวิเคราะห์ต้องมากกว่าเวลาเริ่ม")
+        if self.rec_mode.get() == "range" and r0 is not None and r1 is not None and r1 <= r0:
+            raise ValueError("เวลาสิ้นสุดบันทึกต้องมากกว่าเวลาเริ่ม")
+        for name, mode_var, v_start, v_end in (("X–Y", self.xy_mode, self.xy_start, self.xy_end), ("X–Y บนภาพโดรน", self.drone_mode, self.drone_start, self.drone_end)):
+            q0, q1 = get(v_start, f"เริ่มบันทึก {name}"), get(v_end, f"สิ้นสุดบันทึก {name}")
+            if mode_var.get() == "range" and q0 is not None and q1 is not None and q1 <= q0:
+                raise ValueError(f"เวลาสิ้นสุดบันทึก {name} ต้องมากกว่าเวลาเริ่ม")
+        return a0, a1, r0, r1
+
+    def apply(self):
+        try:
+            self._validated()
+        except ValueError as exc:
+            messagebox.showerror("ช่วงเวลาไม่ถูกต้อง", str(exc), parent=self.top)
+            return False
+        mode = self.rec_mode.get()
+        self.result = {
+            "analysis_start_s": self.a_start.get().strip(),
+            "analysis_end_s": self.a_end.get().strip(),
+            "save_video": mode != "none",
+            "record_start_s": self.r_start.get().strip() if mode == "range" else "",
+            "record_end_s": self.r_end.get().strip() if mode == "range" else "",
+            "xy_video": self.xy_mode.get() != "none",
+            "xy_start_s": self.xy_start.get().strip() if self.xy_mode.get() == "range" else "",
+            "xy_end_s": self.xy_end.get().strip() if self.xy_mode.get() == "range" else "",
+            "drone_video": self.drone_mode.get() != "none",
+            "drone_start_s": self.drone_start.get().strip() if self.drone_mode.get() == "range" else "",
+            "drone_end_s": self.drone_end.get().strip() if self.drone_mode.get() == "range" else "",
+        }
+        self.close()
+        return True
+
+    def cancel(self):
+        self.result = None
+        self.close()
+
+    def close(self):
+        self.playing = False
+        if self._after is not None:
+            try:
+                self.top.after_cancel(self._after)
+            except Exception:
+                pass
+        try:
+            self.cap.release()
+        except Exception:
+            pass
+        try:
+            self.top.grab_release()
+        except Exception:
+            pass
+        self.top.destroy()
+
+
+def read_picture_any(path, frame=None):
+    """A picture file (any letters in the path) or a frame of a video -> BGR array or None."""
+    if not path or not os.path.isfile(path):
+        return None
+    if os.path.splitext(path)[1].lower() in (".mp4", ".mov", ".avi", ".mkv", ".m4v"):
+        cap = cv2.VideoCapture(path)
+        try:
+            total = max(1, int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 1))
+            idx = max(0, min(total - 1, int(frame) - 1)) if frame not in (None, "") else total // 2
+            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+            ok, fr = cap.read()
+            return fr if ok else None
+        finally:
+            cap.release()
+    try:
+        return cv2.imdecode(np.fromfile(path, dtype=np.uint8), cv2.IMREAD_COLOR)
+    except Exception:
+        return None
+
+
+class _ZoomPane:
+    """A picture with wheel zoom at the pointer, drag to pan and a click callback (picture coordinates) + an overlay hook."""
+
+    def __init__(self, parent, width, height, on_click, overlay, on_press=None, on_drag=None, on_release=None):
+        self.canvas = tk.Canvas(parent, width=width, height=height, bg="#202020", highlightthickness=0)
+        self.on_click, self.overlay = on_click, overlay
+        self.on_press, self.on_drag, self.on_release = on_press, on_drag, on_release         # (optional) grab and drag things in the picture
+        self._grab = False
+        self.shift = False
+        self.img = None
+        self.zoom, self.fit_k, self.view = 1.0, 1.0, None
+        self._pan = None
+        self.photo = None
+        self.last_render = None
+        c = self.canvas
+        c.bind("<Configure>", lambda e: self._on_configure())
+        c.bind("<ButtonPress-1>", lambda e: self._press(e.x, e.y, False, e.state))
+        c.bind("<B1-Motion>", lambda e: self._drag(e.x, e.y, e.state))
+        c.bind("<ButtonRelease-1>", lambda e: self._release(e.x, e.y))
+        for b in (2, 3):
+            c.bind(f"<ButtonPress-{b}>", lambda e: self._press(e.x, e.y, True))
+            c.bind(f"<B{b}-Motion>", lambda e: self._drag(e.x, e.y))
+        c.bind("<MouseWheel>", lambda e: self.zoom_at(e.x, e.y, 1 if e.delta > 0 else -1))
+        c.bind("<Button-4>", lambda e: self.zoom_at(e.x, e.y, 1))
+        c.bind("<Button-5>", lambda e: self.zoom_at(e.x, e.y, -1))
+
+    def size(self):
+        return max(50, self.canvas.winfo_width()), max(50, self.canvas.winfo_height())
+
+    def set_image(self, img):
+        self.img = img
+        self.zoom, self.view = 1.0, None
+        self.refresh()
+
+    def _fit(self):
+        cw, ch = self.size()
+        h, w = self.img.shape[:2]
+        self.fit_k = min(cw / float(w), ch / float(h))
+        return self.fit_k, (cw - w * self.fit_k) / 2.0, (ch - h * self.fit_k) / 2.0
+
+    def _on_configure(self):
+        if self.zoom <= 1.0:
+            self.view = None
+        self.refresh()
+
+    def to_image(self, ex, ey):
+        k, ox, oy = self.view
+        return (ex - ox) / k, (ey - oy) / k
+
+    def to_view(self, x, y):
+        k, ox, oy = self.view
+        return int(round(x * k + ox)), int(round(y * k + oy))
+
+    def zoom_at(self, ex, ey, steps):
+        if self.img is None or self.view is None:
+            return False
+        k, ox, oy = self.view
+        z_new = min(40.0, max(1.0, self.zoom * (1.25 ** steps)))
+        if z_new == self.zoom:
+            return False
+        px, py = (ex - ox) / k, (ey - oy) / k
+        self.zoom = z_new
+        if z_new == 1.0:
+            self.view = None
+        else:
+            k2 = self.fit_k * z_new
+            self.view = (k2, ex - px * k2, ey - py * k2)
+        self.refresh()
+        return True
+
+    def _press(self, ex, ey, always_pan=False, state=0):
+        self.shift = bool(state & 1)
+        if self.on_press is not None and not always_pan and self.view is not None and self.img is not None:
+            ix, iy = self.to_image(ex, ey)
+            if self.on_press(ix, iy, ex, ey):
+                self._grab = True
+                self._pan = None
+                return
+        self._pan = {"x": ex, "y": ey, "x0": ex, "y0": ey, "moved": bool(always_pan)}
+
+    def _drag(self, ex, ey, state=0):
+        if self._grab:
+            self.shift = bool(state & 1)
+            if self.on_drag is not None and self.view is not None:
+                self.on_drag(*self.to_image(ex, ey))
+            return
+        p = self._pan
+        if p is None or self.view is None:
+            return
+        if not p["moved"] and (abs(ex - p["x0"]) > 4 or abs(ey - p["y0"]) > 4) and self.zoom > 1.0:
+            p["moved"] = True
+        if p["moved"]:
+            k, ox, oy = self.view
+            self.view = (k, ox + ex - p["x"], oy + ey - p["y"])
+            p["x"], p["y"] = ex, ey
+            self.refresh()
+
+    def _release(self, ex, ey):
+        if self._grab:
+            self._grab = False
+            if self.on_release is not None:
+                self.on_release()
+            return
+        p, self._pan = self._pan, None
+        if p is None or p["moved"] or self.img is None or self.view is None:
+            return
+        x, y = self.to_image(ex, ey)
+        h, w = self.img.shape[:2]
+        if 0 <= x < w and 0 <= y < h:
+            self.on_click(x, y)
+
+    def refresh(self):
+        if self.img is None or not self.canvas.winfo_exists():
+            return
+        if self.view is None:
+            self.view = self._fit()
+        k, ox, oy = self.view
+        cw, ch = self.size()
+        h, w = self.img.shape[:2]
+        out = np.full((ch, cw, 3), 32, np.uint8)
+        ix0, iy0 = max(0, int(math.floor(-ox / k))), max(0, int(math.floor(-oy / k)))
+        ix1, iy1 = min(w, int(math.ceil((cw - ox) / k))), min(h, int(math.ceil((ch - oy) / k)))
+        if ix1 > ix0 and iy1 > iy0:
+            res = cv2.resize(self.img[iy0:iy1, ix0:ix1], (max(1, int(round((ix1 - ix0) * k))), max(1, int(round((iy1 - iy0) * k)))),
+                             interpolation=cv2.INTER_AREA if k < 1 else cv2.INTER_LINEAR)
+            dx, dy = int(round(ix0 * k + ox)), int(round(iy0 * k + oy))
+            sx0, sy0 = max(0, -dx), max(0, -dy)
+            ex_, ey_ = min(res.shape[1], cw - dx), min(res.shape[0], ch - dy)
+            if ex_ > sx0 and ey_ > sy0:
+                out[dy + sy0:dy + ey_, dx + sx0:dx + ex_] = res[sy0:ey_, sx0:ex_]
+        self.overlay(out, self)
+        self.last_render = out
+        ok, buf = cv2.imencode(".png", out)
+        self.photo = tk.PhotoImage(data=base64.b64encode(buf.tobytes()))
+        self.canvas.delete("all")
+        self.canvas.create_image(0, 0, anchor="nw", image=self.photo)
+
+
+class AlignDialog:
+    """Align (like the georeferencer of a GIS / ALIGN in CAD): click a spot on the ground in the VIDEO frame (left), then the same spot in the
+    DRONE picture (right) = one pair. With enough pairs the video pixels are transformed to the drone's plane (metres). Choose the kind of
+    transformation (move/turn/scale ... projective ... lens ... polynomial ... rubber sheet) and see the error of every pair and of
+    the kind itself (leave-one-out = the honest accuracy). The drone picture is used only here; the saved result is just numbers."""
+
+    def __init__(self, app, video_path, on_apply, initial=None):
+        self.app, self.on_apply, self.video_path = app, on_apply, video_path
+        initial = initial or {}
+        self.pairs = [{"s": tuple(q["s"]), "d": tuple(q["d"]), **({"l": q["l"]} if q.get("l") else {})} for q in initial.get("pairs", [])]
+        self.pins = []                                           # the zone corners as pins: {"l": name, "p": video pixel, "state": todo | done | skip}
+        self.skipped_saved = set(initial.get("skipped", []))
+        self.pin_index = None                                    # the pin waiting for its place on the drone picture
+        self.pending = None
+        self.scale = float(initial.get("scale") or 0.0)
+        self.rot_deg = float(initial.get("rot_deg") or 0.0)
+        self.kind = initial.get("kind", "projective") if initial.get("kind") in ALIGN_KINDS else "projective"
+        self.mode_points = []                                    # clicks of the scale / road-direction measurement (drone picture)
+        self.selected = None                                     # the pair picked in the table (shown bigger in both pictures)
+        self.drone_path = (initial.get("drone") or {}).get("path", "")
+        self.drone_img = None
+        self.report = None
+        self.top = tk.Toplevel(app.root)
+        self.top.title("จัดแนวกับภาพโดรน (Align)")
+        sw, sh = self.top.winfo_screenwidth(), self.top.winfo_screenheight()
+        self.top.geometry(f"{min(1500, sw - 30)}x{min(930, sh - 80)}+10+10")
+        self.top.protocol("WM_DELETE_WINDOW", self.close)
+        self.top.dialog = self
+        self.msg_var = tk.StringVar(value="")
+        self.mode_var = tk.StringVar(value="pairs")
+        self.kind_var = tk.StringVar(value=ALIGN_KINDS[self.kind][1])
+        self.scale_var = tk.StringVar(value=(f"{self.scale:.6g}" if self.scale else ""))
+        self.frame_var = tk.StringVar(value="")
+        self.vpath_var = tk.StringVar(value=video_path)
+        self.dframe_var = tk.StringVar(value=str((initial.get("drone") or {}).get("frame", "")))
+        self.dpath_var = tk.StringVar(value=self.drone_path)
+        cap = cv2.VideoCapture(video_path)
+        self.total = max(1, int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 1))
+        cap.release()
+        self.video_img = None
+        self._build()
+        self.load_video_frame(initial.get("video_frame"))
+        if self.drone_path:
+            self.load_drone(self.drone_path, self.dframe_var.get() or None)
+        self.load_zone_pins(quiet=True)
+        self.refresh_all()
+
+    # ----- pictures -----
+    def load_video_frame(self, frame=None):
+        img = read_picture_any(self.video_path, frame)
+        if img is None:
+            return False
+        self.video_img = img
+        self.frame_var.set(str(frame if frame not in (None, "") else self.total // 2 + 1))
+        self.vpane.set_image(img)
+        return True
+
+    def change_video(self, path=None):
+        """Another roadside video (from the clip list or a file): its middle frame is shown; the pairs keep their pixel positions."""
+        path = path or choose_background_video(self.app, self.top, self.video_path)
+        if not path:
+            return False
+        cap = cv2.VideoCapture(path)
+        total = max(1, int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 1))
+        cap.release()
+        if read_picture_any(path, None) is None:
+            self.msg_var.set("อ่านเฟรมจากวิดีโอนี้ไม่ได้")
+            return False
+        self.video_path, self.total = path, total
+        self.vpath_var.set(path)
+        self.app.edit_video = path
+        self.load_video_frame(None)
+        self.refresh_all()
+        return True
+
+    def load_drone(self, path, frame=None):
+        img = read_picture_any(path, frame)
+        if img is None:
+            self.msg_var.set("เปิดภาพโดรนไม่ได้")
+            return False
+        self.drone_img, self.drone_path = img, path
+        self.dpath_var.set(path)
+        self.dpane.set_image(img)
+        return True
+
+    def choose_drone(self):
+        path = filedialog.askopenfilename(parent=self.top, title="เลือกภาพหรือวิดีโอโดรน",
+                                          filetypes=[("ภาพ/วิดีโอ", "*.jpg *.jpeg *.png *.webp *.bmp *.mp4 *.mov *.avi"), ("ทั้งหมด", "*.*")])
+        if path:
+            self.load_drone(path, self.dframe_var.get() or None)
+
+    # ----- the zone corners as pins -----
+    def load_zone_pins(self, quiet=False):
+        """Every corner of every zone drawn on the video is a pin with a known video pixel (no click needed on that side). Corners at the
+        same spot (the shared corners of neighbouring zones) are one pin. A pin that already has a pair is done; the ones the user skipped
+        stay skipped. Returns the number of pins."""
+        pins = []
+        for zname in ZONE_NAMES:
+            poly = self.app.zones.get(zname, [])
+            if len(poly) < 3:
+                continue
+            num = zname.split()[-1]
+            for k, (x, y) in enumerate(poly, start=1):
+                label = f"Z{num}.{k}"
+                for pin in pins:
+                    if math.hypot(pin["p"][0] - x, pin["p"][1] - y) <= 4.0:             # the same corner of the next zone
+                        pin["l"] += "=" + label
+                        break
+                else:
+                    pins.append({"l": label, "p": (float(x), float(y)), "state": "todo"})
+        done = {q.get("l") for q in self.pairs if q.get("l")}
+        for pin in pins:
+            first = pin["l"].split("=")[0]
+            if first in done:
+                pin["state"] = "done"
+            elif first in self.skipped_saved:
+                pin["state"] = "skip"
+        self.pins = pins
+        self._next_pin(0)
+        if not quiet and not pins:
+            self.msg_var.set("ยังไม่มีโซนที่วาดไว้ (โหลดไฟล์โซนในแท็บ ② ก่อน)")
+        return len(pins)
+
+    def _next_pin(self, start=None):
+        """Point at the next pin still to do (from `start`, wrapping round); None when there is none."""
+        n = len(self.pins)
+        if not n:
+            self.pin_index = None
+            return None
+        i0 = (self.pin_index if start is None else start) or 0
+        for k in range(n):
+            j = (i0 + k) % n
+            if self.pins[j]["state"] == "todo":
+                self.pin_index = j
+                return j
+        self.pin_index = None
+        return None
+
+    def pin_status(self):
+        c = {"todo": 0, "done": 0, "skip": 0}
+        for pin in self.pins:
+            c[pin["state"]] += 1
+        return c
+
+    def _pin_message(self):
+        c = self.pin_status()
+        if self.pin_index is not None:
+            pin = self.pins[self.pin_index]
+            return (f"หมุดโซน {pin['l']} ({self.pin_index + 1}/{len(self.pins)}) — คลิกตำแหน่งเดียวกันบนภาพโดรน หรือกด ข้ามหมุดนี้  "
+                    f"[ใส่แล้ว {c['done']} · ข้าม {c['skip']} · เหลือ {c['todo']}]")
+        return f"หมุดโซนครบแล้ว — ใส่ {c['done']} · ข้าม {c['skip']}" if self.pins else "ยังไม่มีหมุดโซน"
+
+    def place_pin(self, x, y):
+        """The current pin is where the user clicked on the drone picture: a pair (video side = the zone corner from the file)."""
+        if self.pin_index is None:
+            self.msg_var.set(self._pin_message())
+            return False
+        pin = self.pins[self.pin_index]
+        self.add_pair(pin["p"], (float(x), float(y)), label=pin["l"].split("=")[0])
+        pin["state"] = "done"
+        self.skipped_saved.discard(pin["l"].split("=")[0])
+        self._next_pin(self.pin_index + 1)
+        self.msg_var.set(self._pin_message())
+        return True
+
+    def skip_pin(self):
+        if self.pin_index is None:
+            return False
+        pin = self.pins[self.pin_index]
+        pin["state"] = "skip"
+        self.skipped_saved.add(pin["l"].split("=")[0])
+        self._next_pin(self.pin_index + 1)
+        self.msg_var.set(self._pin_message())
+        self.refresh_all()
+        return True
+
+    def goto_pin(self, step):
+        """Move to the next / previous pin that is not done (a skipped pin can be taken up again)."""
+        n = len(self.pins)
+        if not n:
+            return False
+        j = self.pin_index if self.pin_index is not None else 0
+        for _ in range(n):
+            j = (j + step) % n
+            if self.pins[j]["state"] != "done":
+                self.pin_index = j
+                self.pins[j]["state"] = "todo"
+                self.skipped_saved.discard(self.pins[j]["l"].split("=")[0])
+                break
+        self.msg_var.set(self._pin_message())
+        self.refresh_all()
+        return True
+
+    def pick_pin_near(self, x, y, radius_px=20.0):
+        """A click on the video picture in the pin mode picks the nearest pin that is not done."""
+        k = self.vpane.view[0] if self.vpane.view else 1.0
+        best = None
+        for j, pin in enumerate(self.pins):
+            d = math.hypot(pin["p"][0] - x, pin["p"][1] - y) * k
+            if pin["state"] != "done" and d <= radius_px and (best is None or d < best[0]):
+                best = (d, j)
+        if best is None:
+            return False
+        self.pin_index = best[1]
+        self.pins[best[1]]["state"] = "todo"
+        self.skipped_saved.discard(self.pins[best[1]]["l"].split("=")[0])
+        self.msg_var.set(self._pin_message())
+        self.refresh_all()
+        return True
+
+    def set_mode_pins(self):
+        self.mode_var.set("pins")
+        if not self.pins:
+            self.load_zone_pins()
+        self.msg_var.set(self._pin_message())
+        self.refresh_all()
+
+    # ----- pairs -----
+    def click_video(self, x, y):
+        if self.mode_var.get() == "pins":
+            if not self.pick_pin_near(x, y):
+                self.msg_var.set(self._pin_message())
+            return
+        if self.mode_var.get() != "pairs":
+            self.msg_var.set("โหมดนี้คลิกบนภาพโดรน (ขวา) — เปลี่ยนเป็น 'คู่จุด' เพื่อคลิกภาพวิดีโอ")
+            return
+        self.pending = (float(x), float(y))
+        self.msg_var.set(f"จุดวิดีโอ #{len(self.pairs) + 1} แล้ว — คลิกจุดเดียวกันในภาพโดรน (ขวา)")
+        self.refresh_all()
+
+    def click_drone(self, x, y):
+        mode = self.mode_var.get()
+        if mode == "pins":
+            self.place_pin(x, y)
+            self.refresh_all()
+            return
+        if mode == "pairs":
+            if self.pending is None:
+                self.msg_var.set("คลิกจุดในภาพวิดีโอ (ซ้าย) ก่อน แล้วคลิกจุดเดียวกันในภาพโดรน")
+                return
+            self.add_pair(self.pending, (float(x), float(y)))
+            self.pending = None
+        else:
+            self.mode_points.append((float(x), float(y)))
+            if len(self.mode_points) == 2 and mode == "measure":
+                a, b = self.mode_points
+                self.mode_points = []
+                if self._read_scale() or self.scale > 0:
+                    self.msg_var.set(f"ระยะระหว่างสองจุดบนภาพโดรน = {math.hypot(b[0] - a[0], b[1] - a[1]) * self.scale:.2f} เมตร (ตามสเกลที่ตั้ง) — เทียบกับความยาวจริงที่รู้")
+                else:
+                    self.msg_var.set("ตั้งสเกลก่อน")
+            elif len(self.mode_points) == 2:
+                a, b = self.mode_points
+                self.mode_points = []
+                if mode == "scale":
+                    L = simpledialog.askfloat("สเกลภาพโดรน", "ความยาวจริงระหว่างสองจุดที่คลิก (เมตร):", parent=self.top, minvalue=0.001)
+                    if L:
+                        self.set_scale_from_points(a, b, L)
+                else:
+                    self.set_road_direction(a, b)
+                self.mode_var.set("pairs")
+            else:
+                self.msg_var.set("คลิกจุดที่สองบนภาพโดรน")
+        self.refresh_all()
+
+    def add_pair(self, s_pt, d_pt, label=None):
+        self.pairs.append({"s": tuple(float(v) for v in s_pt), "d": tuple(float(v) for v in d_pt), **({"l": label} if label else {})})
+        self.msg_var.set(f"คู่ที่ {len(self.pairs)} แล้ว")
+        self.refresh_all()
+
+    def delete_pair(self, index=None):
+        if index is None:
+            sel = self.tree.selection()
+            index = int(self.tree.item(sel[0], "values")[0]) - 1 if sel else len(self.pairs) - 1
+        if 0 <= index < len(self.pairs):
+            gone = self.pairs.pop(index)
+            for j, pin in enumerate(self.pins):                       # a deleted zone-corner pair: that pin is waiting again
+                if gone.get("l") and pin["l"].split("=")[0] == gone["l"]:
+                    pin["state"] = "todo"
+                    if self.pin_index is None:
+                        self.pin_index = j
+        self.selected = None
+        self.refresh_all()
+
+    def worst_index(self):
+        """The pair with the largest leave-one-out error (the largest fit error when leave-one-out is not possible yet), or None."""
+        rep = self.report
+        if not rep or "error" in rep:
+            return None
+        vals = rep["loo_u"] if rep.get("loo_u") else rep["residuals_u"]
+        return int(np.argmax(vals)) if vals else None
+
+    def delete_worst(self):
+        i = self.worst_index()
+        if i is None:
+            return False
+        self.msg_var.set(f"ลบคู่ที่ {i + 1} (แย่สุด)")
+        self.delete_pair(i)
+        return True
+
+    def _on_select(self):
+        sel = self.tree.selection()
+        self.selected = (int(self.tree.item(sel[0], "values")[0]) - 1) if sel else None
+        self.vpane.refresh()
+        self.dpane.refresh()
+
+    def set_scale_from_points(self, a, b, length_m):
+        d = math.hypot(b[0] - a[0], b[1] - a[1])
+        if d <= 0 or length_m <= 0:
+            return False
+        self.scale = float(length_m) / d
+        self.scale_var.set(f"{self.scale:.6g}")
+        self.msg_var.set(f"สเกล = {self.scale:.5f} เมตรต่อพิกเซลโดรน")
+        return True
+
+    def set_road_direction(self, a, b):
+        """Turn the plane so that the main road (drone points a -> b) runs along +x."""
+        self.rot_deg = math.degrees(math.atan2(b[1] - a[1], b[0] - a[0]))
+        self.msg_var.set(f"ทิศถนนหลัก {self.rot_deg:.1f}° — หมุนให้ถนนเป็นแนวนอน")
+        return True
+
+    def set_kind(self, kind):
+        self.kind = kind
+        self.kind_var.set(ALIGN_KINDS[kind][1])
+        self.refresh_all()
+
+    def _read_scale(self):
+        try:
+            v = float(self.scale_var.get().strip())
+            if v > 0:
+                self.scale = v
+                return True
+        except ValueError:
+            pass
+        return False
+
+    # ----- numbers -----
+    def compute(self):
+        """Report of the chosen kind + the comparison of every kind that can be fitted. Units: metres when the scale is set, else drone pixels."""
+        self._read_scale()
+        unit = self.scale if self.scale > 0 else 1.0
+        if not self.pairs:
+            self.report = {"error": "ยังไม่มีคู่จุด"}
+            return self.report
+        src = np.array([q["s"] for q in self.pairs])
+        dst = np.array([q["d"] for q in self.pairs])
+        size = (self.video_img.shape[1], self.video_img.shape[0]) if self.video_img is not None else (1920, 1080)
+        rep = transform_report(self.kind, src, dst, size)
+        if "error" in rep:
+            self.report = rep
+            return rep
+        rep["unit"] = "m" if self.scale > 0 else "px"
+        rep["residuals_u"] = [v * unit for v in rep["residuals"]]
+        rep["loo_u"] = [v * unit for v in rep["loo"]] if rep["loo"] else None
+        rep["rms_u"] = rep["rms"] * unit
+        rep["loo_rms_u"] = rep["loo_rms"] * unit if rep["loo_rms"] is not None else None
+        rep["compare"] = []
+        for k in ALIGN_KINDS:
+            r = transform_report(k, src, dst, size)
+            if "error" not in r:
+                rep["compare"].append((k, r["rms"] * unit, r["loo_rms"] * unit if r["loo_rms"] is not None else None))
+        self.report = rep
+        return rep
+
+    def refresh_all(self):
+        if not getattr(self, "tree", None):
+            return
+        rep = self.compute()
+        self.tree.delete(*self.tree.get_children())
+        unit_txt = "ซม." if self.scale > 0 else "px"
+        mult = 100.0 if self.scale > 0 else 1.0
+        if "error" not in rep:
+            key_vals = rep["loo_u"] if rep["loo_u"] else rep["residuals_u"]
+            order = sorted(range(len(self.pairs)), key=lambda j: -key_vals[j])                    # the most doubtful pair first
+            med = float(np.median(key_vals)) if key_vals else 0.0
+            limit = max(0.30 if self.scale > 0 else 15.0, 2.0 * med)
+            for i in order:
+                loo = rep["loo_u"][i] * mult if rep["loo_u"] else None
+                self.tree.insert("", "end", values=(i + 1, f"{rep['residuals_u'][i] * mult:.1f}", "-" if loo is None else f"{loo:.1f}", self.pairs[i].get("l", "-")),
+                                 tags=(("bad",) if key_vals[i] > limit else ()))
+            lines = [f"ชนิด: {ALIGN_KINDS[self.kind][1]} · {len(self.pairs)} คู่ · คลาดเฉลี่ย {rep['rms_u'] * mult:.1f} {unit_txt}"
+                     + (f" · เว้นจุดตรวจ {rep['loo_rms_u'] * mult:.1f} {unit_txt}" if rep["loo_rms_u"] is not None else " · (ยังไม่พอจะตรวจแบบเว้นจุด)")]
+            if rep["loo_rms_u"] is not None and rep["loo_rms_u"] > 3.0 * max(rep["rms_u"], 1e-9) and rep["loo_rms_u"] * mult > 3:
+                lines.append("⚠ ค่าเว้นจุดตรวจสูงกว่าค่าที่พอดีมาก = ชนิดนี้ซับซ้อนเกินจำนวนจุด (ตามจุดแต่ผิดระหว่างจุด) — เพิ่มจุด หรือเลือกชนิดที่ง่ายกว่า")
+            worst3 = sorted(range(len(self.pairs)), key=lambda j: -key_vals[j])[:3]
+            lines.append("คู่ที่น่าสงสัยสุด (ซูมตรวจ คลิกใหม่ หรือลบ): " + ", ".join(
+                f"#{j + 1} ({key_vals[j] * mult:.0f} {unit_txt})" for j in worst3))
+            lines.append("เทียบทุกชนิด (คลาดเฉลี่ย / เว้นจุดตรวจ):")
+            for k, a, b in rep["compare"]:
+                mark = "  ◀ ใช้อยู่" if k == self.kind else ""
+                lines.append(f"  {ALIGN_KINDS[k][1]}: {a * mult:.1f} / " + ("-" if b is None else f"{b * mult:.1f}") + f" {unit_txt}{mark}")
+            if self.scale <= 0:
+                lines.append("ยังไม่ได้ตั้งสเกลของภาพโดรน (เมตรต่อพิกเซล) — ตั้งก่อนกด ใช้ค่านี้")
+        else:
+            lines = [rep["error"]]
+        self.report_text.config(state="normal")
+        self.report_text.delete("1.0", "end")
+        self.report_text.insert("end", "\n".join(lines))
+        self.report_text.config(state="disabled")
+        self.vpane.refresh()
+        self.dpane.refresh()
+
+    # ----- overlays -----
+    def _draw_video(self, out, pane):
+        for j, pin in enumerate(self.pins):                          # the zone corners: a hollow square = still to do, filled = done, grey = skipped
+            pp = pane.to_view(*pin["p"])
+            col = {"todo": (0, 220, 255), "done": (60, 200, 60), "skip": (150, 150, 150)}[pin["state"]]
+            cv2.rectangle(out, (pp[0] - 4, pp[1] - 4), (pp[0] + 4, pp[1] + 4), col, -1 if pin["state"] == "done" else 1)
+            if j == self.pin_index:
+                cv2.circle(out, pp, 15, (0, 255, 255), 3, cv2.LINE_AA)
+                cv2.putText(out, pin["l"], (pp[0] + 16, pp[1] - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2, cv2.LINE_AA)
+        for i, q in enumerate(self.pairs):
+            p = pane.to_view(*q["s"])
+            if i == self.selected:
+                cv2.circle(out, p, 14, (0, 255, 255), 2, cv2.LINE_AA)
+            cv2.circle(out, p, 6, (0, 140, 255), -1, cv2.LINE_AA)
+            cv2.putText(out, str(i + 1), (p[0] + 8, p[1] - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 200, 255), 2, cv2.LINE_AA)
+        if self.pending is not None:
+            p = pane.to_view(*self.pending)
+            cv2.circle(out, p, 9, (0, 255, 255), 2, cv2.LINE_AA)
+
+    def _draw_drone(self, out, pane):
+        rep = self.report if (self.report and "error" not in self.report) else None
+        for i, q in enumerate(self.pairs):
+            p = pane.to_view(*q["d"])
+            if rep:                                                  # where the transformation puts the video point: the gap is the error
+                try:
+                    m_ = apply_transform(rep["model"], np.array([q["s"]]))[0]
+                    pm = pane.to_view(*m_)
+                    cv2.line(out, p, pm, (0, 0, 255), 1, cv2.LINE_AA)
+                    cv2.drawMarker(out, pm, (0, 0, 255), cv2.MARKER_CROSS, 9, 1, cv2.LINE_AA)
+                except Exception:
+                    pass
+            if i == self.selected:
+                cv2.circle(out, p, 14, (0, 255, 255), 2, cv2.LINE_AA)
+            cv2.circle(out, p, 6, (0, 255, 0), -1, cv2.LINE_AA)
+            cv2.putText(out, str(i + 1), (p[0] + 8, p[1] - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2, cv2.LINE_AA)
+        for q in self.mode_points:
+            cv2.circle(out, pane.to_view(*q), 7, (255, 0, 255), 2, cv2.LINE_AA)
+
+    # ----- window -----
+    def _build(self):
+        top = self.top
+        ttk.Label(top, text=("1) เลือกภาพ/วิดีโอโดรน  2) คลิกจุดบนพื้นถนนในภาพวิดีโอ (ซ้าย) แล้วคลิกจุดเดียวกันในภาพโดรน (ขวา) = 1 คู่ "
+                             "(มุมทางม้าลาย ปลายขีดเส้นประ มุมขอบทาง ฝาท่อ — ไม่ใช่ตึก/ต้นไม้)  3) ตั้งสเกลภาพโดรน (วัดจากความยาวจริง)  "
+                             "4) เลือกชนิดการแปลง ดูความคลาด แล้วกด ใช้ค่านี้  ·  ล้อเมาส์ = ซูม · ลาก = เลื่อนภาพ"), wraplength=1440, justify="left").pack(anchor="w", padx=8, pady=(6, 2))
+        bar0 = ttk.Frame(top)
+        bar0.pack(fill="x", padx=8, pady=(0, 2))
+        ttk.Label(bar0, text="วิดีโอข้างทาง").pack(side="left")
+        ttk.Entry(bar0, textvariable=self.vpath_var, width=90, state="readonly").pack(side="left", padx=4)
+        ttk.Button(bar0, text="เปลี่ยนวิดีโอ…", command=self.change_video).pack(side="left")
+        bar = ttk.Frame(top)
+        bar.pack(fill="x", padx=8)
+        ttk.Label(bar, text="เฟรมวิดีโอ").pack(side="left")
+        ttk.Entry(bar, textvariable=self.frame_var, width=7).pack(side="left", padx=4)
+        ttk.Button(bar, text="โหลด", command=lambda: self.load_video_frame(self.frame_var.get() or None) and self.refresh_all()).pack(side="left", padx=(0, 18))
+        ttk.Label(bar, text="ภาพ/วิดีโอโดรน").pack(side="left")
+        ttk.Entry(bar, textvariable=self.dpath_var, width=48).pack(side="left", padx=4)
+        ttk.Button(bar, text="เลือก…", command=self.choose_drone).pack(side="left")
+        ttk.Label(bar, text="เฟรม (ถ้าเป็นวิดีโอ)").pack(side="left", padx=(10, 2))
+        ttk.Entry(bar, textvariable=self.dframe_var, width=6).pack(side="left")
+        ttk.Button(bar, text="โหลด", command=lambda: self.load_drone(self.dpath_var.get(), self.dframe_var.get() or None) and self.refresh_all()).pack(side="left", padx=4)
+        panes = ttk.Frame(top)
+        panes.pack(fill="both", expand=True, padx=8, pady=4)
+        panes.columnconfigure(0, weight=1)
+        panes.columnconfigure(1, weight=1)
+        panes.rowconfigure(1, weight=1)
+        ttk.Label(panes, text="วิดีโอข้างทาง (จุดต้นทาง)").grid(row=0, column=0, sticky="w")
+        ttk.Label(panes, text="ภาพโดรน (จุดปลายทาง)").grid(row=0, column=1, sticky="w")
+        self.vpane = _ZoomPane(panes, 700, 380, self.click_video, self._draw_video)
+        self.vpane.canvas.grid(row=1, column=0, sticky="nsew", padx=(0, 4))
+        self.dpane = _ZoomPane(panes, 700, 380, self.click_drone, self._draw_drone)
+        self.dpane.canvas.grid(row=1, column=1, sticky="nsew", padx=(4, 0))
+        low = ttk.Frame(top)
+        low.pack(fill="x", padx=8, pady=(0, 4))
+        left = ttk.Frame(low)
+        left.pack(side="left", fill="y")
+        ttk.Label(left, text="ชนิดการแปลง").grid(row=0, column=0, sticky="w")
+        cb = ttk.Combobox(left, textvariable=self.kind_var, values=[v[1] for v in ALIGN_KINDS.values()], state="readonly", width=46)
+        cb.grid(row=0, column=1, columnspan=3, sticky="w", padx=4)
+        cb.bind("<<ComboboxSelected>>", lambda e: self.set_kind(next(k for k, v in ALIGN_KINDS.items() if v[1] == self.kind_var.get())))
+        ttk.Label(left, text="สเกลภาพโดรน (ม./พิกเซล)").grid(row=1, column=0, sticky="w", pady=2)
+        ent = ttk.Entry(left, textvariable=self.scale_var, width=12)
+        ent.grid(row=1, column=1, sticky="w", padx=4)
+        ent.bind("<KeyRelease>", lambda e: self.refresh_all())
+        ttk.Radiobutton(left, text="คู่จุด", variable=self.mode_var, value="pairs").grid(row=2, column=0, sticky="w")
+        ttk.Radiobutton(left, text="วัดสเกล (คลิก 2 จุดบนภาพโดรน แล้วใส่ความยาว)", variable=self.mode_var, value="scale").grid(row=2, column=1, columnspan=3, sticky="w")
+        ttk.Radiobutton(left, text="ทิศถนนหลัก (คลิก 2 จุดตามถนน ซ้าย→ขวา)", variable=self.mode_var, value="road").grid(row=3, column=1, columnspan=3, sticky="w")
+        ttk.Button(left, text="ลบคู่ที่เลือก", command=self.delete_pair).grid(row=4, column=0, pady=4, sticky="w")
+        ttk.Button(left, text="ใช้ค่านี้", command=self.apply).grid(row=4, column=1, padx=4, sticky="w")
+        ttk.Button(left, text="ปิด", command=self.close).grid(row=4, column=2, sticky="w")
+        ttk.Button(left, text="ลบคู่ที่แย่สุด", command=self.delete_worst).grid(row=5, column=0, pady=2, sticky="w")
+        ttk.Radiobutton(left, text="วัดระยะทดสอบ (คลิก 2 จุดบนภาพโดรน)", variable=self.mode_var, value="measure").grid(row=5, column=1, columnspan=3, sticky="w")
+        ttk.Radiobutton(left, text="หมุดโซน (ไล่ทีละหมุด)", variable=self.mode_var, value="pins", command=self.set_mode_pins).grid(row=6, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        pinbar = ttk.Frame(left)
+        pinbar.grid(row=6, column=2, columnspan=2, sticky="w", pady=(4, 0))
+        ttk.Button(pinbar, text="◀", width=3, command=lambda: self.goto_pin(-1)).pack(side="left")
+        ttk.Button(pinbar, text="ข้ามหมุดนี้", command=self.skip_pin).pack(side="left", padx=3)
+        ttk.Button(pinbar, text="▶", width=3, command=lambda: self.goto_pin(1)).pack(side="left")
+        self.tree = ttk.Treeview(low, columns=("n", "res", "loo", "lab"), show="headings", height=14)
+        for col, text, w in (("n", "คู่", 40), ("res", "คลาด (ซม.)", 90), ("loo", "เว้นจุด (ซม.)", 100), ("lab", "หมุดโซน", 70)):
+            self.tree.heading(col, text=text)
+            self.tree.column(col, width=w, anchor="center")
+        self.tree.tag_configure("bad", foreground="#c00000")
+        self.tree.bind("<<TreeviewSelect>>", lambda e: self._on_select())
+        tsb = ttk.Scrollbar(low, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=tsb.set)
+        self.tree.pack(side="left", padx=(10, 0), fill="y")
+        tsb.pack(side="left", fill="y", padx=(0, 10))
+        self.report_text = tk.Text(low, height=14, width=70, wrap="word", state="disabled")
+        self.report_text.pack(side="left", fill="both", expand=True)
+        tk.Label(top, textvariable=self.msg_var, anchor="w", foreground="#a00").pack(fill="x", padx=8)
+
+    def apply(self):
+        rep = self.compute()
+        if "error" in rep:
+            messagebox.showerror("จัดแนวกับภาพโดรน", rep["error"], parent=self.top)
+            return False
+        if self.scale <= 0:
+            messagebox.showerror("จัดแนวกับภาพโดรน", "ตั้งสเกลภาพโดรนก่อน (วัดสเกล: คลิก 2 จุดบนภาพโดรน แล้วใส่ความยาวจริง)", parent=self.top)
+            return False
+        data = {"pairs": [{"s": list(q["s"]), "d": list(q["d"]), **({"l": q["l"]} if q.get("l") else {})} for q in self.pairs],
+                "skipped": sorted(self.skipped_saved), "kind": self.kind, "scale": self.scale, "rot_deg": self.rot_deg,
+                "origin": list(self.pairs[0]["d"]), "video_size": [self.video_img.shape[1], self.video_img.shape[0]],
+                "video_frame": self.frame_var.get(), "drone": {"path": self.drone_path, "frame": self.dframe_var.get()},
+                "info": {"rms_m": rep["rms_u"], "loo_rms_m": rep["loo_rms_u"], "unit": rep["unit"]}}
+        cfg = align_build(data)
+        if "error" in cfg:
+            messagebox.showerror("จัดแนวกับภาพโดรน", cfg["error"], parent=self.top)
+            return False
+        self.on_apply(data)
+        self.close()
+        return True
+
+    def close(self):
+        try:
+            self.top.destroy()
+        except tk.TclError:
+            pass
+
+
+class ZoneAlignEditor:
+    """Edit the zone corners on three views at once - the VIDEO, the DRONE picture and the X-Y plane in metres - all updating live.
+    Drag a corner in any of them; the corners shared by neighbouring zones move together. Helpers like the zone editor of PK Studio:
+    Shift while dragging = the edge from the previous corner stays PERPENDICULAR to the one before it, snap to the corners and edges of
+    the other zones, undo / redo. "ทำให้ตั้งฉาก" makes the cross-road edges vertical in the plane at once. The video position of a moved
+    corner is computed back from where it was put (the inverse of the Align transformation). The result is saved as a NEW zone file."""
+
+    HIT_PX = 14
+
+    def __init__(self, app, video_path, data, cfg, on_saved=None):
+        self.app, self.video_path, self.cfg, self.data, self.on_saved = app, video_path, cfg, data, on_saved
+        self.video_img = read_picture_any(video_path, data.get("video_frame") or None)
+        drone = data.get("drone") or {}
+        self.drone_img = read_picture_any(drone.get("path"), drone.get("frame") or None)
+        self.names = [z for z in ZONE_NAMES if len(app.zones.get(z, [])) >= 3]
+        self.zones = {z: [[float(x), float(y)] for x, y in app.zones[z]] for z in self.names}
+        self.orig = {z: [list(q) for q in pts] for z, pts in self.zones.items()}
+        self.group_pos, self.group_of, self.members = {}, {}, {}
+        for z in self.names:                                       # corners of neighbouring zones at the same spot are one corner
+            for i, (x, y) in enumerate(self.zones[z]):
+                for gid, (gx, gy) in self.group_pos.items():
+                    if math.hypot(gx - x, gy - y) <= 8.0:                    # (hand-drawn neighbours rarely meet to the pixel)
+                        self.group_of[(z, i)] = gid
+                        self.members[gid].append((z, i))
+                        break
+                else:
+                    gid = len(self.group_pos)
+                    self.group_pos[gid] = (x, y)
+                    self.group_of[(z, i)] = gid
+                    self.members[gid] = [(z, i)]
+        self.undo_stack, self.redo_stack = [], []
+        self.drag = None
+        self.selected_zone = None
+        self.selected_group = None
+        self.top = tk.Toplevel(app.root)
+        self.top.title("แก้รูปโซนบนภาพโดรน / ผัง X–Y (3 มุมมองพร้อมกัน)")
+        sw, sh = self.top.winfo_screenwidth(), self.top.winfo_screenheight()
+        self.top.geometry(f"{min(1560, sw - 30)}x{min(940, sh - 80)}+10+10")
+        self.top.protocol("WM_DELETE_WINDOW", self.close)
+        self.top.dialog = self
+        self.msg_var = tk.StringVar(value="")
+        self.snap_var = tk.BooleanVar(value=True)
+        self.len_var = tk.BooleanVar(value=True)                  # write the real length (metres) of every edge on the pictures
+        self.snap_cm_var = tk.StringVar(value="25")
+        self.level_var = tk.BooleanVar(value=False)
+        self.vpath_var = tk.StringVar(value=video_path)
+        self._setup_plan()
+        self._build()
+        self.vpane.set_image(self.video_img if self.video_img is not None else np.full((720, 1280, 3), 60, np.uint8))
+        self.dpane.set_image(self.drone_img if self.drone_img is not None else np.full((720, 1280, 3), 60, np.uint8))
+        self.ppane.set_image(self.plan_img)
+        self.refresh_all()
+
+    def change_video(self, path=None):
+        """Another roadside video (from the clip list or a file) as the left picture; the zones keep their pixel positions."""
+        path = path or choose_background_video(self.app, self.top, self.video_path)
+        if not path:
+            return False
+        img = read_picture_any(path, None)
+        if img is None:
+            self.msg_var.set("อ่านเฟรมจากวิดีโอนี้ไม่ได้")
+            return False
+        self.video_path, self.video_img = path, img
+        self.vpath_var.set(path)
+        self.app.edit_video = path
+        self.vpane.set_image(img)
+        self.refresh_all(report=False)
+        return True
+
+    # ----- geometry -----
+    def _vpts(self, z):
+        return np.asarray(self.zones[z], dtype=float)
+
+    def plan_of(self, vpts):
+        return align_apply(self.cfg, np.asarray(vpts, dtype=float).reshape(-1, 2))
+
+    def drone_of(self, vpts):
+        return apply_transform(self.cfg["model"], np.asarray(vpts, dtype=float).reshape(-1, 2))
+
+    def drone_to_plane(self, d):
+        v = (np.asarray(d, dtype=float).reshape(-1, 2) - np.array(self.cfg["origin"])) * self.cfg["scale"]
+        th = math.radians(self.cfg["rot_deg"])
+        c, s_ = math.cos(th), math.sin(th)
+        return np.stack([v[:, 0] * c + v[:, 1] * s_, -v[:, 0] * s_ + v[:, 1] * c], axis=1)
+
+    def _setup_plan(self):
+        allp = np.vstack([self.plan_of(self._vpts(z)) for z in self.names])
+        lo, hi = allp.min(axis=0) - 6.0, allp.max(axis=0) + 6.0
+        self.scale_px = 40.0
+        self.pxmin = lo
+        w, h = int((hi[0] - lo[0]) * self.scale_px), int((hi[1] - lo[1]) * self.scale_px)
+        img = np.full((h, w, 3), 38, np.uint8)
+        for x in range(int(math.ceil(lo[0])), int(hi[0]) + 1):
+            px = int((x - lo[0]) * self.scale_px)
+            cv2.line(img, (px, 0), (px, h - 1), (90, 90, 90) if x % 5 == 0 else (55, 55, 55), 1)
+            if x % 5 == 0:
+                cv2.putText(img, f"{x}", (px + 3, h - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
+        for y in range(int(math.ceil(lo[1])), int(hi[1]) + 1):
+            py = int((y - lo[1]) * self.scale_px)
+            cv2.line(img, (0, py), (w - 1, py), (90, 90, 90) if y % 5 == 0 else (55, 55, 55), 1)
+            if y % 5 == 0:
+                cv2.putText(img, f"{y}", (4, py - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
+        self.plan_img = img
+
+    def plan_to_px(self, plan):
+        return (np.asarray(plan, dtype=float).reshape(-1, 2) - self.pxmin) * self.scale_px
+
+    def px_to_plan(self, px):
+        return np.asarray(px, dtype=float).reshape(-1, 2) / self.scale_px + self.pxmin
+
+    def pane_xy(self, pane, vpts):
+        """Video pixels of some points -> where they are in that picture (video / drone / plan pixels)."""
+        if pane == "video":
+            return np.asarray(vpts, dtype=float).reshape(-1, 2)
+        if pane == "drone":
+            return self.drone_of(vpts)
+        return self.plan_to_px(self.plan_of(vpts))
+
+    def group_video(self, gid):
+        z, i = self.members[gid][0]
+        return np.array(self.zones[z][i], dtype=float)
+
+    def group_plan(self, gid):
+        return self.plan_of(self.group_video(gid))[0]
+
+    # ----- moving corners -----
+    def set_group_plan(self, gid, plan_xy):
+        v = align_plane_to_video(self.cfg, np.asarray(plan_xy, dtype=float).reshape(-1, 2), self.group_video(gid).reshape(1, 2))[0]
+        for z, i in self.members[gid]:
+            self.zones[z][i] = [float(v[0]), float(v[1])]
+
+    def _snap_target(self, gid, plan_xy):
+        """The plan position after snapping to the corners / edges of the other zones (a radius in cm) when 'snap' is ticked."""
+        if not self.snap_var.get():
+            return plan_xy
+        try:
+            radius = max(0.0, float(self.snap_cm_var.get())) / 100.0
+        except ValueError:
+            radius = 0.25
+        best, best_d = None, radius
+        mine = {z for z, _ in self.members[gid]}
+        for g2 in self.members:
+            if g2 == gid:
+                continue
+            q = self.group_plan(g2)
+            d = float(np.hypot(*(q - plan_xy)))
+            if d < best_d:
+                best, best_d = q, d
+        for z in self.names:
+            if z in mine:
+                continue
+            pts = self.plan_of(self._vpts(z))
+            for i in range(len(pts)):
+                a, b = pts[i], pts[(i + 1) % len(pts)]
+                ab = b - a
+                den = float(ab @ ab)
+                if den < 1e-12:
+                    continue
+                t = max(0.0, min(1.0, float((plan_xy - a) @ ab) / den))
+                q = a + t * ab
+                d = float(np.hypot(*(q - plan_xy)))
+                if d < best_d:
+                    best, best_d = q, d
+        return plan_xy if best is None else best
+
+    def _shift_perpendicular(self, gid, plan_xy):
+        """Shift: the edge from the previous corner of the dragged corner is made perpendicular to the edge before it."""
+        z, i = self.members[gid][0]
+        pts = self.plan_of(self._vpts(z))
+        n = len(pts)
+        if n < 3:
+            return plan_xy
+        prev, prev2 = pts[(i - 1) % n], pts[(i - 2) % n]
+        ang = math.atan2(prev[1] - prev2[1], prev[0] - prev2[0])
+        length = float(np.hypot(*(plan_xy - prev)))
+        cands = [prev + length * np.array([math.cos(ang + sgn * math.pi / 2), math.sin(ang + sgn * math.pi / 2)]) for sgn in (1, -1)]
+        return min(cands, key=lambda q: float(np.hypot(*(q - plan_xy))))
+
+    def move_group_to(self, gid, plan_xy, shift=False):
+        p = np.asarray(plan_xy, dtype=float)
+        if shift:
+            p = self._shift_perpendicular(gid, p)
+        self.set_group_plan(gid, self._snap_target(gid, p))
+
+    # ----- undo -----
+    def _snapshot(self):
+        return {z: [list(q) for q in pts] for z, pts in self.zones.items()}
+
+    def _push_undo(self):
+        self.undo_stack.append(self._snapshot())
+        self.redo_stack = []
+
+    def undo(self):
+        if not self.undo_stack:
+            return False
+        self.redo_stack.append(self._snapshot())
+        self.zones = self.undo_stack.pop()
+        self.refresh_all()
+        return True
+
+    def redo(self):
+        if not self.redo_stack:
+            return False
+        self.undo_stack.append(self._snapshot())
+        self.zones = self.redo_stack.pop()
+        self.refresh_all()
+        return True
+
+    def reset(self):
+        self._push_undo()
+        self.zones = {z: [list(q) for q in pts] for z, pts in self.orig.items()}
+        self.refresh_all()
+
+    # ----- automatic: cross-road edges vertical -----
+    def make_perpendicular(self, only_selected=False):
+        names = [self.selected_zone] if (only_selected and self.selected_zone in self.zones) else list(self.names)
+        plan = {z: np.array([self.group_plan(self.group_of[(z, i)]) for i in range(len(self.zones[z]))]) for z in names}      # shared corners = one place
+        new, rep = perpendicularize_zones(plan, horizontal_too=bool(self.level_var.get()))
+        self._push_undo()
+        for z in names:
+            for i in range(len(new[z])):
+                self.set_group_plan(self.group_of[(z, i)], new[z][i])
+        self.msg_var.set(f"ทำให้ตั้งฉากแล้ว: จัด {rep['edges_fixed']} ขอบ ขยับมากสุด {rep['moved_max_m'] * 100:.0f} ซม.")
+        self.refresh_all()
+        return rep
+
+    # ----- the pictures -----
+    def _draw(self, out, pane_name, pane):
+        meta = getattr(self.app, "zone_meta", {})
+        for z in self.names:
+            pts = self.pane_xy(pane_name, self._vpts(z))
+            vp = np.array([pane.to_view(*q) for q in pts], dtype=np.int32)
+            try:
+                col = tuple(int(v) for v in meta.get(z, {}).get("color_bgr", [0, 200, 0])[:3])
+            except Exception:
+                col = (0, 200, 0)
+            cv2.polylines(out, [vp.reshape(-1, 1, 2)], True, col, 3 if z == self.selected_zone else 2, cv2.LINE_AA)
+            c = vp.mean(axis=0).astype(int)
+            cv2.putText(out, z.replace("Zone ", "Z"), (int(c[0]) - 8, int(c[1]) + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, col, 2, cv2.LINE_AA)
+        if self.len_var.get():                                      # the length of every edge in metres (an edge two zones share is written once)
+            done = set()
+            for z in self.names:
+                plan_pts = self.plan_of(self._vpts(z))
+                pane_pts = self.pane_xy(pane_name, self._vpts(z))
+                n = len(plan_pts)
+                for i in range(n):
+                    a, b = plan_pts[i], plan_pts[(i + 1) % n]
+                    key = frozenset((tuple(np.round(a / 0.05).astype(int)), tuple(np.round(b / 0.05).astype(int))))
+                    if key in done:
+                        continue
+                    done.add(key)
+                    length = float(np.hypot(*(b - a)))
+                    va, vb = pane.to_view(*pane_pts[i]), pane.to_view(*pane_pts[(i + 1) % n])
+                    mid = ((va[0] + vb[0]) // 2 - 12, (va[1] + vb[1]) // 2 - 4)
+                    text = f"{length:.1f}m"
+                    cv2.putText(out, text, mid, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 3, cv2.LINE_AA)
+                    cv2.putText(out, text, mid, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+        for gid in self.members:
+            q = pane.to_view(*self.pane_xy(pane_name, self.group_video(gid).reshape(1, 2))[0])
+            hot = gid == self.selected_group
+            cv2.circle(out, q, 7 if hot else 5, (0, 0, 255) if hot else (255, 255, 255), -1, cv2.LINE_AA)
+            cv2.circle(out, q, 7 if hot else 5, (0, 0, 0), 1, cv2.LINE_AA)
+
+    # ----- mouse -----
+    def _on_press(self, pane_name):
+        def handler(ix, iy, ex, ey):
+            pane = {"video": self.vpane, "drone": self.dpane, "plan": self.ppane}[pane_name]
+            best, best_d = None, float(self.HIT_PX)
+            for gid in self.members:
+                q = pane.to_view(*self.pane_xy(pane_name, self.group_video(gid).reshape(1, 2))[0])
+                d = math.hypot(q[0] - ex, q[1] - ey)
+                if d <= best_d:
+                    best, best_d = gid, d
+            if best is None:
+                return False
+            self._push_undo()
+            self.drag = {"gid": best, "pane": pane_name}
+            self.selected_group = best
+            z0 = self.members[best][0][0]
+            self.selected_zone = z0
+            return True
+        return handler
+
+    def _on_drag(self, pane_name):
+        def handler(ix, iy):
+            if not self.drag:
+                return
+            pane = {"video": self.vpane, "drone": self.dpane, "plan": self.ppane}[pane_name]
+            if pane_name == "video":
+                plan = self.plan_of(np.array([[ix, iy]]))[0]
+            elif pane_name == "drone":
+                plan = self.drone_to_plane(np.array([[ix, iy]]))[0]
+            else:
+                plan = self.px_to_plan(np.array([[ix, iy]]))[0]
+            self.move_group_to(self.drag["gid"], plan, shift=pane.shift)
+            self.refresh_all(report=False)
+        return handler
+
+    def _on_release(self):
+        self.drag = None
+        self.refresh_all()
+
+    # ----- report / window -----
+    def report_text(self):
+        lines = []
+        for z in self.names:
+            p = self.plan_of(self._vpts(z))
+            n = len(p)
+            parts = []
+            for i in range(n):
+                d = p[(i + 1) % n] - p[i]
+                length = float(np.hypot(*d))
+                ang = math.degrees(math.atan2(abs(d[1]), abs(d[0])))
+                tag = f" (เอียง {90.0 - ang:.0f}°)" if ang >= 55.0 and abs(90.0 - ang) >= 1.0 else ""
+                parts.append(f"{i + 1}→{(i + 1) % n + 1} {length:.1f}{tag}")
+            lines.append(f"{z}: " + " · ".join(parts))
+        return "ความยาวขอบโซน (เมตร) และขอบตัดขวางที่เอียงจากแนวตั้ง:\n" + "\n".join(lines)
+
+    def _build(self):
+        top = self.top
+        ttk.Label(top, text=("ลากมุมโซน (จุดขาว) ในภาพไหนก็ได้ — วิดีโอ | โดรน | ผัง X–Y อัปเดตพร้อมกัน; มุมที่โซนข้างเคียงใช้ร่วมกันขยับด้วยกัน · "
+                             "กด Shift ค้างตอนลาก = ขอบจากมุมก่อนหน้าตั้งฉากกับขอบก่อนนั้น · ติ๊ก ดูดติด = ดูดติดมุม/ขอบของโซนอื่น · "
+                             "ปุ่ม ทำให้ตั้งฉาก = ขอบตัดขวางถนนเป็นแนวตั้งในผังทีเดียว · ล้อเมาส์ = ซูม · ลากพื้นที่ว่าง = เลื่อนภาพ"),
+                  wraplength=1500, justify="left").pack(anchor="w", padx=8, pady=(6, 2))
+        bar0 = ttk.Frame(top)
+        bar0.pack(fill="x", padx=8, pady=(0, 2))
+        ttk.Label(bar0, text="วิดีโอข้างทาง").pack(side="left")
+        ttk.Entry(bar0, textvariable=self.vpath_var, width=90, state="readonly").pack(side="left", padx=4)
+        ttk.Button(bar0, text="เปลี่ยนวิดีโอ…", command=self.change_video).pack(side="left")
+        bar = ttk.Frame(top)
+        bar.pack(fill="x", padx=8)
+        ttk.Button(bar, text="ทำให้ตั้งฉาก (ทุกโซน)", command=lambda: self.make_perpendicular(False)).pack(side="left")
+        ttk.Button(bar, text="ทำให้ตั้งฉาก (โซนที่เลือก)", command=lambda: self.make_perpendicular(True)).pack(side="left", padx=4)
+        ttk.Checkbutton(bar, text="ทำขอบตามถนนให้เป็นแนวนอนด้วย", variable=self.level_var).pack(side="left", padx=8)
+        ttk.Checkbutton(bar, text="แสดงความยาวขอบ (เมตร)", variable=self.len_var, command=lambda: self.refresh_all(report=False)).pack(side="left", padx=(12, 2))
+        ttk.Checkbutton(bar, text="ดูดติดโซนอื่น", variable=self.snap_var).pack(side="left", padx=(12, 2))
+        ttk.Entry(bar, textvariable=self.snap_cm_var, width=4).pack(side="left")
+        ttk.Label(bar, text="ซม.").pack(side="left", padx=(2, 12))
+        ttk.Button(bar, text="↶ ย้อน", command=self.undo).pack(side="left")
+        ttk.Button(bar, text="↷ ทำซ้ำ", command=self.redo).pack(side="left", padx=4)
+        ttk.Button(bar, text="รีเซ็ตเป็นไฟล์เดิม", command=self.reset).pack(side="left", padx=4)
+        ttk.Button(bar, text="✅ ใช้โซนนี้ในการวิเคราะห์", command=self.use_for_analysis).pack(side="right")
+        ttk.Button(bar, text="บันทึกเป็นไฟล์โซนใหม่…", command=self.save_new_file).pack(side="right", padx=6)
+        ttk.Button(bar, text="ปิด", command=self.close).pack(side="right", padx=6)
+        panes = ttk.Frame(top)
+        panes.pack(fill="both", expand=True, padx=8, pady=4)
+        for c_ in range(3):
+            panes.columnconfigure(c_, weight=1)
+        panes.rowconfigure(1, weight=1)
+        for c_, t_ in enumerate(("วิดีโอข้างทาง", "ภาพโดรน", "ผัง X–Y (เมตร)")):
+            ttk.Label(panes, text=t_).grid(row=0, column=c_, sticky="w")
+        mk = lambda name: dict(on_press=self._on_press(name), on_drag=self._on_drag(name), on_release=self._on_release)
+        self.vpane = _ZoomPane(panes, 480, 420, lambda x, y: None, lambda o, p: self._draw(o, "video", p), **mk("video"))
+        self.dpane = _ZoomPane(panes, 480, 420, lambda x, y: None, lambda o, p: self._draw(o, "drone", p), **mk("drone"))
+        self.ppane = _ZoomPane(panes, 480, 420, lambda x, y: None, lambda o, p: self._draw(o, "plan", p), **mk("plan"))
+        for c_, pane in enumerate((self.vpane, self.dpane, self.ppane)):
+            pane.canvas.grid(row=1, column=c_, sticky="nsew", padx=2)
+        low = ttk.Frame(top)
+        low.pack(fill="x", padx=8, pady=(0, 4))
+        self.zone_list = tk.Listbox(low, height=7, exportselection=False, width=14)
+        for z in self.names:
+            self.zone_list.insert("end", z)
+        self.zone_list.bind("<<ListboxSelect>>", lambda e: self._on_list())
+        self.zone_list.pack(side="left", padx=(0, 8))
+        self.report = tk.Text(low, height=8, wrap="word", state="disabled")
+        self.report.pack(side="left", fill="x", expand=True)
+        tk.Label(top, textvariable=self.msg_var, anchor="w", foreground="#a00").pack(fill="x", padx=8)
+
+    def _on_list(self):
+        sel = self.zone_list.curselection()
+        self.selected_zone = self.names[sel[0]] if sel else None
+        self.refresh_all(report=False)
+
+    def refresh_all(self, report=True):
+        if not getattr(self, "report", None) or not self.top.winfo_exists():
+            return
+        for pane in (self.vpane, self.dpane, self.ppane):
+            pane.refresh()
+        if report:
+            self.report.config(state="normal")
+            self.report.delete("1.0", "end")
+            self.report.insert("end", self.report_text())
+            self.report.config(state="disabled")
+
+    # ----- save -----
+    def use_for_analysis(self):
+        """One click: write the edited zones to `<name>_aligned.json` beside the loaded zone file (the original stays) and make it the zone
+        file of the program - what the analysis, the previews and the X-Y outputs use from now on."""
+        src = str(self.app.zone_line_config_var.get() or "")
+        stem, ext = os.path.splitext(os.path.basename(src)) if src else ("zones", ".json")
+        if stem.endswith("_aligned"):
+            stem = stem[:-len("_aligned")]
+        folder = os.path.dirname(src) if src else os.path.dirname(self.video_path)
+        path = os.path.join(folder, f"{stem}_aligned.json")
+        try:
+            self.save_new_file(path, notify=False)
+            self.app._load_pkstudio_json(path)
+        except Exception as exc:
+            messagebox.showerror("ใช้โซนนี้ในการวิเคราะห์", str(exc), parent=self.top)
+            return None
+        self.msg_var.set(f"ใช้โซนที่แก้แล้วในการวิเคราะห์: {os.path.basename(path)}")
+        messagebox.showinfo("ใช้โซนนี้ในการวิเคราะห์", f"โปรแกรมใช้โซนที่แก้แล้วเป็นไฟล์โซนปัจจุบัน:\n{path}\n(ไฟล์เดิมไม่ถูกแก้)", parent=self.top)
+        return path
+
+    def save_new_file(self, path=None, notify=True):
+        src = str(self.app.zone_line_config_var.get() or "")
+        if path is None:
+            stem = os.path.splitext(os.path.basename(src))[0] if src else "zones"
+            path = filedialog.asksaveasfilename(parent=self.top, title="บันทึกเป็นไฟล์โซนใหม่", defaultextension=".json", initialfile=f"{stem}_aligned.json",
+                                                initialdir=os.path.dirname(src) if src else None, filetypes=[("Zone JSON", "*.json")])
+            if not path:
+                return None
+        try:
+            with open(src, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            data = {"zones": []}
+        aw, ah = self.app._actual_video_size()
+        if not aw or not ah:
+            aw, ah = (self.video_img.shape[1], self.video_img.shape[0]) if self.video_img is not None else (1920, 1080)
+        out_items, seen = [], set()
+        for item in data.get("zones", []):
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name") or (f"Zone {item.get('id')}" if item.get("id") is not None else None)
+            if name in self.zones:
+                seen.add(name)
+                pts = [[int(round(x)), int(round(y))] for x, y in self.zones[name]]
+                item = dict(item, name=name, points=pts, points_norm=[[round(x / aw, 6), round(y / ah, 6)] for x, y in pts],
+                            area_px=round(abs(float(sum(pts[i][0] * pts[(i + 1) % len(pts)][1] - pts[(i + 1) % len(pts)][0] * pts[i][1] for i in range(len(pts)))) / 2.0), 2))
+            out_items.append(item)
+        for name in self.names:                                      # (a zone that was not in the file as an object)
+            if name not in seen:
+                pts = [[int(round(x)), int(round(y))] for x, y in self.zones[name]]
+                out_items.append({"name": name, "points": pts, "points_norm": [[round(x / aw, 6), round(y / ah, 6)] for x, y in pts]})
+        data["zones"] = out_items
+        data["frame_width"], data["frame_height"] = int(aw), int(ah)                     # the points are in the size of the video now
+        lines = {n: [[int(x), int(y)] for x, y in pts] for n, pts in self.app.lines.items() if len(pts) == 2}
+        if lines:
+            data["lines"] = lines
+            data["lines_frame_width"], data["lines_frame_height"] = int(aw), int(ah)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        self.msg_var.set(f"บันทึกแล้ว: {path}")
+        if self.on_saved and notify:
+            self.on_saved(path)
+        return path
+
+    def close(self):
+        try:
+            self.top.destroy()
+        except tk.TclError:
+            pass
+
+
+def open_video_capture(path, hw_decode=False):
+    """cv2.VideoCapture of the input video; with hw_decode the graphics card decodes it when this OpenCV build supports it
+    (CAP_PROP_HW_ACCELERATION, OpenCV >= 4.5.2 with FFMPEG); a capture that does not open or cannot read a frame falls back to normal decoding."""
+    if hw_decode and hasattr(cv2, "CAP_PROP_HW_ACCELERATION") and hasattr(cv2, "VIDEO_ACCELERATION_ANY"):
+        try:
+            cap = cv2.VideoCapture(path, cv2.CAP_FFMPEG, [cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_ANY])
+            if cap.isOpened():
+                ok, _ = cap.read()
+                if ok:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    log.info("Video decoding on the graphics card (hardware acceleration %s)", cap.get(cv2.CAP_PROP_HW_ACCELERATION))
+                    return cap
+            cap.release()
+        except Exception:
+            log.exception("Hardware video decoding is not available; normal decoding is used")
+    return cv2.VideoCapture(path)
+
+
+def list_video_controllers(timeout_s=12):
+    """The names of the video controllers of this computer (Windows: PowerShell Get-CimInstance); [] when they cannot be listed. Cached."""
+    global _VIDEO_CONTROLLERS
+    if _VIDEO_CONTROLLERS is not None:
+        return _VIDEO_CONTROLLERS
+    names = []
+    if os.name == "nt":
+        try:
+            res = subprocess.run(["powershell", "-NoProfile", "-Command", "Get-CimInstance Win32_VideoController | ForEach-Object { $_.Name }"],
+                                 capture_output=True, text=True, timeout=timeout_s)
+            names = [x.strip() for x in (res.stdout or "").splitlines() if x.strip()]
+        except Exception:
+            names = []
+    _VIDEO_CONTROLLERS = names
+    return names
+
+
+_VIDEO_CONTROLLERS = None
+
+
+def directml_target_dir():
+    """Where the DirectML build of ONNX Runtime is installed: a folder of its own next to PK Studio, so that it never replaces the onnxruntime / onnxruntime-gpu
+    of the Python (they have the same module name)."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "_ort_directml")
+
+
+def prepare_directml_runtime():
+    """Make `import onnxruntime` give the DirectML build (pip install --target into directml_target_dir when it is not there yet). Returns (ok, message).
+    DirectML runs on any DirectX 12 GPU (AMD, Intel, NVIDIA) on Windows. Once onnxruntime is imported in this process the build cannot be changed any more."""
+    if os.name != "nt":
+        return False, "DirectML works on Windows only"
+    target = directml_target_dir()
+    mod = sys.modules.get("onnxruntime")
+    if mod is None:
+        if not os.path.isdir(os.path.join(target, "onnxruntime")):
+            print("DirectML    : installing onnxruntime-directml into", target)
+            res = subprocess.run([sys.executable, "-m", "pip", "install", "--target", target, "onnxruntime-directml"], capture_output=True, text=True, timeout=1800)
+            if res.returncode != 0:
+                return False, "pip install onnxruntime-directml failed: " + " | ".join((res.stderr or res.stdout or "").strip().splitlines()[-3:])
+        if target not in sys.path:
+            sys.path.insert(0, target)
+        importlib.invalidate_caches()
+        try:
+            import onnxruntime as mod
+        except Exception as exc:
+            return False, f"onnxruntime (DirectML) cannot be imported: {exc}"
+    if "DmlExecutionProvider" not in mod.get_available_providers():
+        return False, "this onnxruntime has no DirectML (another build was already loaded in this run: close PK Studio and open it again)"
+    return True, "DirectML is ready"
+
+
+def patch_onnxruntime_providers(providers):
+    """Every ONNX Runtime session that Ultralytics opens from now on uses `providers` (Ultralytics only knows CUDA and CPU)."""
+    import onnxruntime as ort
+    if getattr(ort.InferenceSession, "_pk_providers", None) == list(providers):
+        return
+    base = getattr(ort.InferenceSession, "_pk_base", ort.InferenceSession)
+
+    class _Session(base):
+        _pk_base = base
+        _pk_providers = list(providers)
+
+        def __init__(self, path, *a, **k):
+            k["providers"] = list(providers)
+            super().__init__(path, *a, **k)
+    ort.InferenceSession = _Session
+
+
+def build_onnx_model(model_path, onnx_path, imgsz, timeout_s=1800):
+    """Export the YOLO model to ONNX (fixed size imgsz) in a separate process. Raises RuntimeError when it fails."""
+    code = ("import sys, os; os.environ['YOLO_AUTOINSTALL'] = 'false'; from ultralytics import YOLO; "
+            "b = YOLO(sys.argv[1]).export(format='onnx', imgsz=int(sys.argv[2]), device='cpu', simplify=False, verbose=False); "
+            "os.replace(str(b), sys.argv[3]) if os.path.abspath(str(b)) != os.path.abspath(sys.argv[3]) else None")
+    ok, msg = ensure_python_package("onnx", "onnx")
+    if not ok:
+        raise RuntimeError(msg)
+    res = subprocess.run([sys.executable, "-c", code, str(model_path), str(int(imgsz)), str(onnx_path)], capture_output=True, text=True, timeout=timeout_s)
+    if res.returncode != 0 or not os.path.isfile(onnx_path):
+        tail = " | ".join(((res.stderr or "") + (res.stdout or "")).strip().splitlines()[-4:])
+        raise RuntimeError(f"exporting the model to ONNX failed (exit code {res.returncode}): {tail}")
+    return onnx_path
+
+
+def load_directml_model(model_path, imgsz=640):
+    """(YOLO model, onnx path) that runs on the GPU through DirectML (any maker). Needs the .pt model: it is exported to <model>_<imgsz>_dml.onnx once."""
+    if not str(model_path).lower().endswith(".pt"):
+        raise RuntimeError("the DirectML backend needs a .pt model (it makes the ONNX file itself)")
+    ok, msg = prepare_directml_runtime()
+    print("DirectML    :", msg)
+    if not ok:
+        raise RuntimeError(msg)
+    onnx_path = directml_onnx_name(model_path, imgsz)
+    if not os.path.isfile(onnx_path) or os.path.getmtime(onnx_path) < os.path.getmtime(model_path):
+        print("DirectML    : exporting", onnx_path, "(first time only)")
+        build_onnx_model(model_path, onnx_path, imgsz)
+    try:                                                              # Ultralytics must not pip-install the plain onnxruntime over the DirectML build
+        import ultralytics.utils.checks as _checks
+        _checks.AUTOINSTALL = False
+    except Exception:
+        pass
+    patch_onnxruntime_providers(["DmlExecutionProvider", "CPUExecutionProvider"])
+    return YOLO(onnx_path, task="detect"), onnx_path
+
+
+def load_yolo_model(model_path, use_tensorrt=False, imgsz=640, device=None):
+    """(YOLO model, path used). device "directml" = the GPU through DirectML (AMD / Intel / NVIDIA, see load_directml_model). With use_tensorrt (NVIDIA) a
+    TensorRT engine is used: <model>_<imgsz>_<fp16|fp32>_<sm..>_trt<n>.engine next to the .pt (the name says which GPU generation and TensorRT it is for), built
+    in its own process (once, several minutes) when it is missing or older than the .pt; FP16 first (1.5x faster than FP32 on a GTX 1650), FP32 when FP16 fails;
+    the tensorrt and onnx packages that fit the CUDA of PyTorch are pip-installed first when missing. Anything that fails (no tensorrt package, CPU device,
+    export error) is logged and the plain .pt model is used."""
+    if str(device).lower() == "directml":
+        return load_directml_model(model_path, imgsz)
+    if use_tensorrt and str(model_path).lower().endswith(".pt") and str(device).lower() not in ("cpu", "none", ""):
+        try:
+            try:
+                index = int(str(device).split(":")[1]) if ":" in str(device) else 0
+            except ValueError:
+                index = 0
+            capability = torch.cuda.get_device_capability(index)
+            import importlib.metadata as _md
+            trt_version = ""
+            for dist_name in ("tensorrt", "tensorrt_cu12", "tensorrt_cu13"):
+                try:
+                    trt_version = _md.version(dist_name)
+                    break
+                except Exception:
+                    continue
+            names = {half: tensorrt_engine_name(model_path, imgsz, half, capability, trt_version) for half in (True, False)}
+            for half in (True, False):                                 # an engine that is already there wins (FP16 first)
+                eng = names[half]
+                if os.path.isfile(eng) and os.path.getmtime(eng) >= os.path.getmtime(model_path):
+                    return YOLO(eng, task="detect"), eng
+            # no engine yet: TensorRT (the build that fits this CUDA) and ONNX are installed here when they are missing / wrong
+            ok, msg = prepare_tensorrt_packages(getattr(torch.version, "cuda", None))
+            if not ok:
+                raise RuntimeError(msg)
+            last = None
+            for half in (True, False):
+                print("TensorRT    : building", names[half], "(first time only, this takes a few minutes; done in its own process)")
+                try:
+                    build_tensorrt_engine(model_path, names[half], imgsz, device, half=half)
+                    return YOLO(names[half], task="detect"), names[half]
+                except Exception as exc:
+                    last = exc
+                    log.warning("TensorRT %s engine failed: %s", "FP16" if half else "FP32", exc)
+            raise last
+        except Exception:
+            log.exception("TensorRT engine could not be used; the .pt model is used instead")
+    return YOLO(model_path), model_path
+
+
+class BackgroundFrameReader:
+    """Reads the next frames of a cv2.VideoCapture in a background thread while the main loop runs detection on the GPU
+    (decoding a 1080p frame takes ~9 ms of CPU). The frames come out in exactly the same order and are exactly the same
+    as reading them directly. decode(n) says whether the frame after n frames already read must be decoded (read) or
+    only skipped (grab), the same rule the main loop uses."""
+
+    _END = object()
+
+    def __init__(self, cap, decode, frames_read, last_frame=None, maxsize=6):
+        self.cap = cap
+        self.decode = decode
+        self.n = frames_read
+        self.last_frame = last_frame
+        self.error = None
+        self.q = queue.Queue(maxsize=maxsize)
+        self._stop = threading.Event()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def _put(self, item):
+        while not self._stop.is_set():
+            try:
+                self.q.put(item, timeout=0.2)
+                return True
+            except queue.Full:
+                continue
+        return False
+
+    def _run(self):
+        try:
+            while not self._stop.is_set():
+                if self.last_frame is not None and self.n >= self.last_frame:
+                    break
+                if self.decode(self.n):
+                    ok, frame = self.cap.read()
+                else:
+                    ok, frame = self.cap.grab(), None
+                self.n += 1
+                if not ok:
+                    break
+                if not self._put(frame):
+                    return
+        except Exception as exc:          # reported to the main loop
+            self.error = exc
+        self._put(self._END)
+
+    def next(self):
+        """-> (ok, frame); frame is None for a frame that was only skipped."""
+        item = self.q.get()
+        if item is self._END:
+            if self.error is not None:
+                raise self.error
+            self.q.put(self._END)         # keep answering 'end'
+            return False, None
+        return True, item
+
+    def close(self):
+        self._stop.set()
+        try:
+            while True:
+                self.q.get_nowait()
+        except queue.Empty:
+            pass
+        self.thread.join(timeout=5)
+
+
+class BackgroundVideoWriter:
+    """cv2.VideoWriter whose write() hands the frame to a background thread (encoding a 1080p frame takes ~25 ms of CPU),
+    so the main loop does not wait for it. Frames are written in the same order; release() waits until all are written."""
+
+    _END = object()
+
+    def __init__(self, writer, maxsize=8, size=None):
+        self.writer = writer
+        self.size = size                     # (w, h): every frame is scaled to it before encoding (None = as it is)
+        self.error = None
+        self.q = queue.Queue(maxsize=maxsize)
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+        self._released = False
+
+    def _run(self):
+        while True:
+            frame = self.q.get()
+            if frame is self._END:
+                break
+            try:
+                if self.size is not None and (frame.shape[1], frame.shape[0]) != tuple(self.size):
+                    frame = cv2.resize(frame, tuple(self.size), interpolation=cv2.INTER_AREA)
+                self.writer.write(frame)
+            except Exception as exc:
+                self.error = exc
+
+    def isOpened(self):
+        return self.writer.isOpened()
+
+    def write(self, frame):
+        if self.error is not None:
+            raise self.error
+        self.q.put(frame)
+
+    def release(self):
+        if self._released:
+            return
+        self._released = True
+        self.q.put(self._END)
+        self.thread.join()
+        self.writer.release()
+
+
+class PrefetchCapture:
+    """cv2.VideoCapture whose read() takes the frames a background thread has already decoded (decoding a 1080p frame takes ~10 ms of CPU),
+    so the drawing does not wait for it. Same order; read() -> (ok, frame) like cv2; close() stops the thread (call it before cap.release())."""
+
+    def __init__(self, cap, maxsize=8):
+        self.cap = cap
+        self.q = queue.Queue(maxsize=maxsize)
+        self._stop = threading.Event()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def _run(self):
+        while not self._stop.is_set():
+            try:
+                ok, frame = self.cap.read()
+            except Exception:
+                ok, frame = False, None
+            while not self._stop.is_set():
+                try:
+                    self.q.put((ok, frame), timeout=0.2)
+                    break
+                except queue.Full:
+                    continue
+            if not ok:
+                break
+
+    def read(self):
+        return self.q.get()
+
+    def close(self):
+        self._stop.set()
+        try:
+            while True:
+                self.q.get_nowait()
+        except queue.Empty:
+            pass
+        self.thread.join(timeout=5)
+
+
+def fp16_is_faster(device_index=0):
+    """FP16 is only faster on GPUs with tensor cores. On the GTX 16 series (and older cards) it is SLOWER: measured on the
+    GTX 1650 with this model, 170 ms instead of 62 ms per frame. Auto precision uses FP16 only where it helps."""
+    try:
+        props = torch.cuda.get_device_properties(device_index)
+    except Exception:
+        return False
+    name = str(props.name).upper()
+    if "GTX 16" in name or "MX" in name:
+        return False
+    return props.major >= 7
+
+
+def _tools_module(name):
+    """Import a helper from the tools folder next to this file (batch_run)."""
+    tools_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools")
+    if tools_dir not in sys.path:
+        sys.path.insert(0, tools_dir)
+    return importlib.import_module(name)
+
+
+class ClipListPanel(ttk.Frame):
+    """Step 1 of the window: the clips to analyse. One clip or many, the same list: choose folders (any structure,
+    any depth) or files, then set for every clip the time range to analyse and whether / which part of the result
+    video to record. The output rebuilds the imported folder structure and gives every clip its own folder with its
+    own CSV files; an existing folder is reused, a missing one is created, finished clips are skipped."""
+
+    def __init__(self, parent, app):
+        super().__init__(parent)
+        self.app = app
+        self.bt = _tools_module("batch_run")
+        self.clips = []
+        self.keep_levels_var = tk.IntVar(value=0)
+        self.skip_done_var = tk.BooleanVar(value=True)
+        self.columnconfigure(0, weight=1)
+
+        bar = ttk.Frame(self)
+        bar.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        ttk.Button(bar, text="เลือกโฟลเดอร์…", command=self.add_folder).pack(side="left", padx=2)
+        ttk.Button(bar, text="เพิ่มไฟล์วิดีโอ…", command=self.add_files).pack(side="left", padx=2)
+        ttk.Label(bar, text="รวมชื่อโฟลเดอร์ที่อยู่เหนือขึ้นไป").pack(side="left", padx=(12, 2))
+        ttk.Spinbox(bar, from_=0, to=6, width=3, textvariable=self.keep_levels_var).pack(side="left")
+        ttk.Button(bar, text="บันทึกรายการ…", command=self.save_plan).pack(side="right", padx=2)
+        ttk.Button(bar, text="โหลดรายการ…", command=self.load_plan).pack(side="right", padx=2)
+
+        self.tree = ttk.Treeview(self, columns=("clip", "analysis", "record", "xy", "drone", "chain"), show="headings", height=9, selectmode="extended")
+        for col, text, width in (("clip", "คลิป (โฟลเดอร์ในผลลัพธ์ / ไฟล์)", 330), ("analysis", "ช่วงที่วิเคราะห์", 120), ("record", "วิดีโอปกติ", 130),
+                                 ("xy", "วิดีโอ X–Y", 130), ("drone", "X–Y บนภาพโดรน", 130), ("chain", "ต่อเนื่อง", 110)):
+            self.tree.heading(col, text=text)
+            self.tree.column(col, width=width, anchor="w")
+        self.tree.grid(row=1, column=0, sticky="nsew")
+        self.tree.bind("<Double-1>", lambda e: self.edit_selected())
+        self.tree.bind("<<TreeviewSelect>>", lambda e: self.app.refresh_checklist())
+        self.rowconfigure(1, weight=1)
+
+        act = ttk.Frame(self)
+        act.grid(row=2, column=0, sticky="ew", pady=(4, 2))
+        for i, (text, command) in enumerate((("ดูวิดีโอ / กำหนดช่วงเวลา…", self.edit_selected), ("ต่อจากคลิปก่อน (ติ๊ก/เอาออก)", self.toggle_continue),
+                                             ("ลบที่เลือก", self.remove_selected), ("ล้างรายการ", self.clear))):
+            ttk.Button(act, text=text, command=command).grid(row=0, column=i, padx=2, pady=1, sticky="w")
+        ttk.Button(act, text="ทุกคลิป: บันทึกตลอดช่วงที่วิเคราะห์ (ทั้ง 3 วิดีโอ)",
+                   command=lambda: self.set_all_record(True, ("save_video", "xy_video", "drone_video"))).grid(row=1, column=0, columnspan=2, padx=2, pady=1, sticky="w")
+        ttk.Button(act, text="ทุกคลิป: ไม่บันทึกวิดีโอ (ทั้ง 3)",
+                   command=lambda: self.set_all_record(False, ("save_video", "xy_video", "drone_video"))).grid(row=1, column=2, columnspan=2, padx=2, pady=1, sticky="w")
+
+        out = ttk.Frame(self)
+        out.grid(row=3, column=0, sticky="ew", pady=(6, 0))
+        out.columnconfigure(1, weight=1)
+        ttk.Label(out, text="โฟลเดอร์ผลลัพธ์").grid(row=0, column=0, padx=(0, 6))
+        ttk.Entry(out, textvariable=app.output_var).grid(row=0, column=1, sticky="ew")
+        ttk.Button(out, text="Browse", command=app.browse_output).grid(row=0, column=2, padx=(6, 0))
+        opts = ttk.Frame(self)
+        opts.grid(row=4, column=0, sticky="w", pady=(4, 0))
+        ttk.Checkbutton(opts, text="ข้ามคลิปที่วิเคราะห์เสร็จแล้ว (ดูจากโฟลเดอร์ผลลัพธ์ของคลิปนั้น)", variable=self.skip_done_var).pack(side="left")
+        link = ttk.Label(self, text="▸ คำแนะนำการใช้งานรายการคลิป", foreground="#1f4e79", cursor="hand2")
+        link.grid(row=5, column=0, sticky="w", pady=(6, 0))
+        tips = ttk.Label(self, foreground="#555555", justify="left",
+                  text="• ดับเบิลคลิกที่คลิปเพื่อเปิดดูวิดีโอและตั้งช่วงเวลา/การบันทึกวิดีโอ (เลือกหลายคลิปแล้วตั้งครั้งเดียวได้) — คลิปเดียวก็ใช้รายการนี้\n"
+                       "• คลิปที่เป็นส่วนต่อเนื่องของคลิปก่อนหน้า (เช่น โดรนแบ่งไฟล์) → เลือกคลิปแล้วกด \"ต่อจากคลิปก่อน\": การติดตามต่อเนื่อง รถคันเดิมได้ ID เดิมข้ามรอยตัด เลขใหม่นับต่อกัน — แต่ช่วงวิเคราะห์ การบันทึกวิดีโอ และ CSV ยังแยกต่อคลิป\n"
+                       "• เลข ID ต่อจากคลิปก่อนหน้าในโฟลเดอร์เดียวกันเสมอ (ไม่ซ้ำกันทั้งชุด)\n"
+                       "• คลิปที่เพิ่มเข้ามาตั้งเป็น \"ไม่บันทึกวิดีโอ\" ไว้ก่อน — ต้องการบันทึกให้กดปุ่ม \"ทุกคลิป: บันทึกตลอดช่วงที่วิเคราะห์\" หรือตั้งเป็นรายคลิป\n"
+                       "• ผลลัพธ์สร้างโครงสร้างโฟลเดอร์ตามที่นำเข้า: โฟลเดอร์ผลลัพธ์ / ...โฟลเดอร์ต้นฉบับ... / ชื่อคลิป / (โฟลเดอร์ที่มีแล้วใช้อันเดิม)\n"
+                       "• เวลาใน CSV เป็นเวลาของวิดีโอต้นฉบับ (เริ่มวิเคราะห์ที่นาที 2 → เวลาแรกใน CSV ≈ 120 วินาที)")
+        tips.grid(row=6, column=0, sticky="w")
+        tips.grid_remove()
+
+        def toggle_tips(_e=None):
+            if tips.winfo_viewable():
+                tips.grid_remove()
+                link.config(text="▸ คำแนะนำการใช้งานรายการคลิป")
+            else:
+                tips.grid()
+                link.config(text="▾ คำแนะนำการใช้งานรายการคลิป")
+        link.bind("<Button-1>", toggle_tips)
+
+    # ---- list ----
+    def _levels(self):
+        try:
+            return max(0, int(self.keep_levels_var.get()))
+        except (tk.TclError, ValueError):
+            return 0
+
+    def _new_clip(self, video, rel_dir):
+        return {"video": video, "rel_dir": rel_dir, "analysis_start_s": "", "analysis_end_s": "",
+                "save_video": False, "record_start_s": "", "record_end_s": "", "continues_previous": False,     # new clips: no roadside result video (faster, smaller)
+                "xy_video": True, "xy_start_s": "", "xy_end_s": "", "drone_video": False, "drone_start_s": "", "drone_end_s": ""}
+
+    def add_videos(self, found):
+        have = {c["video"] for c in self.clips}
+        for video, rel in found:
+            if video not in have:
+                self.clips.append(self._new_clip(video, rel))
+                have.add(video)
+        self.refresh()
+
+    def add_folder(self):
+        """Import a folder with any structure. The output rebuilds it from the picked folder's name
+        (plus the names of the 'levels above' folders when that number is above 0)."""
+        path = filedialog.askdirectory(title="เลือกโฟลเดอร์ที่มีวิดีโอ (โครงสร้างโฟลเดอร์ข้างในจะถูกสร้างตามในผลลัพธ์)")
+        if path:
+            found = self.bt.find_videos([path], keep_levels=self._levels())
+            if not found:
+                messagebox.showinfo("คลิปวิดีโอ", "ไม่พบไฟล์วิดีโอในโฟลเดอร์นี้")
+            self.add_videos(found)
+
+    def add_files(self):
+        paths = filedialog.askopenfilenames(title="เลือกวิดีโอ", filetypes=[("Video", "*.mp4 *.avi *.mov *.mkv"), ("All Files", "*.*")])
+        self.add_videos(self.bt.find_videos([os.path.abspath(p) for p in paths], keep_levels=self._levels()))
+
+    def selected_indexes(self):
+        return sorted(int(i) for i in self.tree.selection())
+
+    def remove_selected(self):
+        for i in reversed(self.selected_indexes()):
+            del self.clips[i]
+        self.refresh()
+
+    def clear(self):
+        self.clips = []
+        self.refresh()
+
+    def refresh(self):
+        self.tree.delete(*self.tree.get_children())
+        for i, c in enumerate(self.clips):
+            ana, rec, xy, dr = self.bt.clip_labels(c)
+            cont = bool(c.get("continues_previous")) and i > 0
+            name = "/".join(x for x in (c.get("rel_dir", ""), os.path.basename(c["video"])) if x)
+            self.tree.insert("", "end", iid=str(i), values=(name, ana, rec, xy, dr, "↳ ต่อจากคลิปก่อน" if cont else ""))
+        if self.clips:
+            self.app.video_var.set(self.clips[0]["video"])
+        self.app.refresh_checklist()
+
+    def edit_selected(self):
+        sel = self.selected_indexes()
+        if not sel:
+            messagebox.showinfo("คลิปวิดีโอ", "เลือกคลิปในรายการก่อน")
+            return
+        clip = self.clips[sel[0]]
+        try:
+            dlg = ClipPlayerDialog(self.app, clip["video"], clip)
+        except Exception as exc:
+            messagebox.showerror("ดูวิดีโอ", str(exc))
+            return
+        if dlg.result:
+            for i in sel:                      # one choice applies to every selected clip
+                self.clips[i].update(dlg.result)
+            self.refresh()
+            self.tree.selection_set([str(i) for i in sel])
+
+    def toggle_continue(self):
+        """Mark the selected clips as the continuation of the clip above them in the list (the tracking and vehicle IDs
+        carry on from that clip; time range, recording and results stay separate). Clears the mark when it is already set."""
+        sel = [i for i in self.selected_indexes() if i > 0]
+        if not sel:
+            messagebox.showinfo("คลิปวิดีโอ", "เลือกคลิปที่ต่อจากคลิปก่อนหน้า (ไม่ใช่คลิปแรกของรายการ)")
+            return
+        turn_on = not all(self.clips[i].get("continues_previous") for i in sel)
+        for i in sel:
+            self.clips[i]["continues_previous"] = turn_on
+        self.refresh()
+        self.tree.selection_set([str(i) for i in sel])
+
+    def set_all_record(self, on, which=("save_video",)):
+        """Every clip: record (the whole analysed part) / do not record the videos named in `which` (clip keys save_video / xy_video / drone_video)."""
+        ranges = {"save_video": ("record_start_s", "record_end_s"), "xy_video": ("xy_start_s", "xy_end_s"), "drone_video": ("drone_start_s", "drone_end_s")}
+        for c in self.clips:
+            for key in which:
+                c[key] = bool(on)
+                if not on:
+                    c[ranges[key][0]] = c[ranges[key][1]] = ""
+        self.refresh()
+
+    # ---- the project (settings + this list) ----
+    def get_project(self):
+        """Everything of the list that belongs in a project file: the clips (video, folder in the output, time range, what to record, continuation) and its two ticks."""
+        return {"clips": [dict(c) for c in self.clips], "keep_levels": self._levels(), "skip_done": bool(self.skip_done_var.get())}
+
+    def set_project(self, project):
+        """Put a saved list back (a clip that is not there any more is kept, so that the list can be fixed); returns the videos that are missing on this computer."""
+        clips = []
+        for c in (project or {}).get("clips", []) or []:
+            if not isinstance(c, dict) or not c.get("video"):
+                continue
+            item = self._new_clip(str(c["video"]), str(c.get("rel_dir", "") or ""))
+            item.update({k: c[k] for k in self.bt.PLAN_KEYS if k in c})
+            clips.append(item)
+        self.clips = clips
+        try:
+            self.keep_levels_var.set(int((project or {}).get("keep_levels", 0) or 0))
+        except (TypeError, ValueError):
+            pass
+        if "skip_done" in (project or {}):
+            self.skip_done_var.set(bool(project["skip_done"]))
+        self.refresh()
+        return [c["video"] for c in clips if not os.path.isfile(c["video"])]
+
+    # ---- list file ----
+    def save_plan(self):
+        if not self.clips:
+            return
+        path = filedialog.asksaveasfilename(title="บันทึกรายการคลิป", defaultextension=".json", filetypes=[("Clip list", "*.json")])
+        if path:
+            self.bt.save_plan(path, self.app.output_var.get().strip(), self.clips)
+
+    def load_plan(self):
+        path = filedialog.askopenfilename(title="โหลดรายการคลิป", filetypes=[("Clip list", "*.json")])
+        if not path:
+            return
+        try:
+            out, clips = self.bt.load_plan(path)
+        except Exception as exc:
+            messagebox.showerror("คลิปวิดีโอ", f"อ่านรายการไม่ได้: {exc}")
+            return
+        self.clips = []
+        for c in clips:
+            item = self._new_clip(c["video"], str(c.get("rel_dir", "") or ""))
+            item.update({k: c[k] for k in self.bt.PLAN_KEYS if k in c})
+            self.clips.append(item)
+        if out:
+            self.app.output_var.set(out)
+        self.refresh()
+
+
+class Run1App:
+
+    def __init__(self, root):
+
+        self.root = root
+
+        self.root.title(
+            "PK Studio V28"
+        )
+
+        self.root.geometry(
+            "1250x850"
+        )
+
+        self.root.minsize(
+            950,
+            700
+        )
+
+        try:
+            self.root.state("zoomed")
+        except Exception:
+            pass
+
+        self.running = False
+        self.stop_event = threading.Event()
+        self.pause_event = threading.Event()
+        self.pause_event.set()
+        self.worker_thread = None
+
+        # Worker threads never touch Tk: they post callables here and the main thread runs them.
+        self._ui_queue = queue.Queue()
+
+        self.create_variables()
+        self.build_gui()
+        self.update_hardware_info()
+        self._poll_ui_queue()
+
+        self.root.protocol(
+            "WM_DELETE_WINDOW",
+            self.on_close
+        )
+
+    # ========================================================
+    # VARIABLES
+    # ========================================================
+
+    def create_variables(self):
+
+        self.run_name_var = tk.StringVar(
+            value=DEFAULT_SETTINGS["run_name"]
+        )
+
+        self.model_var = tk.StringVar(
+            value=DEFAULT_SETTINGS["model"]
+        )
+
+        self.video_var = tk.StringVar(
+            value=DEFAULT_SETTINGS["video"]
+        )
+
+        self.output_var = tk.StringVar(
+            value=DEFAULT_SETTINGS["output"]
+        )
+
+        self.conf_var = tk.StringVar(
+            value=DEFAULT_SETTINGS["confidence"]
+        )
+
+        self.iou_var = tk.StringVar(
+            value=DEFAULT_SETTINGS["iou"]
+        )
+
+        self.img_size_var = tk.StringVar(
+            value=DEFAULT_SETTINGS["img_size"]
+        )
+
+        self.tracker_var = tk.StringVar(
+            value=DEFAULT_SETTINGS["tracker"]
+        )
+
+        self.device_var = tk.StringVar(
+            value=DEFAULT_SETTINGS["device"]
+        )
+
+        self.precision_var = tk.StringVar(
+            value=DEFAULT_SETTINGS["precision"]
+        )
+
+        self.frame_skip_var = tk.StringVar(
+            value=DEFAULT_SETTINGS["frame_skip"]
+        )
+
+        self.track_high_var = tk.StringVar(
+            value=DEFAULT_SETTINGS["track_high"]
+        )
+
+        self.track_low_var = tk.StringVar(
+            value=DEFAULT_SETTINGS["track_low"]
+        )
+
+        self.new_track_var = tk.StringVar(
+            value=DEFAULT_SETTINGS["new_track"]
+        )
+
+        self.track_buffer_var = tk.StringVar(
+            value=DEFAULT_SETTINGS["track_buffer"]
+        )
+
+        self.match_threshold_var = tk.StringVar(
+            value=DEFAULT_SETTINGS["match_threshold"]
+        )
+
+        self.show_preview_var = tk.BooleanVar(
+            value=DEFAULT_SETTINGS["show_preview"]
+        )
+        self.video_max_width_var = tk.StringVar(value=DEFAULT_SETTINGS["video_max_width"])
+        self.edit_video = ""                                   # the video chosen inside the Align / zone editor / Line window (blank = the main video)
+        self.video_var.trace_add("write", lambda *_: setattr(self, "edit_video", ""))
+        self.video_fps_var = tk.StringVar(value=DEFAULT_SETTINGS["video_fps"])
+        self.topview_max_px_var = tk.StringVar(value=DEFAULT_SETTINGS["topview_max_px"])
+        self.topview_fps_var = tk.StringVar(value=DEFAULT_SETTINGS["topview_fps"])
+        self.hw_decode_var = tk.BooleanVar(value=DEFAULT_SETTINGS["hw_decode"])
+        self.use_tensorrt_var = tk.BooleanVar(value=DEFAULT_SETTINGS["use_tensorrt"])
+
+        self.draw_center_var = tk.BooleanVar(
+            value=DEFAULT_SETTINGS["draw_center"]
+        )
+
+        self.draw_trail_var = tk.BooleanVar(
+            value=DEFAULT_SETTINGS["draw_trail"]
+        )
+
+        self.trail_length_var = tk.StringVar(
+            value=DEFAULT_SETTINGS["trail_length"]
+        )
+
+        self.save_video_var = tk.BooleanVar(
+            value=DEFAULT_SETTINGS["save_video"]
+        )
+
+        self.save_csv_var = tk.BooleanVar(
+            value=DEFAULT_SETTINGS["save_csv"]
+        )
+
+        self.csv_flush_var = tk.StringVar(
+            value=DEFAULT_SETTINGS["csv_flush"]
+        )
+
+        self.research_mode_var = tk.BooleanVar(
+            value=DEFAULT_SETTINGS["research_mode"]
+        )
+
+        # Trajectory Position controls.
+        self.trajectory_position_var = tk.StringVar(value=DEFAULT_SETTINGS["trajectory_position"])
+        self.trajectory_offset_var = tk.StringVar(value=DEFAULT_SETTINGS["trajectory_offset"])
+
+        # Zone overlay display controls.
+        self.show_zone_boundary_var = tk.BooleanVar(value=DEFAULT_SETTINGS["show_zone_boundary"])
+        self.show_zone_label_var = tk.BooleanVar(value=DEFAULT_SETTINGS["show_zone_label"])
+        self.show_zone_label_prefix_var = tk.BooleanVar(value=DEFAULT_SETTINGS["show_zone_label_prefix"])
+        self.zone_overlay_opacity_var = tk.StringVar(value=DEFAULT_SETTINGS["zone_overlay_opacity"])
+
+        # Individual vehicle label controls.
+        self.show_label_id_var = tk.BooleanVar(value=DEFAULT_SETTINGS["show_label_id"])
+        self.show_label_class_var = tk.BooleanVar(value=DEFAULT_SETTINGS["show_label_class"])
+        self.show_label_conf_var = tk.BooleanVar(value=DEFAULT_SETTINGS["show_label_conf"])
+        self.show_label_zone_var = tk.BooleanVar(value=DEFAULT_SETTINGS["show_label_zone"])
+        self.show_label_speed_var = tk.BooleanVar(value=DEFAULT_SETTINGS["show_label_speed"])
+        self.show_bbox_var = tk.BooleanVar(value=DEFAULT_SETTINGS["show_bbox"])
+        self.box_smooth_pct_var = tk.StringVar(value=DEFAULT_SETTINGS["box_smooth_pct"])
+        self.zone_confirm_frames_var = tk.StringVar(value=DEFAULT_SETTINGS["zone_confirm_frames"])
+        self.show_ref_lines_var = tk.BooleanVar(value=DEFAULT_SETTINGS["show_ref_lines"])
+        self.outside_zone_normal_var = tk.StringVar(value=DEFAULT_SETTINGS["outside_zone_normal"])
+        self.outside_zone_xy_var = tk.StringVar(value=DEFAULT_SETTINGS["outside_zone_xy"])
+        self.show_prefix_id_var = tk.BooleanVar(value=DEFAULT_SETTINGS["show_prefix_id"])
+        self.show_prefix_class_var = tk.BooleanVar(value=DEFAULT_SETTINGS["show_prefix_class"])
+        self.show_prefix_conf_var = tk.BooleanVar(value=DEFAULT_SETTINGS["show_prefix_conf"])
+        self.show_prefix_zone_var = tk.BooleanVar(value=DEFAULT_SETTINGS["show_prefix_zone"])
+        self.show_prefix_speed_var = tk.BooleanVar(value=DEFAULT_SETTINGS["show_prefix_speed"])
+        self.show_info_text_var = tk.BooleanVar(value=DEFAULT_SETTINGS["show_info_text"])
+        self.xy_vars = {key: (tk.StringVar(value=DEFAULT_SETTINGS[key]) if isinstance(DEFAULT_SETTINGS[key], str) else tk.BooleanVar(value=DEFAULT_SETTINGS[key]))
+                        for key in XY_DISPLAY_KEYS}
+        self.dr_vars = {key: (tk.StringVar(value=DEFAULT_SETTINGS[key]) if isinstance(DEFAULT_SETTINGS[key], str) else tk.BooleanVar(value=DEFAULT_SETTINGS[key]))
+                        for key in DR_DISPLAY_KEYS}
+        self.outside_zone_dr_var = tk.StringVar(value=DEFAULT_SETTINGS["outside_zone_dr"])
+
+
+        # ========================================================
+        # RUN 3 SAFETY ANALYSIS VARIABLES
+        # ========================================================
+        self.run3_site_id_var = tk.StringVar(value=RUN3_DEFAULTS["site_id"])
+        self.run3_speed_enabled_var = tk.BooleanVar(value=RUN3_DEFAULTS["speed_enabled"])
+        self.run3_gap_enabled_var = tk.BooleanVar(value=RUN3_DEFAULTS["gap_enabled"])
+        self.run3_lc_enabled_var = tk.BooleanVar(value=RUN3_DEFAULTS["lc_enabled"])
+        self.run3_pet_enabled_var = tk.BooleanVar(value=RUN3_DEFAULTS["pet_enabled"])
+        self.run3_ttc_enabled_var = tk.BooleanVar(value=RUN3_DEFAULTS["ttc_enabled"])
+        self.run3_ldp_enabled_var = tk.BooleanVar(value=RUN3_DEFAULTS["ldp_enabled"])
+        self.run3_ppm_var = tk.StringVar(value=RUN3_DEFAULTS["ppm"])
+        self.run3_perspective_enabled_var = tk.BooleanVar(value=RUN3_DEFAULTS["perspective_enabled"])
+        self.run3_align_enabled_var = tk.BooleanVar(value=RUN3_DEFAULTS["align_enabled"])
+        self.run3_align_var = tk.StringVar(value=RUN3_DEFAULTS["align_data"])
+        self.run3_perspective_p1_var = tk.StringVar(value=RUN3_DEFAULTS["perspective_p1"])
+        self.run3_perspective_p2_var = tk.StringVar(value=RUN3_DEFAULTS["perspective_p2"])
+        self.run3_perspective_p3_var = tk.StringVar(value=RUN3_DEFAULTS["perspective_p3"])
+        self.run3_perspective_p4_var = tk.StringVar(value=RUN3_DEFAULTS["perspective_p4"])
+        self.run3_perspective_length_var = tk.StringVar(value=RUN3_DEFAULTS["perspective_length_m"])
+        self.run3_perspective_width_var = tk.StringVar(value=RUN3_DEFAULTS["perspective_width_m"])
+        self.run3_perspective_l12_var = tk.StringVar(value=RUN3_DEFAULTS["perspective_l12_m"])
+        self.run3_perspective_l23_var = tk.StringVar(value=RUN3_DEFAULTS["perspective_l23_m"])
+        self.run3_perspective_l34_var = tk.StringVar(value=RUN3_DEFAULTS["perspective_l34_m"])
+        self.run3_perspective_l41_var = tk.StringVar(value=RUN3_DEFAULTS["perspective_l41_m"])
+        self.run3_waiting_speed_threshold_var = tk.StringVar(value=RUN3_DEFAULTS["waiting_speed_threshold"])
+        self.run3_hold_min_duration_var = tk.StringVar(value=RUN3_DEFAULTS["gap_hold_min_duration_s"])
+        self.run3_lateral_axis_angle_var = tk.StringVar(value=RUN3_DEFAULTS["lateral_axis_angle_deg"])
+        self.run3_lc_heading_window_var = tk.StringVar(value=RUN3_DEFAULTS["lc_heading_window_s"])
+        self.run3_topview_video_var = tk.BooleanVar(value=RUN3_DEFAULTS["topview_video"])
+        self.run3_drone_video_var = tk.BooleanVar(value=RUN3_DEFAULTS["drone_video"])
+        self.run3_lc_along_limit_var = tk.StringVar(value=RUN3_DEFAULTS["lc_along_limit_m"])
+        self.run3_lc_max_lateral_var = tk.StringVar(value=RUN3_DEFAULTS["lc_max_lateral_m"])
+        self.run3_lc_motorcycle_pairs_only_var = tk.BooleanVar(value=RUN3_DEFAULTS["lc_motorcycle_pairs_only"])
+        self.run3_pet_threshold_var = tk.StringVar(value=RUN3_DEFAULTS["pet_threshold_s"])
+        self.run3_speed_zone_vars = {z: tk.BooleanVar(value=(z in RUN3_DEFAULTS["speed_zones"])) for z in ZONE_IDS}
+        self.run3_speed_smoothing_var = tk.StringVar(value=RUN3_DEFAULTS["speed_smoothing_samples"])
+        self.run3_speed_max_var = tk.StringVar(value=RUN3_DEFAULTS["speed_max_kmh"])
+        self.run3_speed_frame_window_var = tk.StringVar(value=RUN3_DEFAULTS["speed_frame_window_s"])
+        self.run3_zone_calibrations = {}          # {"4": {"points": [[x, y] x 4], "lengths": [l12, l23, l34, l41]}}: own reference quad per zone
+        self.run3_zone_cal_text = tk.StringVar(value="")
+        self.analysis_start_var = tk.StringVar(value=DEFAULT_SETTINGS["analysis_start_s"])
+        self.analysis_end_var = tk.StringVar(value=DEFAULT_SETTINGS["analysis_end_s"])
+        self.record_start_var = tk.StringVar(value=DEFAULT_SETTINGS["record_start_s"])
+        self.record_end_var = tk.StringVar(value=DEFAULT_SETTINGS["record_end_s"])
+        self.run3_lc_zone_vars = {z: tk.BooleanVar(value=(z in RUN3_DEFAULTS["lc_zones"])) for z in ZONE_IDS}
+        self.run3_pet_zone_vars = {z: tk.BooleanVar(value=(z in RUN3_DEFAULTS["pet_zones"])) for z in ZONE_IDS}
+        self.run3_pet_zone6_var = self.run3_pet_zone_vars[6]   # backward-compatible alias
+        self.run3_ttc_zone_vars = {z: tk.BooleanVar(value=(z in RUN3_DEFAULTS["ttc_zones"])) for z in ZONE_IDS}
+        self.run3_ldp_zone_vars = {z: tk.BooleanVar(value=(z in RUN3_DEFAULTS["ldp_zones"])) for z in ZONE_IDS}
+        self.run3_pet_max_var = tk.StringVar(value=RUN3_DEFAULTS["pet_max_s"])
+        self.run3_pet_min_speed_var = tk.StringVar(value=RUN3_DEFAULTS["pet_min_speed_kmh"])
+        self.run3_write_detail_var = tk.BooleanVar(value=RUN3_DEFAULTS["write_detail_files"])
+        off_ = {x.strip() for x in str(RUN3_DEFAULTS["csv_off"]).split(",") if x.strip()}
+        self.run3_csv_vars = {name: tk.BooleanVar(value=name not in off_) for name, _k, _t in RUN3_CSV_CHOICES}
+        self.run3_traj_smooth_method_var = tk.StringVar(value=RUN3_DEFAULTS["traj_smooth_method"])
+        self.run3_traj_smooth_window_var = tk.StringVar(value=RUN3_DEFAULTS["traj_smooth_window_s"])
+        self.run3_ttc_include_rear_var = tk.BooleanVar(value=RUN3_DEFAULTS["ttc_include_rear_end"])
+        self.run3_ttc_include_lane_var = tk.BooleanVar(value=RUN3_DEFAULTS["ttc_include_lane_change"])
+        self.run3_ttc_include_cross_var = tk.BooleanVar(value=RUN3_DEFAULTS["ttc_include_crossing"])
+        self.run3_pet_include_rear_var = tk.BooleanVar(value=RUN3_DEFAULTS["pet_include_rear_end"])
+        self.run3_pet_include_lane_var = tk.BooleanVar(value=RUN3_DEFAULTS["pet_include_lane_change"])
+        self.run3_pet_include_cross_var = tk.BooleanVar(value=RUN3_DEFAULTS["pet_include_crossing"])
+        self.run3_headway_enabled_var = tk.BooleanVar(value=RUN3_DEFAULTS["headway_enabled"])
+        self.run3_headway_movement_vars = {mv: tk.BooleanVar(value=(mv in RUN3_DEFAULTS["headway_movements"])) for mv in RUN3_DEFAULTS["headway_movements"]}
+        self.run3_headway_max_var = tk.StringVar(value=RUN3_DEFAULTS["headway_max_s"])
+        self.run3_headway_mapping_text = RUN3_DEFAULTS["headway_line_mapping"]
+        self.run3_ref_line_source_var = tk.StringVar(value=RUN3_DEFAULTS["reference_line_source"])
+        self.run3_zone_edge_tol_var = tk.StringVar(value=RUN3_DEFAULTS["zone_edge_tol_px"])
+        self.run3_cg_by_subject_var = tk.BooleanVar(value=RUN3_DEFAULTS["critical_gap_by_subject_class"])
+        self.run3_cg_by_lag_var = tk.BooleanVar(value=RUN3_DEFAULTS["critical_gap_by_lag_class"])
+        self.run3_cg_min_drivers_var = tk.StringVar(value=RUN3_DEFAULTS["critical_gap_min_drivers"])
+        self.run3_pet_show_xy_var = tk.BooleanVar(value=RUN3_DEFAULTS["pet_show_point_xy"])
+        self.run3_pet_show_drone_var = tk.BooleanVar(value=RUN3_DEFAULTS["pet_show_point_drone"])
+        self.run3_pet_show_video_var = tk.BooleanVar(value=RUN3_DEFAULTS["pet_show_point_video"])
+        self.run3_ttc_max_record_var = tk.StringVar(value=RUN3_DEFAULTS["ttc_max_record_s"])
+        self.run3_ttc_min_record_var = tk.StringVar(value=RUN3_DEFAULTS["ttc_min_record_s"])
+        self.run3_ttc_velocity_window_var = tk.StringVar(value=RUN3_DEFAULTS["ttc_velocity_window_s"])
+        self.run3_ttc_min_speed_var = tk.StringVar(value=RUN3_DEFAULTS["ttc_min_speed_kmh"])
+        self.run3_risk_vars = {key: tk.StringVar(value=RUN3_DEFAULTS[key]) for key in RISK_SETTING_KEYS}
+        self.run3_ttc_miss_margin_var = tk.StringVar(value=RUN3_DEFAULTS["ttc_miss_margin_m"])
+        self.run3_ttc_decision_var = tk.StringVar(value=RUN3_DEFAULTS["ttc_decision"])
+        self.run3_ttc_cross_time_var = tk.StringVar(value=RUN3_DEFAULTS["ttc_cross_time_s"])
+        self.run3_ttc_rear_margin_var = tk.StringVar(value=RUN3_DEFAULTS["ttc_rear_margin_m"])
+        self.run3_ttc_rear_gap_var = tk.BooleanVar(value=RUN3_DEFAULTS["ttc_rear_clear_gap"])
+        self.run3_ttc_show_xy_var = tk.BooleanVar(value=RUN3_DEFAULTS["ttc_show_boxes_xy"])
+        self.run3_ttc_show_drone_var = tk.BooleanVar(value=RUN3_DEFAULTS["ttc_show_boxes_drone"])
+        self.run3_ttc_show_video_var = tk.BooleanVar(value=RUN3_DEFAULTS["ttc_show_boxes_video"])
+        self.run3_ttc_min_rel_speed_var = tk.StringVar(value=RUN3_DEFAULTS["ttc_min_rel_speed_ms"])
+        self.run3_ttc_pair_radius_var = tk.StringVar(value=RUN3_DEFAULTS["ttc_pair_radius_m"])
+        self.run3_ttc_angle_rear_var = tk.StringVar(value=RUN3_DEFAULTS["ttc_angle_rear_end_deg"])
+        self.run3_ttc_angle_cross_var = tk.StringVar(value=RUN3_DEFAULTS["ttc_angle_crossing_deg"])
+        # V28: road geometry (lane widths per side + median)
+        self.run3_geometry_vars = {
+            key: tk.StringVar(value=RUN3_DEFAULTS[key]) for key in RUN3_GEOMETRY_KEYS
+        }
+        self.run3_w_entry_text = tk.StringVar(value="W_entry = -")
+        self.run3_w_opp_text = tk.StringVar(value="W_opp = -")
+        for _var in self.run3_geometry_vars.values():
+            _var.trace_add("write", lambda *_: self._update_lane_totals())
+        self.run3_ldp_smoothing_var = tk.StringVar(value=RUN3_DEFAULTS["ldp_smoothing_samples"])
+        self.run3_gap_subject_134_var = tk.BooleanVar(value=RUN3_DEFAULTS["gap_subject_134"])
+        self.run3_gap_subject_1367_var = tk.BooleanVar(value=RUN3_DEFAULTS["gap_subject_1367"])
+        self.run3_gap_subject_5631_var = tk.BooleanVar(value=RUN3_DEFAULTS["gap_subject_5631"])
+        self.run3_use_raff_var = tk.BooleanVar(value=RUN3_DEFAULTS["use_raff"])
+        self.run3_use_mle_var = tk.BooleanVar(value=RUN3_DEFAULTS["use_mle"])
+        self.run3_reference_mapping_text = RUN3_DEFAULTS["reference_line_mapping"]
+        self.run3_width_vars = {
+            name: tk.StringVar(value=RUN3_DEFAULTS["vehicle_widths"].get(name, ""))
+            for name in RUN3_VEHICLE_CLASSES
+        }
+        self.run3_length_vars = {
+            name: tk.StringVar(value=RUN3_DEFAULTS["vehicle_lengths"].get(name, ""))
+            for name in RUN3_VEHICLE_CLASSES
+        }
+        self.run3_result_text = tk.StringVar(value="Run 3: not executed")
+        # V27: plain-Python snapshots used by the worker thread.
+        self._rt = None
+        self._run3_cfg = None
+        self.run3_last_outputs = {}
+        self.run3_last_summary = {}
+        self.run3_was_requested = False
+        self._batch_mode = False
+        self._last_run_error = ""
+        self._carry = None
+
+        self.status_var = tk.StringVar(
+            value="Ready"
+        )
+
+        self.progress_var = tk.StringVar(
+            value=""
+        )
+
+        self.device_note_var = tk.StringVar(value="กำลังตรวจการ์ดจอ…")
+        self.hardware_var = tk.StringVar(
+            value="Checking hardware..."
+        )
+
+        self.time_var = tk.StringVar(
+            value=""
+        )
+
+        # Integrated Run 1 + Zone/Line measurement configuration.
+        self.zone_line_config_var = tk.StringVar(value="")
+        self.measurement_status_var = tk.StringVar(value="No PK Studio Zone file loaded")
+        self.zone_source_video = ""
+        self.zone_source_width = None
+        self.zone_source_height = None
+        self.zones = {name: [] for name in ZONE_NAMES}
+        self.lines = {name: [] for name in LINE_NAMES}
+        self.zone_meta = {}
+        self.zone_file_format = None
+        self.zone_scaled = []
+
+    # ========================================================
+    # GUI
+    # ========================================================
+
+    def build_gui(self):
+        """Four steps in the order the work is done, a fixed run bar at the bottom.
+          1 คลิปวิดีโอ   the clips (one or many), time range / recording per clip, output, what is drawn on the video
+          2 ทางแยก       Zone file + Lines, which point decides the zone, road widths, metres calibration, vehicle sizes
+          3 ตัวชี้วัด      the six indicators, each with its own switch and settings
+          4 ตรวจจับและติดตาม  model, YOLO, device, tracker
+        Every setting stays visible (grouped, not hidden); the variables and all run logic are unchanged."""
+        main = ttk.Frame(self.root, padding=10)
+        main.pack(fill="both", expand=True)
+        main.rowconfigure(1, weight=1)
+        main.columnconfigure(0, weight=1)
+
+        header = ttk.Frame(main)
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        header.columnconfigure(0, weight=1)
+        ttk.Label(header, text="PK Studio", font=("Segoe UI", 16, "bold")).grid(row=0, column=0, sticky="w")
+        ttk.Label(header, text="ตรวจจับและติดตามรถ แล้ววิเคราะห์ตัวชี้วัดความปลอดภัยจราจร (LDP · Lateral Clearance · Gap Acceptance · TTC · PET · Speed)",
+                  foreground="#555555").grid(row=1, column=0, sticky="w")
+        ttk.Button(header, text="เปิดโปรเจกต์…", command=self.load_settings).grid(row=0, column=1, rowspan=2, padx=4)
+        ttk.Button(header, text="บันทึกโปรเจกต์…", command=self.save_settings).grid(row=0, column=2, rowspan=2, padx=4)
+
+        self._page_canvases = []
+        self._sub_canvases = {}
+        self._subnotebooks = {}
+        self._sections = {}
+        self.notebook = ttk.Notebook(main)
+        self.notebook.grid(row=1, column=0, sticky="nsew")
+        for title, builder, scrolls in (("① คลิปวิดีโอ", self.build_clips_tab, True), ("② ทางแยก", self.build_site_tab, True),
+                                        ("③ ตัวชี้วัด", self.build_indicator_tab, False), ("④ การแสดงผลและไฟล์", self.build_output_tab, True),
+                                        ("⑤ ตรวจจับและติดตาม", self.build_detect_tab, True)):
+            if scrolls:
+                outer, page = self._scroll_page()
+                self.notebook.add(outer, text=title)
+                self._page = page
+                self._flow_row = 1
+                self._page_toolbar(page)
+                builder()
+                self._apply_collapsed(page)
+            else:                                                       # the indicators: a page of their own for every indicator
+                outer = ttk.Frame(self.notebook)
+                self.notebook.add(outer, text=title)
+                self._page_canvases.append(None)
+                builder(outer)
+        self.root.bind_all("<MouseWheel>", self.on_mousewheel)
+
+        # ---------------- run bar (always visible) ----------------
+        bottom = ttk.Frame(main)
+        bottom.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        bottom.columnconfigure(0, weight=1)
+        self.check_frame = ttk.Frame(bottom)
+        self.check_frame.grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 4))
+        self.check_labels = {}
+        for key in ("model", "clips", "zones", "lines", "widths", "output"):
+            lab = ttk.Label(self.check_frame, text="")
+            lab.pack(side="left", padx=(0, 14))
+            self.check_labels[key] = lab
+        ttk.Label(bottom, textvariable=self.status_var, anchor="w").grid(row=1, column=0, sticky="w")
+        info = ttk.Frame(bottom)
+        info.grid(row=2, column=0, sticky="w")
+        ttk.Label(info, textvariable=self.progress_var).pack(side="left", padx=(0, 12))
+        ttk.Label(info, textvariable=self.time_var).pack(side="left", padx=(0, 12))
+        ttk.Label(info, textvariable=self.hardware_var, foreground="#666666").pack(side="left")
+        self.pause_button = ttk.Button(bottom, text="Ⅱ PAUSE", command=self.toggle_pause, state="disabled")
+        self.pause_button.grid(row=1, column=1, rowspan=2, padx=5, ipadx=10, ipady=6)
+        self.start_button = ttk.Button(bottom, text="▶ เริ่มวิเคราะห์", command=self.start_analysis)
+        self.start_button.grid(row=1, column=2, rowspan=2, padx=5, ipadx=15, ipady=6)
+        self.stop_button = ttk.Button(bottom, text="■ STOP", command=self.request_stop, state="disabled")
+        self.stop_button.grid(row=1, column=3, rowspan=2, padx=(5, 0), ipadx=12, ipady=6)
+        self.refresh_checklist()
+
+    # ---------------- helpers ----------------
+    def _scroll_page(self, parent=None):
+        """A scrollable page for one tab (or for one tab of a sub-notebook: `parent`) -> (outer frame to add to the notebook, inner frame to fill)."""
+        outer = ttk.Frame(parent if parent is not None else self.notebook)
+        canvas = tk.Canvas(outer, highlightthickness=0)
+        scroll = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+        inner = ttk.Frame(canvas, padding=(6, 6, 10, 16))
+        win = canvas.create_window((0, 0), window=inner, anchor="nw")
+        inner.bind("<Configure>", lambda e, c=canvas: c.configure(scrollregion=c.bbox("all")))
+        canvas.bind("<Configure>", lambda e, c=canvas, w=win: c.itemconfig(w, width=e.width))
+        canvas.configure(yscrollcommand=scroll.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+        inner.columnconfigure(0, weight=1)
+        if parent is None:
+            self._page_canvases.append(canvas)
+        else:
+            self._sub_canvases.setdefault(str(parent), []).append(canvas)
+        return outer, inner
+
+    def on_mousewheel(self, event):
+        try:
+            tab = self.notebook.index(self.notebook.select())
+            canvas = self._page_canvases[tab]
+            if canvas is None:                                           # a tab with a notebook of its own (the indicators): the page of the tab that is open
+                nb = self._subnotebooks[tab]
+                canvas = self._sub_canvases[str(nb)][nb.index(nb.select())]
+        except (tk.TclError, IndexError, AttributeError, KeyError):
+            return
+        if event.delta:
+            canvas.yview_scroll(int(-event.delta / 120), "units")
+
+    def section(self, title, column=0, row=0, collapsed=False):
+        """A titled group on the current page; groups are stacked top to bottom in the order they are built. Click the title to fold / unfold it
+        (`collapsed` = folded at the start); the page's "ย่อทั้งหมด / ขยายทั้งหมด" buttons fold / unfold all of them."""
+        header = ttk.Label(self._page, text="", cursor="hand2", font=("Segoe UI", 10, "bold"), foreground="#1f4e79")
+        frame = ttk.LabelFrame(self._page, labelwidget=header, padding=10)
+        frame.grid(row=self._flow_row, column=0, sticky="ew", padx=5, pady=5)
+        self._flow_row += 1
+        if getattr(self, "_stretch_entries", False):
+            frame.columnconfigure(1, weight=1)       # long entries (paths, model) take the free width
+        state = {"open": True, "hidden": []}
+        spacer = ttk.Frame(frame, height=6)                           # a folded group still needs one child to keep its height (the title shows)
+
+        def set_open(opened):
+            if bool(opened) == state["open"]:
+                return
+            state["open"] = bool(opened)
+            if not state["open"]:
+                state["hidden"] = [w for w in frame.winfo_children() if w.winfo_manager() == "grid" and w is not spacer]
+                for w in state["hidden"]:
+                    w.grid_remove()
+                spacer.grid(row=99, column=0, sticky="ew")
+            else:
+                spacer.grid_remove()
+                for w in state["hidden"]:
+                    w.grid()
+            header.config(text=("▾ " if state["open"] else "▸ ") + title)
+        header.config(text="▾ " + title)
+        header.bind("<Button-1>", lambda e: set_open(not state["open"]))
+        frame.set_open = set_open
+        self._sections.setdefault(str(self._page), []).append((frame, set_open, collapsed))
+        return frame
+
+    def _page_toolbar(self, page):
+        """The small bar at the top of a page: fold / unfold every group of it."""
+        bar = ttk.Frame(page)
+        bar.grid(row=0, column=0, sticky="e", padx=8, pady=(2, 0))
+        ttk.Label(bar, text="คลิกชื่อกลุ่มเพื่อย่อ/ขยาย", foreground="#777777").pack(side="left", padx=(0, 10))
+        ttk.Button(bar, text="ย่อทั้งหมด", width=11, command=lambda: [f[1](False) for f in self._sections.get(str(page), [])]).pack(side="left", padx=2)
+        ttk.Button(bar, text="ขยายทั้งหมด", width=11, command=lambda: [f[1](True) for f in self._sections.get(str(page), [])]).pack(side="left", padx=2)
+
+    def _apply_collapsed(self, page):
+        """Fold the groups of a page that start folded (after the page is built)."""
+        for _frame, set_open, collapsed in self._sections.get(str(page), []):
+            if collapsed:
+                set_open(False)
+
+    def refresh_checklist(self):
+        """The ready-to-run list above the START button (re-checked every second)."""
+        try:
+            green, orange, gray = "#0a7a3d", "#b45309", "#666666"
+            zc = sorted(int(k) for k in self.run3_zone_calibrations if str(k).isdigit())
+            self.run3_zone_cal_text.set(
+                ("ปรับเทียบรายโซนแล้ว: " + ", ".join(f"Zone {z}" for z in zc) + " (ใช้แทนค่าฐานในโซนนั้น)") if zc else
+                "ยังไม่มีการปรับเทียบรายโซน (ใช้ค่าฐานทั้งภาพ) — เปิดหน้าต่างปรับเทียบ แล้วเลือก \"ปรับเทียบสำหรับ\" ที่โซนที่ต้องการ")
+            n_clips = len(self.clips_panel.clips) if getattr(self, "clips_panel", None) else 0
+            zones = sum(1 for v in self.zones.values() if len(v) >= 3)
+            lines = sum(1 for v in self.lines.values() if len(v) >= 2)
+
+            def num(var):
+                try:
+                    return float(str(var.get()).strip()) > 0
+                except Exception:
+                    return False
+            widths_needed = bool(self.run3_ldp_enabled_var.get())
+            widths_ok = all(num(self.run3_geometry_vars[k]) for k in ("lane_entry_motorcycle_m", "lane_entry_car_m", "lane_opp_motorcycle_m", "lane_opp_car_m"))
+            items = {
+                "model": (os.path.isfile(self.model_var.get().strip()), "โมเดล"),
+                "clips": (n_clips > 0, f"คลิป {n_clips}"),
+                "zones": (zones >= 1, f"โซน {zones}/7"),
+                "lines": (None if lines < 4 else True, f"Line {lines}/4 (ไม่บังคับ)"),
+                "widths": ((widths_ok if widths_needed else None), "ความกว้างเลน" if widths_needed else "ความกว้างเลน (LDP ปิดอยู่)"),
+                "output": (bool(self.output_var.get().strip()), "โฟลเดอร์ผลลัพธ์"),
+            }
+            for key, (ok, text) in items.items():
+                mark, color = ("✔", green) if ok else (("–", gray) if ok is None else ("⚠", orange))
+                self.check_labels[key].config(text=f"{mark} {text}", foreground=color)
+            if not self.running:
+                self.start_button.config(text=f"▶ เริ่มวิเคราะห์ ({n_clips} คลิป)" if n_clips else "▶ เริ่มวิเคราะห์")
+            self.root.after(1000, self.refresh_checklist)
+        except tk.TclError:
+            pass          # window closed
+
+    def start_analysis(self):
+        """START: analyse every clip of the list (one clip = a list of one)."""
+        clips = self.clips_panel.clips
+        if not clips:
+            self.notebook.select(0)
+            messagebox.showinfo("เริ่มวิเคราะห์", "เพิ่มคลิปวิดีโอก่อน (ขั้น ① คลิปวิดีโอ → เลือกโฟลเดอร์ หรือ เพิ่มไฟล์วิดีโอ)")
+            return
+        out_root = self.output_var.get().strip()
+        if not out_root:
+            self.notebook.select(0)
+            messagebox.showerror("เริ่มวิเคราะห์", "ระบุโฟลเดอร์ผลลัพธ์")
+            return
+        self.start_batch(clips, out_root, bool(self.clips_panel.skip_done_var.get()))
+
+    # ---------------- tab 1: clips ----------------
+    def build_clips_tab(self):
+        box = self.section("คลิปที่จะวิเคราะห์")
+        box.columnconfigure(0, weight=1)
+        self.clips_panel = ClipListPanel(box, self)
+        self.clips_panel.grid(row=0, column=0, sticky="nsew")
+
+    # ---------------- tab 4: what is drawn and which files are saved ----------------
+    def build_output_tab(self):
+        box = self.section("การแสดงผลและวิดีโอที่บันทึก")
+        gray = "#666666"
+        xyv = self.xy_vars
+
+        def line(label, items, row):
+            """label + a row of tick boxes (items = [(text, variable)])"""
+            ttk.Label(box, text=label, width=22).grid(row=row, column=0, sticky="w", pady=3)
+            fr = ttk.Frame(box)
+            fr.grid(row=row, column=1, columnspan=2, sticky="w")
+            for text, var in items:
+                ttk.Checkbutton(fr, text=text, variable=var).pack(side="left", padx=(0, 14))
+            return fr
+
+        line("ระหว่างรัน", [("Show Preview (เปิดหน้าต่างดูภาพ)", self.show_preview_var), ("Save CSV (Detection Records)", self.save_csv_var)], 0)
+        ttk.Separator(box, orient="horizontal").grid(row=1, column=0, columnspan=3, sticky="ew", pady=(6, 4))
+
+        # one row per thing that can be drawn, one column per video: every switch of the normal video has its twin for the X-Y video
+        ttk.Label(box, text="สิ่งที่วาด (ติ๊ก = แสดง)", font=("TkDefaultFont", 9, "bold")).grid(row=2, column=0, sticky="w", pady=(0, 3))
+        ttk.Label(box, text="วิดีโอปกติ (ข้างทาง)", font=("TkDefaultFont", 9, "bold")).grid(row=2, column=1, sticky="w", padx=(0, 24))
+        ttk.Label(box, text="วิดีโอ X–Y (ผังเมตร)", font=("TkDefaultFont", 9, "bold")).grid(row=2, column=2, sticky="w", padx=(0, 24))
+        ttk.Label(box, text="วิดีโอ X–Y บนภาพโดรน", font=("TkDefaultFont", 9, "bold")).grid(row=2, column=3, sticky="w")
+        OUTSIDE = {"dot": "แสดงเฉพาะจุด (กรอบ ป้าย เส้นทางซ่อน)", "hide": "ซ่อนทั้งหมด (ไม่เห็นรถนอกโซนเลย)", "show": "แสดงเต็ม (กรอบ ป้าย เส้นทาง จุด)"}
+        row = [3]
+
+        def cell(col, r, items=(), spin=None, text=None, combo=None):
+            fr = ttk.Frame(box)
+            fr.grid(row=r, column=col, sticky="w", padx=(0, 14 if col in (1, 2) else 0), pady=2)
+            for label, var in items:
+                ttk.Checkbutton(fr, text=label, variable=var).pack(side="left", padx=(0, 10))
+            if spin is not None:
+                lab, var, lo, hi, inc = spin
+                ttk.Label(fr, text=lab).pack(side="left", padx=(0, 4))
+                ttk.Spinbox(fr, from_=lo, to=hi, increment=inc, textvariable=var, width=6).pack(side="left")
+            if text is not None:
+                ttk.Label(fr, text=text, foreground=gray).pack(side="left")
+            if combo is not None:
+                shown = tk.StringVar(value=OUTSIDE.get(combo.get(), OUTSIDE["dot"]))
+                cb = ttk.Combobox(fr, textvariable=shown, values=list(OUTSIDE.values()), state="readonly", width=27)
+                cb.pack(side="left")
+                cb.bind("<<ComboboxSelected>>", lambda e, v=combo, sv=shown: v.set(next((k for k, t in OUTSIDE.items() if t == sv.get()), "dot")))
+                combo.trace_add("write", lambda *_, v=combo, sv=shown: sv.set(OUTSIDE.get(v.get(), OUTSIDE["dot"])))
+
+        # the third column (X-Y on the drone picture) has the same rows as the X-Y column: each variable of the X-Y column has its twin there
+        twin = {id(v): self.dr_vars["dr_" + k[3:]] for k, v in xyv.items()}
+        twin[id(self.outside_zone_xy_var)] = self.outside_zone_dr_var
+        twin[id(self.run3_ttc_show_xy_var)] = self.run3_ttc_show_drone_var
+        twin[id(self.run3_pet_show_xy_var)] = self.run3_pet_show_drone_var
+
+        def drone_of(xy):
+            out = dict(xy)
+            if "items" in out:
+                out["items"] = [(t, twin.get(id(v), v)) for t, v in out["items"]]
+            if "spin" in out:
+                lab, var, lo, hi, inc = out["spin"]
+                out["spin"] = (lab, twin.get(id(var), var), lo, hi, inc)
+            if "combo" in out:
+                out["combo"] = twin.get(id(out["combo"]), out["combo"])
+            return out
+
+        def trow(label, normal, xy, drone="same"):
+            r = row[0]
+            ttk.Label(box, text=label, justify="left").grid(row=r, column=0, sticky="w", pady=2, padx=(0, 10))
+            cell(1, r, **normal)
+            cell(2, r, **xy)
+            cell(3, r, **(drone_of(xy) if drone == "same" else drone))
+            row[0] += 1
+
+        trow("สร้างวิดีโอ\n(เลือกต่อคลิปในหน้า ①)", dict(text="เลือกในรายการคลิป"), dict(text="เลือกในรายการคลิป"),
+             dict(text="เลือกในรายการคลิป (ต้องจัดแนวกับภาพโดรน)"))
+        trow("เส้นทางรถ (Trajectory)", dict(items=[("แสดง", self.draw_trail_var)], spin=("ความยาว", self.trail_length_var, 1, 300, 1)),
+             dict(items=[("แสดง", xyv["xy_draw_trail"])], spin=("ความยาว", xyv["xy_trail_length"], 1, 300, 1)))
+        trow("Zone", dict(items=[("กรอบ", self.show_zone_boundary_var), ("ชื่อ", self.show_zone_label_var), ("คำว่า Zone", self.show_zone_label_prefix_var)]),
+             dict(items=[("กรอบ", xyv["xy_show_zone_boundary"]), ("ชื่อ", xyv["xy_show_zone_label"]), ("คำว่า Zone", xyv["xy_show_zone_label_prefix"])]))
+        trow("ความจางของ Zone %", dict(spin=("0 = ไม่เห็น, 100 = ชัดสุด", self.zone_overlay_opacity_var, 0, 100, 5)),
+             dict(spin=("0 = ไม่เห็น, 100 = ชัดสุด", xyv["xy_zone_overlay_opacity"], 0, 100, 5)))
+        trow("จุดตำแหน่งรถ\n(เหลือง = ในโซน · วงแดง = นอกโซน)", dict(items=[("แสดงจุด", self.draw_center_var)]),
+             dict(items=[("แสดงจุด", xyv["xy_show_point"])]))
+        trow("รถที่อยู่นอกโซน", dict(combo=self.outside_zone_normal_var), dict(combo=self.outside_zone_xy_var))
+        trow("ป้ายบนตัวรถ", dict(items=[("ID", self.show_label_id_var), ("Class", self.show_label_class_var), ("Conf", self.show_label_conf_var),
+                                       ("Zone", self.show_label_zone_var), ("Speed", self.show_label_speed_var)]),
+             dict(items=[("ID", xyv["xy_show_label_id"]), ("Class", xyv["xy_show_label_class"]), ("Conf", xyv["xy_show_label_conf"]),
+                         ("Zone", xyv["xy_show_label_zone"]), ("Speed", xyv["xy_show_label_speed"])]))
+        trow("ใส่ชื่อกำกับหน้าค่า", dict(items=[("ID", self.show_prefix_id_var), ("Class", self.show_prefix_class_var), ("Conf", self.show_prefix_conf_var),
+                                              ("Zone", self.show_prefix_zone_var), ("Speed", self.show_prefix_speed_var)]),
+             dict(items=[("ID", xyv["xy_show_prefix_id"]), ("Class", xyv["xy_show_prefix_class"]), ("Conf", xyv["xy_show_prefix_conf"]),
+                         ("Zone", xyv["xy_show_prefix_zone"]), ("Speed", xyv["xy_show_prefix_speed"])]))
+        trow("กรอบวัตถุ (bbox)", dict(items=[("แสดง", self.show_bbox_var)]), dict(text="— (ดูสี่เหลี่ยมรถของ TTC)"), dict(text="—"))
+        trow("เส้นอ้างอิง Gap / Headway\n(เส้นที่ใช้จริง: Line หรือขอบโซน)", dict(items=[("แสดง", self.show_ref_lines_var)]),
+             dict(items=[("แสดง", xyv["xy_show_ref_lines"])]))
+        trow("จุดที่คาดว่าจะชน (TTC)\n(กากบาท + ค่า TTC)", dict(items=[("แสดง (วาดหลังรัน เพิ่มเวลา)", self.run3_ttc_show_video_var)]),
+             dict(items=[("แสดง", self.run3_ttc_show_xy_var)]))
+        trow("จุดตัดเส้นทาง (PET)\n(กากบาทม่วง + ค่า PET)", dict(items=[("แสดง (วาดหลังรัน เพิ่มเวลา)", self.run3_pet_show_video_var)]),
+             dict(items=[("แสดง", self.run3_pet_show_xy_var)]))
+        trow("ข้อความที่มุม/ล่างภาพ", dict(items=[("Frame / FPS / เวลา / ETA", self.show_info_text_var)]), dict(items=[("t = … s  frame …", xyv["xy_show_time"])]))
+        trow("ตารางเมตร", dict(text="—"), dict(items=[("เส้นตาราง + ตัวเลข", xyv["xy_show_grid"])]), dict(text="— (ภาพโดรนเป็นพื้น)"))
+        ttk.Label(box, text="จุดชน/สี่เหลี่ยมของ TTC ต้องเปิดตัวชี้วัด TTC;  แต่ละวิดีโอตั้งได้เป็นอิสระ (เช่น วิดีโอปกติโชว์ Speed แต่ X–Y ไม่โชว์)", foreground=gray).grid(
+            row=row[0], column=0, columnspan=4, sticky="w", pady=(4, 0))
+
+        csvb = self.section("ไฟล์ CSV ผลลัพธ์ที่บันทึก")
+        csvb.columnconfigure(0, weight=1)
+        csvb.columnconfigure(1, weight=1)
+        ttk.Label(csvb, text="ติ๊ก = บันทึก  ไม่ติ๊ก = ไม่บันทึกไฟล์นั้น   (ไฟล์ของตัวชี้วัดที่ปิดอยู่ในหน้า ③ ไม่ถูกสร้างอยู่แล้ว จึงเป็นสีเทา)", foreground=gray).grid(
+            row=0, column=0, columnspan=3, sticky="w", pady=(0, 4))
+        enabled_var = {"ldp": self.run3_ldp_enabled_var, "lc": self.run3_lc_enabled_var, "gap": self.run3_gap_enabled_var, "headway": self.run3_headway_enabled_var,
+                       "ttc": self.run3_ttc_enabled_var, "pet": self.run3_pet_enabled_var, "speed": self.run3_speed_enabled_var}
+        self._csv_checks = {}
+        for i, (name, key, text) in enumerate(RUN3_CSV_CHOICES):
+            cb = ttk.Checkbutton(csvb, text=f"{name}  —  {text}", variable=self.run3_csv_vars[name])
+            cb.grid(row=1 + i // 2, column=i % 2, sticky="w", padx=(0, 24), pady=1)
+            self._csv_checks[name] = (cb, key)
+
+        def refresh_csv_checks(*_):
+            for name_, (cb_, key_) in self._csv_checks.items():
+                on_ = True if key_ is None else bool(enabled_var[key_].get())
+                cb_.state(["!disabled"] if on_ else ["disabled"])
+        for var_ in enabled_var.values():
+            var_.trace_add("write", refresh_csv_checks)
+        refresh_csv_checks()
+        ttk.Label(csvb, text="ไฟล์ตรวจสอบเพิ่มเติม (Lateral_Clearance.csv ทุกตัวอย่าง, TTC_Detail.csv, TTC_Frames.csv) เลือกในหน้า ③ ช่อง \"เขียนไฟล์ตรวจสอบเพิ่มเติม\"; "
+                                "ไฟล์ตรวจจับ (Detection_Records.csv ฯลฯ) ใช้ช่อง Save CSV ด้านบน — Run 3 ต้องใช้ไฟล์เหล่านั้น", foreground=gray, wraplength=900, justify="left").grid(
+            row=2 + (len(RUN3_CSV_CHOICES) + 1) // 2, column=0, columnspan=3, sticky="w", pady=(6, 0))
+
+    # ---------------- tab 2: site ----------------
+    def build_site_tab(self):
+        gray = "#666666"
+        box = self.section("ไฟล์โซนและเส้น (Zone 1–7, Line)")
+        box.columnconfigure(1, weight=1)       # the path entry takes the free width
+        ttk.Label(box, text="ไฟล์โซน").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=4)
+        ttk.Entry(box, textvariable=self.zone_line_config_var).grid(row=0, column=1, sticky="ew", pady=4)
+        ttk.Button(box, text="วาด Line…", command=self.open_line_editor).grid(row=0, column=2, padx=(5, 0))
+        ttk.Button(box, text="Browse", command=self.load_measurement_config).grid(row=0, column=3, padx=(5, 0))
+        ttk.Label(box, textvariable=self.measurement_status_var, foreground=gray, anchor="w").grid(row=1, column=0, columnspan=4, sticky="w")
+
+        box = self.section("จุดที่ใช้ตัดสินว่ารถอยู่โซนไหน")
+        ttk.Label(box, text="ตำแหน่งบนกรอบรถ").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=4)
+        self.trajectory_position_combo = ttk.Combobox(
+            box, textvariable=self.trajectory_position_var, state="readonly", width=16,
+            values=["Top", "Center", "Bottom", "Left", "Right", "Top Left", "Top Right", "Bottom Left", "Bottom Right"])
+        self.trajectory_position_combo.grid(row=0, column=1, sticky="w", pady=4)
+        ttk.Label(box, text="เลื่อนเข้าด้านใน %").grid(row=0, column=2, sticky="e", padx=(12, 4), pady=4)
+        self.trajectory_offset_spin = ttk.Spinbox(box, from_=0, to=50, increment=1, textvariable=self.trajectory_offset_var, width=7)
+        self.trajectory_offset_spin.grid(row=0, column=3, sticky="w", pady=4)
+        ttk.Label(box, text="ใช้จุดเดียวบนกรอบรถตัดสินโซน (point-in-polygon); Center ไม่ใช้ค่าเลื่อน", foreground=gray).grid(row=1, column=0, columnspan=4, sticky="w")
+        self.update_trajectory_position_controls()
+
+        sm = self.section("ทำให้เส้นทางนิ่ง (ลดการแกว่งของกรอบ)")
+        ttk.Label(sm, text="กรอบ/เส้นทางในวิดีโอปกติ — ความนิ่ง % (0 = ปิด)").grid(row=0, column=0, sticky="w", pady=3)
+        ttk.Spinbox(sm, from_=0, to=90, increment=5, textvariable=self.box_smooth_pct_var, width=7).grid(row=0, column=1, sticky="w", padx=(6, 12))
+        ttk.Label(sm, text="แสดงผลเท่านั้น (ข้อมูลที่บันทึกไม่เปลี่ยน) — ยิ่งมากยิ่งนิ่งแต่ตามรถช้าลง", foreground="#666666").grid(row=0, column=2, sticky="w")
+        ttk.Label(sm, text="ตำแหน่งรถที่ใช้คำนวณตัวชี้วัด (Run 3)").grid(row=1, column=0, sticky="w", pady=3)
+        SMOOTH_NAMES = {"none": "ไม่ปรับ", "mean": "ค่าเฉลี่ย", "median": "ค่ากลาง (กันกรอบกระโดดครั้งเดียว)", "median_mean": "ค่ากลางแล้วเฉลี่ย (นิ่งที่สุด)"}
+        shown_sm = tk.StringVar(value=SMOOTH_NAMES.get(self.run3_traj_smooth_method_var.get(), SMOOTH_NAMES["median_mean"]))
+        cb_sm = ttk.Combobox(sm, textvariable=shown_sm, values=list(SMOOTH_NAMES.values()), state="readonly", width=34)
+        cb_sm.grid(row=1, column=1, columnspan=2, sticky="w", padx=(6, 12))
+        cb_sm.bind("<<ComboboxSelected>>", lambda e: self.run3_traj_smooth_method_var.set(next((k for k, t in SMOOTH_NAMES.items() if t == shown_sm.get()), "median_mean")))
+        self.run3_traj_smooth_method_var.trace_add("write", lambda *_: shown_sm.set(SMOOTH_NAMES.get(self.run3_traj_smooth_method_var.get(), SMOOTH_NAMES["median_mean"])))
+        ttk.Label(sm, text="ช่วงเวลาเฉลี่ย (วินาที)").grid(row=2, column=0, sticky="w", pady=3)
+        ttk.Entry(sm, textvariable=self.run3_traj_smooth_window_var, width=8).grid(row=2, column=1, sticky="w", padx=(6, 12))
+        ttk.Label(sm, text="ใช้กับทุกตัวชี้วัดและผัง X–Y ก่อนคำนวณ (ไฟล์ Detection_Records.csv ยังเป็นค่าดิบ)", foreground="#666666").grid(row=2, column=2, sticky="w")
+        ttk.Label(sm, text="ยืนยันโซนเมื่ออยู่ติดกันกี่เฟรม").grid(row=3, column=0, sticky="w", pady=3)
+        ttk.Spinbox(sm, from_=1, to=30, increment=1, textvariable=self.zone_confirm_frames_var, width=7).grid(row=3, column=1, sticky="w", padx=(6, 12))
+        ttk.Label(sm, text="1 = ทันที; 3–5 ช่วยไม่ให้กรอบกระพริบตรงขอบโซน (เวลาเข้าโซนช้าลงเล็กน้อย)", foreground="#666666").grid(row=3, column=2, sticky="w")
+
+        geo = self.section("ความกว้างถนน (m) — ใช้เป็นตัวหารของ LDP")
+        ttk.Label(geo, text="ฝั่งทางเข้า–ออก (Zone 2-3-4)", foreground="#555555").grid(row=0, column=0, columnspan=4, sticky="w")
+        ttk.Label(geo, text="เลนจักรยานยนต์").grid(row=1, column=0, sticky="w", pady=2)
+        ttk.Entry(geo, textvariable=self.run3_geometry_vars["lane_entry_motorcycle_m"], width=8).grid(row=1, column=1, sticky="w", padx=(4, 16))
+        ttk.Label(geo, text="เลนรถยนต์").grid(row=1, column=2, sticky="w")
+        ttk.Entry(geo, textvariable=self.run3_geometry_vars["lane_entry_car_m"], width=8).grid(row=1, column=3, sticky="w", padx=(4, 16))
+        ttk.Label(geo, textvariable=self.run3_w_entry_text, foreground="#0a5").grid(row=1, column=4, sticky="w")
+        ttk.Label(geo, text="ฝั่งตรงข้ามทางเชื่อม (Zone 5-6-7)", foreground="#555555").grid(row=2, column=0, columnspan=4, sticky="w", pady=(4, 0))
+        ttk.Label(geo, text="เลนจักรยานยนต์").grid(row=3, column=0, sticky="w", pady=2)
+        ttk.Entry(geo, textvariable=self.run3_geometry_vars["lane_opp_motorcycle_m"], width=8).grid(row=3, column=1, sticky="w", padx=(4, 16))
+        ttk.Label(geo, text="เลนรถยนต์").grid(row=3, column=2, sticky="w")
+        ttk.Entry(geo, textvariable=self.run3_geometry_vars["lane_opp_car_m"], width=8).grid(row=3, column=3, sticky="w", padx=(4, 16))
+        ttk.Label(geo, textvariable=self.run3_w_opp_text, foreground="#0a5").grid(row=3, column=4, sticky="w")
+        ttk.Label(geo, text="ความกว้างเกาะกลาง (บันทึกไว้ ไม่ใช้คำนวณ)").grid(row=4, column=0, columnspan=2, sticky="w", pady=(4, 2))
+        ttk.Entry(geo, textvariable=self.run3_geometry_vars["median_m"], width=8).grid(row=4, column=2, sticky="w", padx=(4, 16))
+        self._update_lane_totals()
+
+        cal = self.section("แปลงพิกัดภาพเป็นเมตร (PPM / Perspective)")
+        for col in (1, 3):
+            cal.columnconfigure(col, weight=1)
+        r = 0
+        ttk.Label(cal, text="Site_ID").grid(row=r, column=0, sticky="w", padx=(0, 8), pady=4)
+        ttk.Entry(cal, textvariable=self.run3_site_id_var, width=18).grid(row=r, column=1, sticky="w", pady=4)
+        ttk.Label(cal, text="PPM (พิกเซลต่อเมตร)").grid(row=r, column=2, sticky="e", padx=(12, 8), pady=4)
+        ttk.Entry(cal, textvariable=self.run3_ppm_var, width=18).grid(row=r, column=3, sticky="w", pady=4)
+        r += 1
+        ttk.Label(cal, text="Road direction angle (deg) — ใช้เมื่อไม่มี Perspective").grid(row=r, column=0, columnspan=2, sticky="w", pady=4)
+        ttk.Entry(cal, textvariable=self.run3_lateral_axis_angle_var, width=18).grid(row=r, column=2, sticky="w", pady=4)
+        r += 1
+        ttk.Label(cal, text="วิดีโอและภาพ X–Y: เปิด/ปิดและเลือกสิ่งที่วาดที่หน้า ④ (การแสดงผลและไฟล์)").grid(row=r, column=0, columnspan=2, sticky="w", pady=2)
+        ttk.Label(cal, text="วาดจากพิกัดเมตรเดียวกับที่ตัวชี้วัดใช้ (ไฟล์ Detection_Records_Topview.csv เขียนทุกครั้ง)", foreground=gray).grid(row=r, column=2, columnspan=2, sticky="w", pady=2)
+        r += 1
+        alignf = ttk.LabelFrame(cal, text="จัดแนวกับภาพโดรน (Align) — แปลงพิกัดวิดีโอให้ตรงกับผังจริงของโดรน (ภาพโดรนใช้เฉพาะตอนจัดแนว)", padding=4)
+        alignf.grid(row=r, column=0, columnspan=4, sticky="ew", pady=(6, 2))
+        ttk.Button(alignf, text="🧭 จัดแนว…", command=self.open_align).pack(side="left")
+        ttk.Button(alignf, text="🧩 แก้รูปโซนบนภาพโดรน…", command=self.open_zone_editor).pack(side="left", padx=(8, 0))
+        ttk.Checkbutton(alignf, text="ใช้ผลการจัดแนวแทน PPM / Perspective", variable=self.run3_align_enabled_var).pack(side="left", padx=10)
+        self.align_status_var = tk.StringVar(value="")
+        ttk.Label(alignf, textvariable=self.align_status_var, foreground="#0a7a3d").pack(side="left", padx=6)
+
+        def _refresh_align_status(*_):
+            self.align_status_var.set(self._align_status_text())
+        for v_ in (self.run3_align_var, self.run3_align_enabled_var):
+            v_.trace_add("write", _refresh_align_status)
+        _refresh_align_status()
+        r += 1
+        ttk.Checkbutton(cal, text="Perspective correction", variable=self.run3_perspective_enabled_var).grid(row=r, column=0, sticky="w", pady=(6, 4))
+        ttk.Label(cal, text="ใช้เมื่อมีจุดอ้างอิงบนระนาบถนนที่ทราบระยะจริง (P1→P2 ต้องขนานแนวถนน)", foreground=gray).grid(row=r, column=1, columnspan=2, sticky="w", pady=(6, 4))
+        ttk.Button(cal, text="🎯 Perspective / PPM Calibration", command=self.open_perspective_calibration).grid(row=r, column=3, sticky="e", pady=(6, 4))
+        r += 1
+        for (la, va, lb, vb) in (("P1", self.run3_perspective_p1_var, "P2", self.run3_perspective_p2_var),
+                                 ("P3", self.run3_perspective_p3_var, "P4", self.run3_perspective_p4_var)):
+            ttk.Label(cal, text=la).grid(row=r, column=0, sticky="e", padx=4, pady=2)
+            ttk.Entry(cal, textvariable=va, width=18, state="readonly").grid(row=r, column=1, sticky="w", pady=2)
+            ttk.Label(cal, text=lb).grid(row=r, column=2, sticky="e", padx=4, pady=2)
+            ttk.Entry(cal, textvariable=vb, width=18, state="readonly").grid(row=r, column=3, sticky="w", pady=2)
+            r += 1
+        for (la, va, lb, vb) in (("ระยะจริง P1→P2 (m)", self.run3_perspective_l12_var, "ระยะจริง P2→P3 (m)", self.run3_perspective_l23_var),
+                                 ("ระยะจริง P3→P4 (m)", self.run3_perspective_l34_var, "ระยะจริง P4→P1 (m)", self.run3_perspective_l41_var)):
+            ttk.Label(cal, text=la).grid(row=r, column=0, sticky="w", padx=4, pady=2)
+            ttk.Entry(cal, textvariable=va, width=18).grid(row=r, column=1, sticky="w", pady=2)
+            ttk.Label(cal, text=lb).grid(row=r, column=2, sticky="e", padx=4, pady=2)
+            ttk.Entry(cal, textvariable=vb, width=18).grid(row=r, column=3, sticky="w", pady=2)
+            r += 1
+
+        ttk.Label(cal, textvariable=self.run3_zone_cal_text, foreground="#0a7a3d").grid(row=r, column=0, columnspan=4, sticky="w", pady=(8, 0))
+
+        dims = self.section("ขนาดรถ (m) — กว้าง W / ยาว L (ใช้กับ Lateral Clearance และ TTC)")
+        ttk.Label(dims, text="ชนิด").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        ttk.Label(dims, text="W").grid(row=1, column=0, sticky="w", padx=(0, 8))
+        ttk.Label(dims, text="L").grid(row=2, column=0, sticky="w", padx=(0, 8))
+        for i, name in enumerate(RUN3_VEHICLE_CLASSES, start=1):
+            ttk.Label(dims, text=name).grid(row=0, column=i, sticky="w", padx=4)
+            ttk.Entry(dims, textvariable=self.run3_width_vars[name], width=7).grid(row=1, column=i, sticky="w", padx=4, pady=1)
+            ttk.Entry(dims, textvariable=self.run3_length_vars[name], width=7).grid(row=2, column=i, sticky="w", padx=4, pady=1)
+        ttk.Label(dims, text="ค่าเริ่มต้นของโปรแกรม ควรตรวจกับแต่ละพื้นที่ (ไม่ใช่ค่าจากเอกสารอ้างอิง)", foreground=gray).grid(row=3, column=0, columnspan=9, sticky="w", pady=(6, 0))
+
+    # ---------------- tab 3: indicators (a page for each) ----------------
+    def _indicator_box(self, title, enabled_var, note=None):
+        """A group per indicator; the tick in its title switches the indicator on or off."""
+        label = ttk.Checkbutton(self._page, text=title, variable=enabled_var)
+        box = ttk.LabelFrame(self._page, labelwidget=label, padding=10)
+        box.grid(row=self._flow_row, column=0, sticky="ew", padx=5, pady=5)
+        self._flow_row += 1
+        for col in (1, 3, 5, 7):
+            box.columnconfigure(col, weight=0)
+        if note:
+            ttk.Label(box, text=note, foreground="#555555", wraplength=900, justify="left").grid(row=0, column=0, columnspan=8, sticky="w", pady=(0, 4))
+        return box
+
+    @staticmethod
+    def _zone_checks(box, var_map, row, label="โซนที่คำนวณ", locked=()):
+        """`locked` zones are shown greyed out and cannot be ticked (their variable is forced off)."""
+        ttk.Label(box, text=label).grid(row=row, column=0, sticky="w", padx=(0, 8), pady=2)
+        for i, z in enumerate(sorted(var_map)):
+            btn = ttk.Checkbutton(box, text=f"Zone {z}", variable=var_map[z])
+            if z in locked:
+                var_map[z].set(False)
+                btn.state(["disabled"])
+            btn.grid(row=row, column=1 + i, sticky="w", padx=(2, 10), pady=2)
+
+    @staticmethod
+    def _entry_row(box, row, label, var, width=8, col=0, span=5):
+        ttk.Label(box, text=label).grid(row=row, column=col, columnspan=span, sticky="w", pady=2)
+        ttk.Entry(box, textvariable=var, width=width).grid(row=row, column=col + span, sticky="w", pady=2, padx=(4, 0))
+
+    def _indicator_page(self, nb, title):
+        """A new page of the indicator notebook; the groups built next go on it."""
+        outer, page = self._scroll_page(nb)
+        nb.add(outer, text=title)
+        self._page = page
+        self._flow_row = 0
+        return page
+
+    def build_indicator_tab(self, outer):
+        """One page per indicator (the tab shows ● when the indicator is on, ○ when it is off) + the risk limits."""
+        gray = "#666666"
+        top = ttk.Frame(outer)
+        top.pack(fill="x", padx=8, pady=(6, 0))
+        ttk.Label(top, text="เลือกแท็บของตัวชี้วัด แล้วติ๊กหน้าชื่อเพื่อเปิด/ปิด (● = เปิด, ○ = ปิด) — ค่าอื่นเป็นค่าเริ่มต้นที่ใช้ได้เลย ปรับเมื่อจำเป็น", foreground=gray).pack(anchor="w")
+        ttk.Checkbutton(top, text="เขียนไฟล์ตรวจสอบเพิ่ม (Lateral_Clearance.csv ทุกตัวอย่าง, TTC_Detail.csv, TTC_Frames.csv) — ไฟล์ใหญ่ ปิดไว้ได้ถ้าไม่ได้ใช้",
+                        variable=self.run3_write_detail_var).pack(anchor="w")
+        ttk.Label(outer, textvariable=self.run3_result_text, foreground="#444444").pack(side="bottom", anchor="w", padx=8, pady=(2, 4))
+        nb = ttk.Notebook(outer)
+        nb.pack(fill="both", expand=True, padx=2, pady=4)
+        self._subnotebooks[self.notebook.index("end") - 1] = nb
+        self._indicator_nb = nb
+        self._indicator_tab_marks = []
+
+        def mark(title, *vars_):
+            """The tab text follows the on / off tick(s) of its indicator(s)."""
+            index = nb.index("end") - 1
+
+            def refresh(*_):
+                nb.tab(index, text=("● " if any(bool(v.get()) for v in vars_) else "○ ") + title)
+            for v in vars_:
+                v.trace_add("write", refresh)
+            refresh()
+
+        self._indicator_page(nb, "LDP")
+        mark("LDP", self.run3_ldp_enabled_var)
+        box = self._indicator_box("LDP", self.run3_ldp_enabled_var,
+                                  "ΔY ÷ (W/2) × 100 — ΔY = ระยะตั้งฉากของเส้นทางรถจากเส้นอ้างอิง (จุดเข้า→จุดออกโซน) เฉพาะรถทางหลัก 2-3-4 (W_entry) และ 5-6-7 (W_opp) ทุกประเภทรถ")
+        self._zone_checks(box, self.run3_ldp_zone_vars, 1, locked=LDP_LOCKED_ZONES)
+        self._entry_row(box, 2, "Median smoothing (จำนวนตัวอย่าง, 1 = ปิด)", self.run3_ldp_smoothing_var)
+        ttk.Label(box, text="หมายเหตุ: เลือก Zone 1 ไม่ได้ — LDP คิดเฉพาะทางหลัก 2-3-4 และ 5-6-7 ซึ่งไม่ผ่านโซน 1 (ทางเชื่อม/ซอย)",
+                  foreground="#666666").grid(row=3, column=0, columnspan=8, sticky="w", pady=2)
+
+        self._indicator_page(nb, "Lateral Clearance")
+        mark("Lateral Clearance", self.run3_lc_enabled_var)
+        box = self._indicator_box("Lateral Clearance", self.run3_lc_enabled_var,
+                                  "คู่รถทิศทางเดียวกันในโซนเดียวกัน วัดตั้งฉากกับทิศที่รถ A เคลื่อนที่เมื่อกรอบรถซ้อนกันตามแนวยาว (ถ้ามีจักรยานยนต์ในคู่ จักรยานยนต์คือ A)")
+        self._zone_checks(box, self.run3_lc_zone_vars, 1)
+        ttk.Checkbutton(box, text="เฉพาะคู่ที่มีรถจักรยานยนต์ (ไม่ติ๊ก = ทุกคู่ของยานพาหนะทุกประเภท)", variable=self.run3_lc_motorcycle_pairs_only_var).grid(row=2, column=0, columnspan=8, sticky="w", pady=2)
+        self._entry_row(box, 3, "หน้าต่างหาทิศ heading ของรถ A (s)", self.run3_lc_heading_window_var)
+        self._entry_row(box, 4, "ช่วงเคียงข้างตามแนวยาว ±(m) — 0 = อัตโนมัติ (L_A+L_B)/2", self.run3_lc_along_limit_var)
+        self._entry_row(box, 5, "ระยะด้านข้างไกลสุดที่ถือว่าเกี่ยวข้องกัน (m) — 0 = ไม่จำกัด", self.run3_lc_max_lateral_var)
+
+        self._indicator_page(nb, "Gap + Headway")
+        mark("Gap + Headway", self.run3_gap_enabled_var, self.run3_headway_enabled_var)
+        box = self._indicator_box("Gap Acceptance", self.run3_gap_enabled_var,
+                                  "รถที่รอ (ดูกระแสที่ต้องให้ทางตามตาราง) ยอมรับ/ปฏิเสธช่องว่างสองขั้น Access/Exit; Line เป็นตัวเลือก (ไม่มี Line ใช้เวลาเข้าโซนต้นทางของกระแสนั้น)")
+        ttk.Label(box, text="รถที่รอ (Movement)").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=2)
+        ttk.Checkbutton(box, text="1-3-4", variable=self.run3_gap_subject_134_var).grid(row=1, column=1, sticky="w")
+        ttk.Checkbutton(box, text="1-3-6-7", variable=self.run3_gap_subject_1367_var).grid(row=1, column=2, sticky="w")
+        ttk.Checkbutton(box, text="5-6-3-1", variable=self.run3_gap_subject_5631_var).grid(row=1, column=3, sticky="w")
+        self._entry_row(box, 2, "ถือว่ารถ \"หยุด\" กลางแยกเมื่อความเร็ว ≤ (km/h)", self.run3_waiting_speed_threshold_var)
+        self._entry_row(box, 3, "... นานอย่างน้อย (s)", self.run3_hold_min_duration_var)
+        ttk.Label(box, text="Critical Gap").grid(row=4, column=0, sticky="w", padx=(0, 8), pady=2)
+        ttk.Checkbutton(box, text="Raff", variable=self.run3_use_raff_var).grid(row=4, column=1, sticky="w")
+        ttk.Checkbutton(box, text="MLE", variable=self.run3_use_mle_var).grid(row=4, column=2, sticky="w")
+        ttk.Label(box, text="Reference Line Mapping (Site_ID|Movement|Line N) — เติมให้เองเมื่อกด \"วาด Line…\"").grid(row=5, column=0, columnspan=6, sticky="w", pady=(6, 2))
+        ttk.Button(box, text="Copy Template", command=self.copy_run3_mapping_template).grid(row=5, column=6, columnspan=2, sticky="e", pady=(6, 2))
+        self.run3_reference_text = tk.Text(box, height=5, width=80, wrap="none")
+        self.run3_reference_text.grid(row=6, column=0, columnspan=8, sticky="ew", pady=(0, 2))
+        self.run3_reference_text.insert("1.0", self.run3_reference_mapping_text)
+        ttk.Label(box, text="เส้นอ้างอิงของแต่ละกระแส (Gap Acceptance / Headway)").grid(row=7, column=0, sticky="w", pady=(6, 2))
+        SOURCES = {"zone_edge": "ขอบโซนที่ติดกัน (เส้นเชื่อมโหนดร่วม เช่น 1-3-6-7 = โซน 1|3)", "drawn": "Line ที่วาดไว้ (Reference Line Mapping)",
+                   "per_stream": "เลือกทีละกระแสในหน้า 'วาด Line…' (ขอบโซนหรือวาดเอง)"}
+        shown_src = tk.StringVar(value=SOURCES.get(self.run3_ref_line_source_var.get(), SOURCES["zone_edge"]))
+        cbs = ttk.Combobox(box, textvariable=shown_src, values=list(SOURCES.values()), state="readonly", width=60)
+        cbs.grid(row=7, column=1, columnspan=7, sticky="w", pady=(6, 2))
+        cbs.bind("<<ComboboxSelected>>", lambda e: self.run3_ref_line_source_var.set(next((k for k, t in SOURCES.items() if t == shown_src.get()), "zone_edge")))
+        self.run3_ref_line_source_var.trace_add("write", lambda *_: shown_src.set(SOURCES.get(self.run3_ref_line_source_var.get(), SOURCES["zone_edge"])))
+        self._entry_row(box, 8, "ระยะที่โหนดโซนสองโซนนับเป็นจุดเดียวกัน (พิกเซล)", self.run3_zone_edge_tol_var, span=7)
+        ttk.Label(box, text="Critical Gap แยกตาม").grid(row=9, column=0, sticky="w", pady=(6, 2))
+        ttk.Checkbutton(box, text="ชนิดรถของคนที่รอ", variable=self.run3_cg_by_subject_var).grid(row=9, column=1, columnspan=2, sticky="w", pady=(6, 2))
+        ttk.Checkbutton(box, text="ชนิดรถของคันหลังที่กำลังมา (Lag)", variable=self.run3_cg_by_lag_var).grid(row=9, column=3, columnspan=4, sticky="w", pady=(6, 2))
+        self._entry_row(box, 10, "ธงเตือนเมื่อคนขับที่มีทั้งช่องว่างที่ปฏิเสธและยอมรับน้อยกว่า (คน) — ว่าง = ไม่เตือน", self.run3_cg_min_drivers_var, span=7)
+
+        box = self._indicator_box("Headway (รถที่ตามกัน)", self.run3_headway_enabled_var,
+                                  "เวลาระหว่างรถสองคันที่ตามกันใน Movement เดียวกัน (Time Headway = หน้ารถถึงหน้ารถ, Time Gap = ท้ายรถหน้าถึงหน้ารถหลัง) — "
+                                  "จับเฉพาะคันที่อยู่ในแนวทางวิ่งของคันหน้า (รถที่วิ่งขนานไม่นับ) — เขียนไฟล์ Headway.csv, ไม่มีระดับความเสี่ยง")
+        ttk.Label(box, text="Movement ที่วิเคราะห์").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=2)
+        for i, (mv, var) in enumerate(self.run3_headway_movement_vars.items()):
+            ttk.Checkbutton(box, text=mv, variable=var).grid(row=1, column=1 + i, sticky="w")
+        self._entry_row(box, 2, "Headway สูงสุด (s) — ว่าง = ไม่จำกัด (ไม่จับคู่คันที่ห่างกันเกินนี้)", self.run3_headway_max_var, span=7)
+        ttk.Label(box, text="Line ของ Headway เอง (Site_ID|Movement|Line N หรือ Edge 1-3) — Movement ที่ไม่ใส่ จะใช้เส้นอ้างอิงตามที่ตั้งในกรอบ Gap Acceptance แล้วใช้โซนต้นทาง").grid(
+            row=3, column=0, columnspan=8, sticky="w", pady=(6, 2))
+        self.run3_headway_text = tk.Text(box, height=3, width=80, wrap="none")
+        self.run3_headway_text.grid(row=4, column=0, columnspan=8, sticky="ew", pady=(0, 2))
+        self.run3_headway_text.insert("1.0", self.run3_headway_mapping_text)
+
+        self._indicator_page(nb, "TTC")
+        mark("TTC", self.run3_ttc_enabled_var)
+        box = self._indicator_box("TTC", self.run3_ttc_enabled_var,
+                                  "รถแต่ละคัน = จุดเดียว (จุดอ้างอิง) — TTC = -(r·v)/(v·v) เมื่อ r·v < 0 (เวกเตอร์ตำแหน่งและความเร็วสัมพัทธ์; เวลาที่สองคันเข้าใกล้กันที่สุดถ้าคงความเร็วเดิม) "
+                                  "นับเมื่อตอนใกล้ที่สุดห่างไม่เกิน (W_A+W_B)/2 + ค่าเผื่อ; เก็บจุดที่คาดว่าจะชน (เส้นทางตรงของสองคันตัดกัน) และกรองด้วยโซนที่ติ๊ก")
+        self._zone_checks(box, self.run3_ttc_zone_vars, 1, "โซนที่จุดชนต้องอยู่")
+        ttk.Label(box, text="คู่รถที่นับ").grid(row=11, column=0, sticky="w", pady=(6, 2))
+        DECISIONS = {"by_type": "ตามชนิดความขัดแย้ง (ตัดกัน/เปลี่ยนเลน: เส้นตัดกัน + ถึงจุดตัดใกล้กัน; ท้ายชนท้าย: ระยะด้านข้าง)",
+                     "miss": "ระยะที่ใกล้กันที่สุดไม่เกิน (W_A+W_B)/2 + ค่าเผื่อ (แบบเดิม)",
+                     "none": "ทุกคู่ที่กำลังเข้าหากัน (ตามบทความ ม.อ. ไม่มีการตรวจการชน)"}
+        shown_d = tk.StringVar(value=DECISIONS.get(self.run3_ttc_decision_var.get(), DECISIONS["by_type"]))
+        cbd = ttk.Combobox(box, textvariable=shown_d, values=list(DECISIONS.values()), state="readonly", width=70)
+        cbd.grid(row=11, column=1, columnspan=7, sticky="w", pady=(6, 2))
+        cbd.bind("<<ComboboxSelected>>", lambda e: self.run3_ttc_decision_var.set(next((k for k, t in DECISIONS.items() if t == shown_d.get()), "by_type")))
+        self.run3_ttc_decision_var.trace_add("write", lambda *_: shown_d.set(DECISIONS.get(self.run3_ttc_decision_var.get(), DECISIONS["by_type"])))
+        for i, (label, var) in enumerate((("ชนิดตัดกัน/เปลี่ยนเลน: ถึงจุดตัดห่างกันไม่เกิน (s)", self.run3_ttc_cross_time_var),
+                                          ("ท้ายชนท้าย (ทิศเดียวกัน/สวนทางเส้นเดียวกัน): ระยะด้านข้างที่ยังนับ = ครึ่งความกว้างรวม + ค่านี้ (m)", self.run3_ttc_rear_margin_var),
+                                          ("แบบ \"ระยะที่ใกล้กันที่สุด\": ครึ่งความกว้างรวม + ค่านี้ (m)", self.run3_ttc_miss_margin_var))):
+            self._entry_row(box, 12 + i, label, var, span=7)
+        ttk.Checkbutton(box, text="ท้ายชนท้าย: คิด TTC ของช่องว่างท้ายรถหน้า–หัวรถหลัง (หักความยาวรถ; ค่าแบบจุดเก็บไว้ในคอลัมน์ TTC_Point_s)",
+                        variable=self.run3_ttc_rear_gap_var).grid(row=15, column=0, columnspan=8, sticky="w", pady=2)
+        self._entry_row(box, 16, "ไม่นับเฟรมที่ TTC < (s) — ว่าง = นับทั้งหมด (ตัดค่าที่ลงไปใกล้ 0 เพราะรถแค่ผ่านกัน/กรอบกระโดด)", self.run3_ttc_min_record_var, span=7)
+        for i, (label, var) in enumerate((("บันทึกเมื่อ TTCmin ≤ (s) — ว่าง = บันทึกทั้งหมด", self.run3_ttc_max_record_var),
+                                          ("หน้าต่างคำนวณความเร็ว (s)", self.run3_ttc_velocity_window_var),
+                                          ("ความเร็วขั้นต่ำของแต่ละคัน (km/h) — คันใดต่ำกว่านี้ข้ามเฟรมนั้น (รถจอด กรอบกระพริบ)", self.run3_ttc_min_speed_var),
+                                          ("ความเร็วสัมพัทธ์ขั้นต่ำที่ยังคิด (m/s)", self.run3_ttc_min_rel_speed_var),
+                                          ("ระยะคัดกรองคู่รถ — ห่างกันไม่เกิน (m)", self.run3_ttc_pair_radius_var),
+                                          ("มุมความขัดแย้ง: น้อยกว่านี้ = Rear-end (deg)", self.run3_ttc_angle_rear_var),
+                                          ("มุมความขัดแย้ง: มากกว่านี้ = Crossing (deg), ระหว่างกลาง = Lane change", self.run3_ttc_angle_cross_var))):
+            self._entry_row(box, 2 + i, label, var, span=7)
+
+        type_row = ttk.Frame(box)
+        type_row.grid(row=20, column=0, columnspan=8, sticky="w", pady=2)
+        ttk.Label(type_row, text="ชนิดความขัดแย้งที่นับใน TTC (TTC_Type ตามมุมด้านบน):").pack(side="left", padx=(0, 8))
+        ttk.Checkbutton(type_row, text="Rear-end (ทิศเดียวกัน)", variable=self.run3_ttc_include_rear_var).pack(side="left", padx=4)
+        ttk.Checkbutton(type_row, text="Lane change", variable=self.run3_ttc_include_lane_var).pack(side="left", padx=4)
+        ttk.Checkbutton(type_row, text="Crossing (ตัดขวาง)", variable=self.run3_ttc_include_cross_var).pack(side="left", padx=4)
+
+        self._indicator_page(nb, "PET")
+        mark("PET", self.run3_pet_enabled_var)
+        box = self._indicator_box("PET", self.run3_pet_enabled_var, "PET คำนวณแยกในแต่ละโซนที่ติ๊ก (ค่าเริ่มต้น Zone 3 / Zone 6)")
+        self._zone_checks(box, self.run3_pet_zone_vars, 1)
+        for i, (label, var) in enumerate((("PET threshold (s)", self.run3_pet_threshold_var),
+                                          ("PET max (s) — ว่าง = ไม่จำกัด", self.run3_pet_max_var),
+                                          ("ความเร็วขั้นต่ำของรถ (km/h) — ความเร็วตอนผ่านจุดตัดของคันใดต่ำกว่านี้ข้ามคู่นั้น ว่าง = ไม่จำกัด", self.run3_pet_min_speed_var))):
+            self._entry_row(box, 2 + i, label, var)
+        type_row = ttk.Frame(box)
+        type_row.grid(row=6, column=0, columnspan=8, sticky="w", pady=2)
+        ttk.Label(type_row, text="ชนิดความขัดแย้งที่นับใน PET (แบ่งด้วยมุมเดียวกับ TTC — ตั้งมุมในกรอบ TTC):").pack(side="left", padx=(0, 8))
+        ttk.Checkbutton(type_row, text="Rear-end (ทิศเดียวกัน)", variable=self.run3_pet_include_rear_var).pack(side="left", padx=4)
+        ttk.Checkbutton(type_row, text="Lane change", variable=self.run3_pet_include_lane_var).pack(side="left", padx=4)
+        ttk.Checkbutton(type_row, text="Crossing (ตัดขวาง)", variable=self.run3_pet_include_cross_var).pack(side="left", padx=4)
+
+        self._indicator_page(nb, "Speed")
+        mark("Speed", self.run3_speed_enabled_var)
+        box = self._indicator_box("Speed (ทุกเฟรม)", self.run3_speed_enabled_var,
+                                  "ความเร็วต่อโซน + ความเร็วภาพรวมตาม Movement (เช่น 2-3-4) — ความยาวเส้นทางเมตร ÷ เวลา")
+        self._zone_checks(box, self.run3_speed_zone_vars, 1)
+        self._entry_row(box, 2, "Median smoothing (จำนวนตัวอย่าง, 1 = ปิด)", self.run3_speed_smoothing_var)
+        self._entry_row(box, 3, "ความเร็วสูงสุดที่สมเหตุสมผล (km/h, 0 = ปิด) — เกินนี้ติดธง Speed_Above_Max ในไฟล์ Speed.csv (ไม่ลบแถว)", self.run3_speed_max_var, span=6)
+        self._entry_row(box, 4, "หน้าต่างความเร็วต่อเฟรม (s) — ความเร็วทุกเฟรมในตารางพิกัดเมตร ใช้ตำแหน่งในช่วง ± ครึ่งหนึ่งของค่านี้", self.run3_speed_frame_window_var)
+
+        self._indicator_page(nb, "เกณฑ์ความเสี่ยง")
+        box = ttk.LabelFrame(self._page, text="เกณฑ์ระดับความเสี่ยง (ดัชนี + ความเร็ว) — ค่าตั้งต้นตามสไลด์สัมมนา / CROW 2009", padding=10)
+        box.grid(row=self._flow_row, column=0, sticky="ew", padx=5, pady=5)
+        self._flow_row += 1
+        ttk.Label(box, text="ใส่ 3 ค่าคั่นด้วยจุลภาค: High / Moderate / Low  (TTC, PET: ต่ำกว่า = เสี่ยงกว่า → เรียงน้อยไปมาก;  LDP, ความเร็ว: สูงกว่า = เสี่ยงกว่า → เรียงมากไปน้อย).  "
+                            "ระดับรวม = ระดับที่ต่ำกว่าของ (ระดับดัชนี, ระดับความเร็ว);  ต่ำกว่าเกณฑ์สุดท้าย = Interaction (ไม่มีความเสี่ยง)",
+                  foreground="#555555", wraplength=900, justify="left").grid(row=0, column=0, columnspan=8, sticky="w", pady=(0, 4))
+        for i, (key, label) in enumerate((("risk_ttc_limits_s", "TTC (s)"), ("risk_pet_limits_s", "PET (s)"),
+                                          ("risk_ldp_limits_pct", "LDP (%)"),
+                                          ("risk_speed_limits_kmh", "ความเร็ว ของ TTC และ PET — ทุกชนิดรถ (km/h)"),
+                                          ("risk_ldp_speed_limits_kmh", "ความเร็ว ของ LDP (km/h)"))):
+            self._entry_row(box, 1 + i, label, self.run3_risk_vars[key], width=18)
+        ttk.Button(box, text="คืนค่าตามสไลด์", command=lambda: [v.set(RUN3_DEFAULTS[k]) for k, v in self.run3_risk_vars.items()]).grid(row=6, column=0, sticky="w", pady=(6, 0))
+
+
+    # ---------------- tab 5: detection and tracking ----------------
+    def build_detect_tab(self):
+        self._stretch_entries = True
+        box = self.section("โมเดล")
+        self.add_entry(box, 0, "ไฟล์โมเดล (.pt)", self.model_var, self.browse_model)
+        self.build_detection_section()
+        self.build_processing_section()
+        self.build_bytetrack_section()
+
+    # ========================================================
+    # INTEGRATED ZONE / LINE MEASUREMENT
+    # ========================================================
+
+    def _update_lane_totals(self):
+        """Show W_entry / W_opp (= motorcycle lane + car lane of each side)."""
+        def total(a, b):
+            try:
+                x = float(self.run3_geometry_vars[a].get().strip())
+                y = float(self.run3_geometry_vars[b].get().strip())
+                return f"{x + y:.3f} m"
+            except Exception:
+                return "-"
+        self.run3_w_entry_text.set("W_entry = " + total("lane_entry_motorcycle_m", "lane_entry_car_m"))
+        self.run3_w_opp_text.set("W_opp = " + total("lane_opp_motorcycle_m", "lane_opp_car_m"))
+
+    def update_trajectory_position_controls(self, event=None):
+        """Update the trajectory-position controls.
+
+        All nine anchor positions use the same inward Offset (%).
+        Center ignores Offset because it is already centered.
+        """
+        return
+
+    def refresh_measurement_status(self):
+        z = sum(1 for v in self.zones.values() if len(v) >= 3)
+        l = sum(1 for v in self.lines.values() if len(v) >= 2)
+        source = os.path.basename(self.zone_line_config_var.get().strip()) if self.zone_line_config_var.get().strip() else "None"
+        self.measurement_status_var.set(
+            f"PK Studio: {source} | Zones loaded: {z} | Lines loaded: {l} | "
+            f"Zone metrics: entry/exit/duration/distance/speed"
+        )
+
+    @staticmethod
+    def _normalize_zone_item(item, fallback_name=None):
+        """Convert one PK Studio zone record to a common internal format."""
+        if not isinstance(item, dict):
+            return None
+
+        name = str(item.get("name", fallback_name or "")).strip()
+        if not name:
+            zone_id = item.get("id")
+            name = f"Zone {zone_id}" if zone_id is not None else ""
+
+        points = item.get("points") or []
+        points_norm = item.get("points_norm") or []
+
+        def clean_points(raw):
+            result = []
+            for point in raw:
+                try:
+                    if len(point) >= 2:
+                        result.append((float(point[0]), float(point[1])))
+                except Exception:
+                    continue
+            return result
+
+        return {
+            "id": item.get("id"),
+            "name": name,
+            "points": clean_points(points),
+            "points_norm": clean_points(points_norm),
+            "color_bgr": item.get("color_bgr", [0, 255, 0]),
+            "show_label": bool(item.get("show_label", True)),
+            "area_px": item.get("area_px"),
+            "reference_frame_index": item.get("reference_frame_index"),
+        }
+
+    def _actual_video_size(self):
+        video = self.video_var.get().strip()
+        if not video or not os.path.isfile(video):
+            return None, None
+        cap = cv2.VideoCapture(video)
+        try:
+            if not cap.isOpened():
+                return None, None
+            return int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        finally:
+            cap.release()
+
+    def _prepare_zone_points(self, zone, source_width, source_height):
+        """Use pixel points when resolutions match; otherwise use points_norm."""
+        actual_w, actual_h = self._actual_video_size()
+        if not actual_w or not actual_h:
+            actual_w = source_width
+            actual_h = source_height
+
+        points = zone.get("points", [])
+        points_norm = zone.get("points_norm", [])
+
+        if source_width and source_height and (actual_w != source_width or actual_h != source_height):
+            if points_norm and actual_w and actual_h:
+                # PK Studio normalized coordinates are expected in [0, 1].
+                prepared = [(x * actual_w, y * actual_h) for x, y in points_norm]
+                return [(int(round(x)), int(round(y))) for x, y in prepared], True
+            if points and source_width and source_height:
+                # Fallback for older exports without points_norm.
+                sx = actual_w / float(source_width)
+                sy = actual_h / float(source_height)
+                prepared = [(x * sx, y * sy) for x, y in points]
+                return [(int(round(x)), int(round(y))) for x, y in prepared], True
+
+        return [(int(round(x)), int(round(y))) for x, y in points], False
+
+    def _load_pkstudio_json(self, path):
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        if not isinstance(data, dict):
+            raise ValueError("The selected JSON file must contain an object at the top level.")
+
+        raw_zones = data.get("zones")
+        if not isinstance(raw_zones, list):
+            # Compatibility with the older integrated JSON structure.
+            legacy = data.get("zones", {})
+            if isinstance(legacy, dict):
+                raw_zones = []
+                for name, points in legacy.items():
+                    raw_zones.append({"name": name, "points": points})
+            else:
+                raise ValueError("The JSON file does not contain a valid 'zones' list.")
+
+        source_width = data.get("frame_width")
+        source_height = data.get("frame_height")
+        try:
+            source_width = int(source_width) if source_width is not None else None
+            source_height = int(source_height) if source_height is not None else None
+        except Exception:
+            source_width = source_height = None
+
+        zones = {name: [] for name in ZONE_NAMES}
+        zone_meta = {}
+        loaded = []
+        scaled = []
+
+        for raw in raw_zones:
+            zone = self._normalize_zone_item(raw)
+            if not zone:
+                continue
+            name = zone["name"]
+            if name not in zones:
+                # Accept numeric IDs even if the name was omitted/different.
+                zid = zone.get("id")
+                if zid is not None and f"Zone {zid}" in zones:
+                    name = f"Zone {zid}"
+                    zone["name"] = name
+            if name not in zones:
+                continue
+
+            pts, was_scaled = self._prepare_zone_points(zone, source_width, source_height)
+            if len(pts) >= 3:
+                zones[name] = pts
+                zone_meta[name] = zone
+                loaded.append(name)
+                if was_scaled:
+                    scaled.append(name)
+
+        if not loaded:
+            raise ValueError("No valid Zone 1-7 definitions were found in the selected PK Studio file.")
+
+        # Lines (optional): {"Line 1": [[x, y], [x, y]], ...}. They are in the frame size
+        # given by lines_frame_width/height (written by the Line editor); otherwise in the
+        # Zone file frame size. They are scaled to the real video size like the Zones.
+        lines = {name: [] for name in LINE_NAMES}
+        raw_lines = data.get("lines", {})
+        if isinstance(raw_lines, dict):
+            try:
+                lines_w = int(data.get("lines_frame_width") or source_width or 0) or None
+                lines_h = int(data.get("lines_frame_height") or source_height or 0) or None
+            except Exception:
+                lines_w = lines_h = None
+            actual_w, actual_h = self._actual_video_size()
+            for name, pts in raw_lines.items():
+                if name in lines and isinstance(pts, list):
+                    cleaned = []
+                    for p in pts:
+                        try:
+                            cleaned.append((int(p[0]), int(p[1])))
+                        except Exception:
+                            pass
+                    if len(cleaned) == 2:
+                        lines[name] = scale_points(cleaned, lines_w, lines_h, actual_w, actual_h)
+
+        self.zones = zones
+        self.lines = lines
+        self.zone_line_config_var.set(path)
+        self.zone_source_video = str(data.get("video_path", ""))
+        self.zone_source_width = source_width
+        self.zone_source_height = source_height
+        self.zone_meta = zone_meta
+        self.zone_file_format = "JSON"
+        self.zone_scaled = scaled
+
+        self.refresh_measurement_status()
+
+        status = f"Loaded {len(loaded)} zones from PK Studio JSON"
+        if scaled:
+            status += f" | Rescaled: {', '.join(scaled)}"
+        self.status_var.set(status)
+
+        # The JSON can contain a source video path. It is informational only;
+        # the video selected in Run 1 remains the actual processing input.
+        selected_video = self.video_var.get().strip()
+        source_video = self.zone_source_video.strip()
+        if source_video and selected_video:
+            if os.path.basename(source_video).lower() != os.path.basename(selected_video).lower():
+                self.measurement_status_var.set(
+                    self.measurement_status_var.get()
+                    + " | Warning: JSON video name differs from selected video"
+                )
+
+        return True
+
+    def _load_pkstudio_python(self, path):
+        spec = importlib.util.spec_from_file_location("pkstudio_zone_export", path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError("Unable to load the PK Studio Zone Python file.")
+
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        raw_zones = getattr(module, "ZONES", None)
+        if not isinstance(raw_zones, list):
+            raise ValueError("The selected Python file does not contain a valid ZONES list exported by PK Studio.")
+
+        zones = {name: [] for name in ZONE_NAMES}
+        meta = {}
+        loaded = []
+
+        for raw in raw_zones:
+            zone = self._normalize_zone_item(raw)
+            if not zone:
+                continue
+            name = zone["name"]
+            zid = zone.get("id")
+            if name not in zones and zid is not None and f"Zone {zid}" in zones:
+                name = f"Zone {zid}"
+                zone["name"] = name
+            if name not in zones:
+                continue
+            if len(zone["points"]) >= 3:
+                zones[name] = [(int(round(x)), int(round(y))) for x, y in zone["points"]]
+                meta[name] = zone
+                loaded.append(name)
+
+        if not loaded:
+            raise ValueError("No Zone 1-7 definitions were found in the PK Studio Python export.")
+
+        lines = {name: [] for name in LINE_NAMES}
+        raw_lines = getattr(module, "LINES", {})
+        if isinstance(raw_lines, dict):
+            for name, pts in raw_lines.items():
+                if name in lines and isinstance(pts, list) and len(pts) == 2:
+                    try:
+                        lines[name] = [tuple(map(int, p[:2])) for p in pts]
+                    except Exception:
+                        pass
+
+        self.zones = zones
+        self.lines = lines
+        self.zone_line_config_var.set(path)
+        self.zone_source_video = str(getattr(module, "VIDEO", ""))
+        self.zone_source_width = getattr(module, "FRAME_WIDTH", None)
+        self.zone_source_height = getattr(module, "FRAME_HEIGHT", None)
+        self.zone_meta = meta
+        self.zone_file_format = "PY"
+        self.zone_scaled = []
+        self.refresh_measurement_status()
+        self.status_var.set(f"Loaded {len(loaded)} zones from PK Studio Python")
+        return True
+
+    def load_pkstudio_zones(self):
+        """Load either the current PK Studio JSON export or the older Python export."""
+        path = self.zone_line_config_var.get().strip()
+        if not path or not os.path.isfile(path):
+            path = filedialog.askopenfilename(
+                title="Load PK Studio Zone File",
+                filetypes=[
+                    ("PK Studio Zone files", "*.json *.py"),
+                    ("JSON files", "*.json"),
+                    ("Python files", "*.py"),
+                    ("All files", "*.*")
+                ]
+            )
+        if not path:
+            return False
+
+        try:
+            if path.lower().endswith(".json"):
+                ok = self._load_pkstudio_json(path)
+            elif path.lower().endswith(".py"):
+                ok = self._load_pkstudio_python(path)
+            else:
+                raise ValueError("Zone file must be .json or .py")
+
+            if ok:
+                self.validate_measurements()
+            return bool(ok)
+
+        except Exception as exc:
+            messagebox.showerror("PK Studio Zone Load Error", str(exc))
+            return False
+
+    def load_measurement_config(self):
+        return self.load_pkstudio_zones()
+
+    # ========================================================
+    # LINE EDITOR (Reference Lines for Gap Acceptance)
+    # ========================================================
+
+    # ========================================================
+    # BATCH (many clips: time range + recording per clip, mirrored output folders)
+    # ========================================================
+
+    def start_batch(self, clips, out_root, skip_done):
+        """Validate like START RUN, then run all clips one after another in a worker thread.
+        Returns True when the batch was started."""
+        if self.running:
+            return False
+        if not clips:
+            messagebox.showerror("Batch", "ยังไม่ได้เลือกคลิป")
+            return False
+        for c in clips:
+            if not os.path.isfile(c["video"]):
+                messagebox.showerror("Batch", "ไม่พบไฟล์วิดีโอ\n\n" + c["video"])
+                return False
+            try:
+                for key in ("analysis_start_s", "analysis_end_s", "record_start_s", "record_end_s"):
+                    parse_clock_time(c.get(key, ""))
+            except ValueError as exc:
+                messagebox.showerror("Batch", f"{os.path.basename(c['video'])}: {exc}")
+                return False
+        clash = _tools_module("batch_run").duplicate_run_dirs(
+            out_root, [(c["video"], str(c.get("rel_dir", "") or ""), {}) for c in clips])
+        if clash:
+            messagebox.showerror("Batch", "มีคลิปสองไฟล์ที่ได้โฟลเดอร์ผลลัพธ์ชื่อเดียวกัน (ชื่อไฟล์เหมือนกันต่างนามสกุล?)\n\n" + "\n".join(clash[:5]))
+            return False
+        self.video_var.set(clips[0]["video"])      # validate_settings wants an existing video
+        try:
+            self.validate_measurements()
+            self.validate_run3_settings()
+        except Exception as exc:
+            messagebox.showerror("Run 3 / Measurement Configuration", str(exc))
+            return False
+        if not self.validate_settings():
+            return False
+        try:
+            selected_device = self.resolve_device()
+        except Exception as e:
+            if self.offer_restart_with_cuda_python(str(e)):
+                return False
+            messagebox.showerror("CUDA / Device Error", str(e))
+            return False
+        self._run3_warnings = self.collect_run3_warnings()
+        if self._run3_warnings:
+            text = "\n\n".join(f"• {w}" for w in self._run3_warnings)
+            if not messagebox.askokcancel("Run 3 pre-flight warnings", text + "\n\nContinue anyway?", icon="warning"):
+                return False
+        settings = self.get_settings()
+        self._rt = self._runtime_snapshot(settings)
+        self._run3_cfg = self._run3_snapshot_config()
+        self._zone_poly_cache = None
+        self._overlay_cache = None
+        self.running = True
+        self._batch_mode = True
+        self._last_run_error = ""
+        self.stop_event.clear()
+        self.pause_event.set()
+        self.start_button.config(state="disabled")
+        self.pause_button.config(state="normal", text="Ⅱ PAUSE")
+        self.stop_button.config(state="normal")
+        self.status_var.set(f"Starting Batch ({len(clips)} clips) | Device = {selected_device}")
+        self.progress_var.set("")
+        self.time_var.set("")
+        self.worker_thread = threading.Thread(
+            target=self._batch_worker, args=(settings, [dict(c) for c in clips], out_root, skip_done), daemon=True)
+        self.worker_thread.start()
+        return True
+
+    def _batch_worker(self, base_settings, clips, out_root, skip_done):
+        bt = _tools_module("batch_run")
+        rows, runs, empties = [], [], []
+        stopped = False
+        fatal = ""
+        n = len(clips)
+        self._carry = None
+        try:
+            os.makedirs(out_root, exist_ok=True)
+            for i, c in enumerate(clips, 1):
+                rel = str(c.get("rel_dir", "") or "")
+                runs.append((c["video"], rel, {}))
+                if self.stop_event.is_set():
+                    stopped = True
+                    break
+                st, name, run_dir = bt.clip_settings(base_settings, c["video"], rel, {}, out_root, c, c.get("save_video", False),
+                                                     show_preview=bool(base_settings.get("show_preview")))
+                st["continue_tracker"] = bool(c.get("continues_previous")) and i > 1
+                os.makedirs(run_dir, exist_ok=True)
+                if skip_done and bt.summary_path(run_dir, name) is not None:
+                    self._carry = None          # nothing was run, so there is no tracker to continue
+                    rows.append(bt.collect_row(run_dir, name, c["video"], rel, {}, "", 0.0))
+                    self.update_ui(status=f"Batch {i}/{n}: {name} — already done, skipped")
+                    continue
+                self.update_ui(status=f"Batch {i}/{n}: {name}")
+                self._last_run_error = ""
+                self.run3_last_summary = None
+                t0 = time.time()
+                self.run_processing(st)
+                reasons = ((self.run3_last_summary or {}).get("diagnostics", {}) or {}).get("empty_outputs", []) or []
+                if reasons:
+                    empties.append((name, list(reasons)))
+                rows.append(bt.collect_row(run_dir, name, c["video"], rel, {}, self._last_run_error, time.time() - t0))
+                if self.stop_event.is_set():
+                    stopped = True
+                    break
+            bt.finish_batch(out_root, runs, rows, log=lambda m: print(m))
+        except Exception as exc:
+            log.exception("Batch failed")
+            fatal = str(exc)
+        self.post_ui(lambda: self.finish_batch_ui(rows, n, out_root, stopped, fatal, empties))
+
+    def finish_batch_ui(self, rows, total, out_root, stopped, fatal, empties=()):
+        self.running = False
+        self._batch_mode = False
+        self._rt = None
+        self.start_button.config(state="normal")
+        self.pause_button.config(state="disabled", text="Ⅱ PAUSE")
+        self.stop_button.config(state="disabled")
+        ok = [r for r in rows if str(r["Status"]).startswith(("completed", "stopped"))]
+        bad = [r for r in rows if str(r["Status"]).startswith("ERROR") or r["Status"] == "no summary"]
+        self.status_var.set(f"Batch finished: {len(ok)}/{total} clips" + (" (stopped)" if stopped else ""))
+        self.progress_var.set("100%" if not stopped else "")
+        msg = f"Batch {'หยุดกลางทาง' if stopped else 'เสร็จ'}: {len(ok)} จาก {total} คลิป\n\nผลลัพธ์:\n{out_root}\n\n"
+        msg += "• โฟลเดอร์ของแต่ละคลิป (ตามโครงสร้างต้นฉบับ) = CSV ของคลิปนั้น (ชื่อไฟล์ขึ้นต้นด้วยชื่อคลิป)\n• All_Clips (ในโฟลเดอร์ชั้นบนสุดที่นำเข้า) = CSV รวมทุกคลิป มีคอลัมน์ Clip บอกว่าแถวมาจากคลิปไหน (รวมคลิปรอบก่อน ๆ ที่อยู่ในโฟลเดอร์เดียวกัน)\n• Batch_Comparison.csv = ตารางเปรียบเทียบทุกคลิปในโฟลเดอร์ผลลัพธ์"
+        if bad:
+            msg += "\n\nคลิปที่มีปัญหา:\n" + "\n".join(f"- {r['Run']}: {r['Status']}" for r in bad)
+        if empties:
+            msg += "\n\nตัวชี้วัดที่ไม่มีข้อมูล (ไฟล์ CSV มีแต่หัวแถว) และสาเหตุ:"
+            for clip_name, reasons in empties[:3]:
+                msg += f"\n\n[{clip_name}]\n" + "\n".join("• " + r for r in reasons)
+            if len(empties) > 3:
+                msg += f"\n\n… และอีก {len(empties) - 3} คลิป (ดูใน <ชื่อคลิป>_Summary.json → diagnostics.empty_outputs ของแต่ละคลิป)"
+        if fatal:
+            msg += "\n\nข้อผิดพลาด: " + fatal
+        messagebox.showinfo("PK Studio Batch", msg)
+
+    def _edit_video_path(self):
+        """The video the Align / zone editor / Line windows start with: the one chosen inside one of them (kept until the main video changes), else the main one."""
+        chosen = str(getattr(self, "edit_video", "") or "")
+        if chosen and os.path.isfile(chosen):
+            return chosen
+        return str(self.video_var.get() or "").strip()
+
+    def open_line_editor(self):
+        """Open the dialog that draws the Reference Lines on a frame of the video."""
+        video = self._edit_video_path()
+        if not video or not os.path.isfile(video):
+            messagebox.showerror("วาด Line", "เลือกไฟล์วิดีโอ (Video) ก่อน — Line วาดบนเฟรมของวิดีโอ")
+            return None
+        if not any(len(v) >= 3 for v in self.zones.values()):
+            if not messagebox.askyesno("วาด Line", "ยังไม่ได้โหลดไฟล์ Zone (Line จะถูกบันทึกลงไฟล์ Zone)\n\nโหลดไฟล์ Zone ตอนนี้หรือไม่?"):
+                return None
+            if not self.load_pkstudio_zones():
+                return None
+        cap = cv2.VideoCapture(video)
+        try:
+            ok, frame = cap.read()
+        finally:
+            cap.release()
+        if not ok or frame is None:
+            messagebox.showerror("วาด Line", "อ่านเฟรมจากวิดีโอไม่ได้")
+            return None
+        movements = []
+        for streams in RUN3_GAP_CONFLICT_MAP.values():
+            for mv in streams:
+                if mv not in movements:
+                    movements.append(mv)
+        site = self.run3_site_id_var.get().strip()
+        text = self.run3_reference_text.get("1.0", "end-1c") if hasattr(self, "run3_reference_text") else self.run3_reference_mapping_text
+        try:
+            existing = {mv: ln for (st, mv), ln in self._run3_parse_reference_mapping(text).items() if st == site}
+        except Exception:
+            existing = {}
+        assignments = {}
+        used = set()
+        for mv in movements:
+            if existing.get(mv) in LINE_NAMES:
+                assignments[mv] = existing[mv]
+                used.add(existing[mv])
+        free = [ln for ln in LINE_NAMES if ln not in used]
+        for mv in movements:
+            if mv not in assignments:
+                assignments[mv] = free.pop(0)
+        source = self.run3_ref_line_source_var.get()
+        modes = {}
+        for mv in movements:
+            row = existing.get(mv)
+            if source == "zone_edge" or (source == "per_stream" and str(row or "").startswith("Edge")):
+                modes[mv] = "edge"                                    # what a run would use now: the shared edge (the dialog turns it into "drawn" when there is none)
+            else:
+                modes[mv] = "drawn"
+        self.line_editor = LineEditorDialog(self, frame, 0, movements, assignments, self.lines, modes, video_path=video)
+        return self.line_editor
+
+    def apply_editor_lines(self, lines_by_name, assignments, frame_w, frame_h):
+        """Store the drawn Lines, write them into the Zone JSON and fill the mapping text (`assignments` = {stream: "Line N" or "Edge a-b"})."""
+        path = self.zone_line_config_var.get().strip()
+        try:
+            if not lines_by_name:
+                raise _NoLinesToSave()
+            if path.lower().endswith(".json") and os.path.isfile(path):
+                if not messagebox.askyesno(
+                        "บันทึก Line",
+                        f"เพิ่ม Line ลงในไฟล์ Zone:\n{path}\n\n(ไฟล์เดิมจะสำรองไว้เป็น .bak ครั้งแรก) ตกลงหรือไม่?"):
+                    return False
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if not os.path.isfile(path + ".bak"):
+                    shutil.copyfile(path, path + ".bak")
+            else:
+                new_path = filedialog.asksaveasfilename(
+                    title="บันทึกโซน + Line เป็นไฟล์ JSON ใหม่", defaultextension=".json",
+                    filetypes=[("JSON files", "*.json")],
+                    initialfile=(os.path.splitext(os.path.basename(path))[0] if path else "zones") + "_with_lines.json")
+                if not new_path:
+                    return False
+                path = new_path
+                zones = []
+                for index, name in enumerate(ZONE_NAMES, start=1):
+                    pts = self.zones.get(name, [])
+                    if len(pts) >= 3:
+                        zones.append({"id": index, "name": name, "points": [list(q) for q in pts]})
+                data = {"video_path": self.video_var.get().strip(),
+                        "frame_width": self.zone_source_width or frame_w,
+                        "frame_height": self.zone_source_height or frame_h,
+                        "zones": zones}
+            saved = data.get("lines") if isinstance(data.get("lines"), dict) else {}
+            for name, pts in lines_by_name.items():
+                saved[name] = [list(q) for q in pts]
+            data["lines"] = saved
+            data["lines_frame_width"] = frame_w
+            data["lines_frame_height"] = frame_h
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=4, ensure_ascii=False)
+        except _NoLinesToSave:
+            pass
+        except Exception as exc:
+            messagebox.showerror("บันทึก Line", f"บันทึกไม่สำเร็จ:\n{exc}")
+            return False
+
+        for name, pts in lines_by_name.items():
+            self.lines[name] = [tuple(q) for q in pts]
+        if lines_by_name:
+            self.zone_line_config_var.set(path)
+        site = self.run3_site_id_var.get().strip()
+        old = self.run3_reference_text.get("1.0", "end-1c") if hasattr(self, "run3_reference_text") else self.run3_reference_mapping_text
+        new_text = update_reference_mapping_text(old, site, assignments)
+        self.run3_reference_mapping_text = new_text
+        if hasattr(self, "run3_reference_text"):
+            self.run3_reference_text.delete("1.0", "end")
+            self.run3_reference_text.insert("1.0", new_text)
+        self.refresh_measurement_status()
+        if lines_by_name:
+            self.status_var.set(f"บันทึก {len(lines_by_name)} Line ลง {os.path.basename(path)} และเติม Reference Line Mapping แล้ว")
+        else:
+            self.status_var.set("เติม Reference Line Mapping แล้ว (ทุกกระแสใช้ขอบโซนที่ติดกัน ไม่มี Line ใหม่)")
+        return True
+
+    def save_measurement_config(self):
+        # Save the currently loaded geometry as a normalized JSON snapshot.
+        path = filedialog.asksaveasfilename(
+            title="Save Zone Configuration Snapshot",
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+            initialfile="Run_1_Zone_Config_Used.json"
+        )
+        if not path:
+            return
+
+        zones = []
+        for index, name in enumerate(ZONE_NAMES, start=1):
+            points = self.zones.get(name, [])
+            if len(points) < 3:
+                continue
+            meta = getattr(self, "zone_meta", {}).get(name, {})
+            zones.append({
+                "id": meta.get("id", index),
+                "name": name,
+                "points": [list(p) for p in points],
+                "color_bgr": meta.get("color_bgr", [0, 255, 0]),
+                "show_label": meta.get("show_label", True),
+                "area_px": meta.get("area_px"),
+                "reference_frame_index": meta.get("reference_frame_index"),
+            })
+
+        data = {
+            "video_path": self.zone_source_video,
+            "frame_width": self.zone_source_width,
+            "frame_height": self.zone_source_height,
+            "zones": zones,
+            "source_format": getattr(self, "zone_file_format", None),
+        }
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
+        self.status_var.set("Zone configuration snapshot saved")
+
+    def draw_measurement_overlay(self, frame, frame_index, fps, zone_track_state, line_track_state, zone_entry_count, line_cross_count):
+        """Draw optional, faint Zone boundaries and labels.
+
+        Zone fill/background is never drawn. The user can independently toggle
+        the Zone boundary and Zone label. Label text can be shown as either
+        ``Zone 6`` or simply ``6``. Both are blended onto the original frame
+        so they remain visually faint without a solid background rectangle.
+        """
+        rt = self._rt if (self.running and self._rt) else None
+        if rt is not None:
+            opacity = rt["zone_opacity"]
+            show_boundary = rt["show_zone_boundary"]
+            show_label = rt["show_zone_label"]
+            label_prefix = rt["show_zone_label_prefix"]
+        else:
+            try:
+                opacity = max(0.0, min(1.0, float(self.zone_overlay_opacity_var.get()) / 100.0))
+            except Exception:
+                opacity = 0.45
+            show_boundary = bool(self.show_zone_boundary_var.get())
+            show_label = bool(self.show_zone_label_var.get())
+            label_prefix = bool(self.show_zone_label_prefix_var.get())
+
+        # V27: the faint Zone layer is static, so it is rendered once and
+        # only its non-empty pixels are blended on each frame (V26 copied and
+        # blended the full frame every frame).
+        if (show_boundary or show_label) and opacity <= 0.0:
+            show_boundary = show_label = False   # nothing visible to draw
+        if show_boundary or show_label:
+            key = (frame.shape, opacity, show_boundary, show_label, label_prefix,
+                   tuple((z, tuple(map(tuple, self.zones.get(z, [])))) for z in ZONE_NAMES))
+            cache = getattr(self, "_overlay_cache", None)
+            if cache is None or cache[0] != key:
+                layer = np.zeros_like(frame)
+                self._draw_zone_layer(layer, show_boundary, show_label, label_prefix)
+                cover = np.zeros(frame.shape[:2], dtype=np.uint8)
+                self._draw_zone_layer(cover, show_boundary, show_label, label_prefix, mono=True)
+                idx = np.nonzero(cover)
+                alpha = (cover[idx].astype(np.float32) / 255.0 * opacity)[:, None]
+                cache = (key, idx, alpha, layer[idx].astype(np.float32) * opacity)
+                self._overlay_cache = cache
+            _, idx, alpha, colored = cache
+            if len(idx[0]):
+                px = frame[idx].astype(np.float32)
+                frame[idx] = np.clip(px * (1.0 - alpha) + colored, 0, 255).astype(np.uint8)
+            show_boundary = show_label = False   # skip the legacy full-frame path
+
+        # Draw only the enabled Zone elements onto a temporary layer, then
+        # blend that layer with the original frame. This creates a faint
+        # appearance and, importantly, no black/solid label background.
+        if show_boundary or show_label:
+            overlay = frame.copy()
+
+            for zname in ZONE_NAMES:
+                polygon = self.zones.get(zname, [])
+                if len(polygon) < 3:
+                    continue
+
+                pts = np.array(polygon, dtype=np.int32).reshape((-1, 1, 2))
+                meta = getattr(self, "zone_meta", {}).get(zname, {})
+                color_raw = meta.get("color_bgr", [0, 200, 0])
+                try:
+                    color = tuple(int(max(0, min(255, v))) for v in color_raw[:3])
+                    if len(color) != 3:
+                        color = (0, 200, 0)
+                except Exception:
+                    color = (0, 200, 0)
+
+                if show_boundary:
+                    # 1 px is deliberately light; opacity controls overall strength.
+                    cv2.polylines(overlay, [pts], True, color, 1, cv2.LINE_AA)
+
+                if show_label and meta.get("show_label", True):
+                    moments = cv2.moments(pts)
+                    if abs(moments.get("m00", 0.0)) > 1e-6:
+                        cx = int(moments["m10"] / moments["m00"])
+                        cy = int(moments["m01"] / moments["m00"])
+                    else:
+                        cx = int(np.mean([p[0] for p in polygon]))
+                        cy = int(np.mean([p[1] for p in polygon]))
+
+                    # Toggle whether the word "Zone" is included.
+                    label = zname if label_prefix else zname.replace("Zone ", "", 1)
+                    font = cv2.FONT_HERSHEY_SIMPLEX
+                    font_scale = 0.55
+                    thickness = 1
+                    (tw, th), _ = cv2.getTextSize(label, font, font_scale, thickness)
+                    tx = max(5, cx - tw // 2)
+                    ty = max(th + 5, cy + th // 2)
+
+                    # No rectangle/background: text is drawn directly on the
+                    # transparent overlay and then blended with the frame.
+                    cv2.putText(
+                        overlay, label, (tx, ty), font, font_scale,
+                        color, thickness, cv2.LINE_AA
+                    )
+
+            if opacity > 0.0:
+                cv2.addWeighted(overlay, opacity, frame, 1.0 - opacity, 0, frame)
+
+        # The reference lines Gap Acceptance / Headway really use (a drawn Line or the edge two zones share) - not every Line that was ever drawn.
+        if rt is not None:
+            ref_lines = rt.get("ref_lines") if rt.get("show_ref_lines", True) else []
+        else:
+            ref_lines = self._display_ref_lines() if bool(self.show_ref_lines_var.get()) else []
+        for label, p1, p2 in ref_lines or []:
+            p1 = (int(round(p1[0])), int(round(p1[1]))); p2 = (int(round(p2[0])), int(round(p2[1])))
+            cv2.line(frame, p1, p2, (255, 255, 255), 4, cv2.LINE_AA)
+            cv2.circle(frame, p1, 6, (255, 255, 255), -1)
+            cv2.circle(frame, p2, 6, (255, 255, 255), -1)
+            mx, my = (p1[0] + p2[0]) // 2, (p1[1] + p2[1]) // 2
+            cv2.putText(frame, label, (mx, max(20, my - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2, cv2.LINE_AA)
+
+    # ========================================================
+    # V27 RUNTIME SNAPSHOT (read once on the main thread)
+    # ========================================================
+
+    _ANCHORS = {
+        "Top": (50.0, 0.0), "Center": (50.0, 50.0), "Bottom": (50.0, 100.0),
+        "Left": (0.0, 50.0), "Right": (100.0, 50.0),
+        "Top Left": (0.0, 0.0), "Top Right": (100.0, 0.0),
+        "Bottom Left": (0.0, 100.0), "Bottom Right": (100.0, 100.0),
+    }
+
+    def _anchor_fraction(self, position, offset_text):
+        try:
+            offset = max(0.0, min(50.0, float(offset_text)))
+        except Exception:
+            offset = 0.0
+        px, py = self._ANCHORS.get(str(position).strip(), self._ANCHORS["Center"])
+        # Move only the coordinates that touch an edge.
+        if px == 0.0:
+            px = offset
+        elif px == 100.0:
+            px = 100.0 - offset
+        if py == 0.0:
+            py = offset
+        elif py == 100.0:
+            py = 100.0 - offset
+        return px / 100.0, py / 100.0
+
+    def _runtime_snapshot(self, settings=None):
+        """Values used for every detection/frame, copied from Tk once."""
+        def b(var):
+            try:
+                return bool(var.get())
+            except Exception:
+                return False
+        try:
+            opacity = max(0.0, min(1.0, float(self.zone_overlay_opacity_var.get()) / 100.0))
+        except Exception:
+            opacity = 0.45
+        try:
+            live_ppm = float(self.run3_ppm_var.get())
+        except Exception:
+            live_ppm = 0.0
+        rt = {
+            "anchor": self._anchor_fraction(self.trajectory_position_var.get(), self.trajectory_offset_var.get()),
+            "zone_opacity": opacity,
+            "show_zone_boundary": b(self.show_zone_boundary_var),
+            "show_zone_label": b(self.show_zone_label_var),
+            "show_zone_label_prefix": b(self.show_zone_label_prefix_var),
+            "show_bbox": b(self.show_bbox_var),
+            "show_ref_lines": b(self.show_ref_lines_var),
+            "ref_lines": self._display_ref_lines() if b(self.show_ref_lines_var) else [],
+            "show_decision_point": b(self.draw_center_var),
+            "show_info_text": b(self.show_info_text_var),
+            "outside_zone_normal": str(self.outside_zone_normal_var.get() or "dot"),
+            "live_ppm": live_ppm,
+        }
+        for name in ("id", "class", "conf", "zone", "speed"):
+            rt[f"show_label_{name}"] = b(getattr(self, f"show_label_{name}_var"))
+            rt[f"show_prefix_{name}"] = b(getattr(self, f"show_prefix_{name}_var"))
+        return rt
+
+    def get_zone_reference_point(self, x1, y1, x2, y2):
+        """Return the selected Trajectory Position inside the bounding box.
+
+        Nine anchors are supported: Top, Center, Bottom, Left, Right,
+        Top Left, Top Right, Bottom Left, Bottom Right.
+        Offset (%) moves the anchor inward from the selected edge(s).
+        V27: during a run the anchor comes from the start-of-run snapshot.
+        """
+        rt = self._rt if (self.running and self._rt) else None
+        if rt is not None:
+            fx, fy = rt["anchor"]
+        else:
+            fx, fy = self._anchor_fraction(self.trajectory_position_var.get(), self.trajectory_offset_var.get())
+        return (
+            int(round(x1 + (x2 - x1) * fx)),
+            int(round(y1 + (y2 - y1) * fy)),
+        )
+
+    def _zone_polygons(self):
+        """Cached int32 polygons for Zone assignment (built once per geometry)."""
+        key = (id(self.zones),) + tuple((z, id(self.zones.get(z)), len(self.zones.get(z, []))) for z in ZONE_NAMES)
+        cache = getattr(self, "_zone_poly_cache", None)
+        if cache is None or cache[0] != key:
+            polys = [
+                (z, np.array(self.zones[z], dtype=np.int32))
+                for z in ZONE_NAMES if len(self.zones.get(z, [])) >= 3
+            ]
+            cache = (key, polys)
+            self._zone_poly_cache = cache
+        return cache[1]
+
+    def _draw_zone_layer(self, layer, show_boundary, show_label, label_prefix, mono=False):
+        """Draw Zone boundaries/labels once onto a static layer."""
+        for zname in ZONE_NAMES:
+            polygon = self.zones.get(zname, [])
+            if len(polygon) < 3:
+                continue
+            pts = np.array(polygon, dtype=np.int32).reshape((-1, 1, 2))
+            meta = getattr(self, "zone_meta", {}).get(zname, {})
+            if mono:
+                color = 255
+            else:
+                try:
+                    color = tuple(int(max(0, min(255, v))) for v in meta.get("color_bgr", [0, 200, 0])[:3])
+                    if len(color) != 3:
+                        color = (0, 200, 0)
+                except Exception:
+                    color = (0, 200, 0)
+            if show_boundary:
+                cv2.polylines(layer, [pts], True, color, 1, cv2.LINE_AA)
+            if show_label and meta.get("show_label", True):
+                moments = cv2.moments(pts)
+                if abs(moments.get("m00", 0.0)) > 1e-6:
+                    cx = int(moments["m10"] / moments["m00"]); cy = int(moments["m01"] / moments["m00"])
+                else:
+                    cx = int(np.mean([p[0] for p in polygon])); cy = int(np.mean([p[1] for p in polygon]))
+                label = zname if label_prefix else zname.replace("Zone ", "", 1)
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                (tw, th), _ = cv2.getTextSize(label, font, 0.55, 1)
+                cv2.putText(layer, label, (max(5, cx - tw // 2), max(th + 5, cy + th // 2)),
+                            font, 0.55, color, 1, cv2.LINE_AA)
+
+
+    def get_zone_from_trajectory_point(self, point):
+        """Return the first Zone containing the selected Trajectory Position point.
+
+        Zone membership is based ONLY on the selected Trajectory Position.
+        The bounding-box area, overlap ratio, confidence score, and weighting
+        are not calculated.
+        """
+        if point is None:
+            return None
+        pt = (float(point[0]), float(point[1]))
+        for zname, poly in self._zone_polygons():
+            if cv2.pointPolygonTest(poly, pt, False) >= 0:
+                return zname
+        return None
+
+    def assign_zone_candidate(self, x1, y1, x2, y2):
+        """Assign Zone using only the selected Trajectory Position."""
+        point = self.get_zone_reference_point(x1, y1, x2, y2)
+        zone = self.get_zone_from_trajectory_point(point)
+        confidence = 1.0 if zone else 0.0
+        scores = {zone: 1.0} if zone else {}
+        return zone, confidence, {}, point, scores
+
+
+    def confirm_zone(self, track_state, candidate, candidate_confidence, frame_index, confirmation_frames):
+        """Confirm a Zone and clear it when the selected point leaves all Zones."""
+        confirmation_frames = max(1, int(confirmation_frames))
+
+        if candidate is None:
+            track_state["candidate_zone"] = None
+            track_state["candidate_count"] = 0
+            track_state["candidate_confidence"] = 0.0
+            track_state["no_zone_count"] = track_state.get("no_zone_count", 0) + 1
+
+            # Important: a tracked object must stop being displayed as a Zone
+            # object after its selected reference point leaves the Zone.
+            if track_state["no_zone_count"] >= confirmation_frames:
+                changed = track_state.get("confirmed_zone") is not None
+                track_state["confirmed_zone"] = None
+                track_state["confirmed_confidence"] = 0.0
+                return None, changed
+
+            return track_state.get("confirmed_zone"), False
+
+        track_state["no_zone_count"] = 0
+
+        if candidate == track_state.get("candidate_zone"):
+            track_state["candidate_count"] = track_state.get("candidate_count", 0) + 1
+        else:
+            track_state["candidate_zone"] = candidate
+            track_state["candidate_count"] = 1
+
+        track_state["candidate_confidence"] = candidate_confidence
+
+        if track_state["candidate_count"] >= confirmation_frames:
+            changed = track_state.get("confirmed_zone") != candidate
+            track_state["confirmed_zone"] = candidate
+            track_state["confirmed_confidence"] = candidate_confidence
+            return candidate, changed
+
+        return track_state.get("confirmed_zone"), False
+
+    @staticmethod
+    def point_in_zone(x, y, points):
+        if len(points) < 3:
+            return False
+        polygon = np.array(points, dtype=np.int32)
+        return cv2.pointPolygonTest(polygon, (float(x), float(y)), False) >= 0
+
+    @staticmethod
+    def line_side(point, line):
+        if len(line) < 2:
+            return 0.0
+        (x1, y1), (x2, y2) = line
+        x, y = point
+        return (x2 - x1) * (y - y1) - (y2 - y1) * (x - x1)
+
+    @classmethod
+    def line_crossing(cls, prev_point, curr_point, line):
+        if len(line) < 2 or prev_point is None or curr_point is None:
+            return None
+        a = cls.line_side(prev_point, line)
+        b = cls.line_side(curr_point, line)
+        if a == 0 or b == 0 or (a < 0 < b) or (a > 0 > b):
+            direction = "A_to_B" if a < b else "B_to_A"
+            return direction
+        return None
+
+    def validate_measurements(self):
+        has_any = any(len(v) >= 3 for v in self.zones.values()) or any(len(v) >= 2 for v in self.lines.values())
+        if not has_any:
+            return True
+        bad_z = [k for k,v in self.zones.items() if v and len(v) < 3]
+        bad_l = [k for k,v in self.lines.items() if v and len(v) != 2]
+        if bad_z or bad_l:
+            raise ValueError(f"Invalid measurement geometry. Zones need 3+ points; Lines need exactly 2 points.\nZones: {bad_z}\nLines: {bad_l}")
+        return True
+
+    # ========================================================
+    # SCROLL
+    # ========================================================
+
+    # ========================================================
+    # DETECTION
+    # ========================================================
+
+    def build_detection_section(self):
+
+        frame = self.section(
+            "การตรวจจับ (YOLO)",
+            1,
+            1
+        )
+
+        self.add_entry(
+            frame, 0, "Confidence",
+            self.conf_var
+        )
+
+        self.add_entry(
+            frame, 1, "IoU",
+            self.iou_var
+        )
+
+        ttk.Label(
+            frame,
+            text="Image Size"
+        ).grid(
+            row=2,
+            column=0,
+            sticky="w",
+            pady=4
+        )
+
+        ttk.Combobox(
+            frame,
+            textvariable=self.img_size_var,
+            values=[
+                "320", "416", "512", "640",
+                "768", "960", "1280"
+            ],
+            state="readonly",
+            width=15
+        ).grid(
+            row=2,
+            column=1,
+            sticky="w"
+        )
+
+        ttk.Label(
+            frame,
+            text="Tracker"
+        ).grid(
+            row=3,
+            column=0,
+            sticky="w",
+            pady=4
+        )
+
+        ttk.Combobox(
+            frame,
+            textvariable=self.tracker_var,
+            values=[
+                "ByteTrack",
+                "BoT-SORT"
+            ],
+            state="readonly",
+            width=15
+        ).grid(
+            row=3,
+            column=1,
+            sticky="w"
+        )
+
+        # speed options (PKT 1.33.0)
+        ttk.Checkbutton(frame, text="เร่ง YOLO ด้วย TensorRT (ไม่มี tensorrt จะติดตั้งให้เองด้วย pip; ครั้งแรกสร้างไฟล์ .engine ใช้เวลาหลายนาที; ใช้ไม่ได้จะกลับไปใช้ .pt เอง)",
+                        variable=self.use_tensorrt_var).grid(row=4, column=0, columnspan=2, sticky="w", pady=2)
+        ttk.Checkbutton(frame, text="ถอดรหัสวิดีโอด้วยการ์ดจอ (ถ้า OpenCV รองรับ; ไม่รองรับจะใช้วิธีปกติเอง)",
+                        variable=self.hw_decode_var).grid(row=5, column=0, columnspan=2, sticky="w", pady=2)
+        self.add_entry(frame, 6, "วิดีโอผลลัพธ์กว้างไม่เกิน (px, 0 = เท่าต้นฉบับ)", self.video_max_width_var)
+        self.add_entry(frame, 7, "วิดีโอผลลัพธ์ fps (0 = เท่าต้นฉบับ; ต่ำลง = เข้ารหัสเร็วขึ้น ไฟล์เล็กลง ความยาวเท่าเดิม)", self.video_fps_var)
+        self.add_entry(frame, 8, "วิดีโอ X-Y / X-Y บนโดรน: ด้านยาวไม่เกิน (px)", self.topview_max_px_var)
+        self.add_entry(frame, 9, "วิดีโอ X-Y / X-Y บนโดรน: fps (0 = ตามเฟรมที่ประมวลผล)", self.topview_fps_var)
+
+    # ========================================================
+    # PROCESSING
+    # ========================================================
+
+    def build_processing_section(self):
+
+        frame = self.section(
+            "การประมวลผล",
+            0,
+            2
+        )
+
+        ttk.Label(
+            frame,
+            text="Device"
+        ).grid(
+            row=0,
+            column=0,
+            sticky="w",
+            pady=4
+        )
+
+        ttk.Combobox(
+            frame,
+            textvariable=self.device_var,
+            values=[
+                "Auto",
+                "CPU",
+                "GPU 0",
+                "GPU DirectML"
+            ],
+            state="readonly",
+            width=18
+        ).grid(
+            row=0,
+            column=1,
+            sticky="w"
+        )
+
+        ttk.Label(
+            frame,
+            text="Precision"
+        ).grid(
+            row=1,
+            column=0,
+            sticky="w",
+            pady=4
+        )
+
+        ttk.Combobox(
+            frame,
+            textvariable=self.precision_var,
+            values=[
+                "Auto",
+                "FP16",
+                "FP32"
+            ],
+            state="readonly",
+            width=18
+        ).grid(
+            row=1,
+            column=1,
+            sticky="w"
+        )
+
+        ttk.Label(
+            frame,
+            text="Frame Skip"
+        ).grid(
+            row=2,
+            column=0,
+            sticky="w",
+            pady=4
+        )
+
+        ttk.Combobox(
+            frame,
+            textvariable=self.frame_skip_var,
+            values=[
+                "NO - Process every frame",
+                "1 - Process every 2nd frame",
+                "2 - Process every 3rd frame",
+                "3 - Process every 4th frame",
+                "4 - Process every 5th frame"
+            ],
+            state="readonly",
+            width=28
+        ).grid(
+            row=2,
+            column=1,
+            sticky="w"
+        )
+
+        ttk.Label(
+            frame,
+            textvariable=self.device_note_var,
+            wraplength=900,
+            justify="left"
+        ).grid(
+            row=3,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=(8, 0)
+        )
+
+    # ========================================================
+    # BYTETRACK
+    # ========================================================
+
+    def build_bytetrack_section(self):
+
+        frame = self.section(
+            "การติดตามรถ (Tracker)",
+            1,
+            2,
+            True
+        )
+
+        self.add_entry(
+            frame, 0, "Track High Threshold",
+            self.track_high_var
+        )
+
+        self.add_entry(
+            frame, 1, "Track Low Threshold",
+            self.track_low_var
+        )
+
+        self.add_entry(
+            frame, 2, "New Track Threshold",
+            self.new_track_var
+        )
+
+        self.add_entry(
+            frame, 3, "Track Buffer",
+            self.track_buffer_var
+        )
+
+        self.add_entry(
+            frame, 4, "Match Threshold",
+            self.match_threshold_var
+        )
+
+        ttk.Label(
+            frame,
+            text="These values apply when ByteTrack is selected"
+        ).grid(
+            row=5,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=(5, 0)
+        )
+
+    # ========================================================
+    # ADD ENTRY
+    # ========================================================
+
+    def add_entry(
+        self,
+        parent,
+        row,
+        label,
+        variable,
+        browse_command=None
+    ):
+
+        ttk.Label(
+            parent,
+            text=label
+        ).grid(
+            row=row,
+            column=0,
+            sticky="w",
+            padx=(0, 8),
+            pady=4
+        )
+
+        entry = ttk.Entry(
+            parent,
+            textvariable=variable,
+            width=(None if browse_command else 12)
+        )
+
+        entry.grid(
+            row=row,
+            column=1,
+            sticky=("ew" if browse_command else "w"),    # a path takes the width, a number does not
+            pady=4
+        )
+
+        if browse_command:
+
+            ttk.Button(
+                parent,
+                text="Browse",
+                command=browse_command
+            ).grid(
+                row=row,
+                column=2,
+                padx=(5, 0)
+            )
+
+        return entry
+
+    # ========================================================
+    # BROWSE
+    # ========================================================
+
+    def browse_model(self):
+
+        path = filedialog.askopenfilename(
+            title="Select Model",
+            filetypes=[
+                ("PyTorch Model", "*.pt"),
+                ("All Files", "*.*")
+            ]
+        )
+
+        if path:
+            self.model_var.set(path)
+
+    def browse_video(self):
+
+        path = filedialog.askopenfilename(
+            title="Select Video",
+            filetypes=[
+                ("Video", "*.mp4 *.avi *.mov *.mkv"),
+                ("MP4", "*.mp4"),
+                ("All Files", "*.*")
+            ]
+        )
+
+        if path:
+            self.video_var.set(path)
+
+    def browse_output(self):
+
+        path = filedialog.askdirectory(
+            title="Select Output Folder"
+        )
+
+        if path:
+            self.output_var.set(path)
+
+    # ========================================================
+    # HARDWARE
+    # ========================================================
+
+    def refresh_gpu_note(self):
+        """The text under Device: which video controllers this computer has and which choice fits each (done in a thread: listing them takes a second or two)."""
+        def work():
+            names = list_video_controllers()
+            lines = []
+            cuda = torch.cuda.is_available()
+            for n in names:
+                v = gpu_vendor(n)
+                if v == "nvidia" and cuda:
+                    lines.append(f"{n}: เลือก GPU 0 (CUDA) — ติ๊ก \"เร่ง YOLO ด้วย TensorRT\" (FP16) จะเร็วที่สุด; PyTorch FP16 บนการ์ดรุ่นเก่ากว่า RTX อาจช้า ใช้ Auto")
+                elif v == "nvidia":
+                    lines.append(f"{n}: Python นี้ไม่มี CUDA — ติดตั้ง PyTorch แบบ CUDA หรือเลือก GPU DirectML")
+                elif v in ("amd", "intel"):
+                    lines.append(f"{n}: เลือก GPU DirectML (ใช้ได้กับ AMD / Intel บน Windows; ครั้งแรกจะโหลด onnxruntime-directml และแปลงโมเดล)")
+                else:
+                    lines.append(f"{n}: เลือก GPU DirectML หรือ CPU")
+            if not lines:
+                lines.append("ตรวจชื่อการ์ดจอไม่ได้ — ถ้าเป็น NVIDIA เลือก GPU 0; AMD / Intel เลือก GPU DirectML")
+            text = "การ์ดจอที่พบ:\n" + "\n".join("• " + x for x in lines)
+            self.post_ui(lambda t=text: self.device_note_var.set(t))
+        threading.Thread(target=work, daemon=True).start()
+
+    def update_hardware_info(self):
+        self.refresh_gpu_note()
+
+        if torch.cuda.is_available():
+
+            gpu_name = torch.cuda.get_device_name(0)
+
+            try:
+                total_memory = (
+                    torch.cuda.get_device_properties(0)
+                    .total_memory
+                    / (1024 ** 3)
+                )
+
+                memory_text = (
+                    f"{total_memory:.1f} GB"
+                )
+
+            except Exception:
+                memory_text = "Unknown"
+
+            self.hardware_var.set(
+                f"GPU ✓ {gpu_name} | "
+                f"CUDA ✓ | "
+                f"PyTorch {torch.__version__} | "
+                f"VRAM {memory_text}"
+            )
+
+        else:
+
+            self.hardware_var.set(
+                f"GPU ✗ | CUDA unavailable | "
+                f"PyTorch {torch.__version__} | CPU mode"
+            )
+
+    # ========================================================
+    # SAVE SETTINGS
+    # ========================================================
+
+    def _json_safe(self, value):
+        """Convert settings/Zone data to plain JSON-safe Python values."""
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, dict):
+            return {str(k): self._json_safe(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [self._json_safe(v) for v in value]
+        # Handle numpy scalar types without importing numpy here.
+        try:
+            return value.item()
+        except Exception:
+            return str(value)
+
+    def _build_zone_snapshot(self):
+        """Build a simple, self-contained Zone/Line snapshot for Settings."""
+        zones = {}
+        for name in ZONE_NAMES:
+            zones[name] = [
+                [float(p[0]), float(p[1])]
+                for p in self.zones.get(name, [])
+                if isinstance(p, (list, tuple)) and len(p) >= 2
+            ]
+
+        lines = {}
+        for name in LINE_NAMES:
+            lines[name] = [
+                [float(p[0]), float(p[1])]
+                for p in self.lines.get(name, [])
+                if isinstance(p, (list, tuple)) and len(p) >= 2
+            ]
+
+        return {
+            "version": 2,
+            "zones": zones,
+            "lines": lines,
+            "zone_meta": self._json_safe(getattr(self, "zone_meta", {})),
+            "zone_source_video": str(getattr(self, "zone_source_video", "") or ""),
+            "zone_source_width": self._json_safe(getattr(self, "zone_source_width", None)),
+            "zone_source_height": self._json_safe(getattr(self, "zone_source_height", None)),
+            "zone_file_format": getattr(self, "zone_file_format", None),
+            "zone_scaled": self._json_safe(getattr(self, "zone_scaled", [])),
+        }
+
+    def get_settings(self):
+        """Return every user-editable setting plus an embedded Zone snapshot."""
+        return {
+            "settings_version": 2,
+            "run_name": self.run_name_var.get(),
+            "model": self.model_var.get(),
+            "video": self.video_var.get(),
+            "output": self.output_var.get(),
+            "zone_file": self.zone_line_config_var.get(),
+            "zone_snapshot": self._build_zone_snapshot(),
+            "confidence": self.conf_var.get(),
+            "iou": self.iou_var.get(),
+            "img_size": self.img_size_var.get(),
+            "tracker": self.tracker_var.get(),
+            "device": self.device_var.get(),
+            "precision": self.precision_var.get(),
+            "frame_skip": self.frame_skip_var.get(),
+            "track_high": self.track_high_var.get(),
+            "track_low": self.track_low_var.get(),
+            "new_track": self.new_track_var.get(),
+            "track_buffer": self.track_buffer_var.get(),
+            "match_threshold": self.match_threshold_var.get(),
+            "show_preview": self.show_preview_var.get(),
+            "video_max_width": self.video_max_width_var.get(),
+            "video_fps": self.video_fps_var.get(),
+            "topview_max_px": self.topview_max_px_var.get(),
+            "topview_fps": self.topview_fps_var.get(),
+            "hw_decode": self.hw_decode_var.get(),
+            "use_tensorrt": self.use_tensorrt_var.get(),
+            "draw_center": self.draw_center_var.get(),
+            "draw_trail": self.draw_trail_var.get(),
+            "trail_length": self.trail_length_var.get(),
+            "save_video": self.save_video_var.get(),
+            "analysis_start_s": self.analysis_start_var.get(),
+            "analysis_end_s": self.analysis_end_var.get(),
+            "record_start_s": self.record_start_var.get(),
+            "record_end_s": self.record_end_var.get(),
+            "save_csv": self.save_csv_var.get(),
+            "csv_flush": self.csv_flush_var.get(),
+            "research_mode": self.research_mode_var.get(),
+            "trajectory_position": self.trajectory_position_var.get(),
+            "trajectory_offset": self.trajectory_offset_var.get(),
+            "show_zone_boundary": self.show_zone_boundary_var.get(),
+            "show_zone_label": self.show_zone_label_var.get(),
+            "show_zone_label_prefix": self.show_zone_label_prefix_var.get(),
+            "zone_overlay_opacity": self.zone_overlay_opacity_var.get(),
+            "show_label_id": self.show_label_id_var.get(),
+            "show_label_class": self.show_label_class_var.get(),
+            "show_label_conf": self.show_label_conf_var.get(),
+            "show_label_zone": self.show_label_zone_var.get(),
+            "show_label_speed": self.show_label_speed_var.get(),
+            "show_bbox": self.show_bbox_var.get(),
+            "box_smooth_pct": self.box_smooth_pct_var.get(),
+            "zone_confirm_frames": self.zone_confirm_frames_var.get(),
+            "show_ref_lines": self.show_ref_lines_var.get(),
+            "outside_zone_normal": self.outside_zone_normal_var.get(),
+            "outside_zone_xy": self.outside_zone_xy_var.get(),
+            "outside_zone_dr": self.outside_zone_dr_var.get(),
+            "show_prefix_id": self.show_prefix_id_var.get(),
+            "show_prefix_class": self.show_prefix_class_var.get(),
+            "show_prefix_conf": self.show_prefix_conf_var.get(),
+            "show_prefix_zone": self.show_prefix_zone_var.get(),
+            "show_prefix_speed": self.show_prefix_speed_var.get(),
+            "show_info_text": self.show_info_text_var.get(),
+            **{key: var.get() for key, var in self.xy_vars.items()},
+            **{key: var.get() for key, var in self.dr_vars.items()},
+            "run3": {
+                "site_id": self.run3_site_id_var.get(),
+                "speed_enabled": self.run3_speed_enabled_var.get(),
+                "gap_enabled": self.run3_gap_enabled_var.get(),
+                "lc_enabled": self.run3_lc_enabled_var.get(),
+                "pet_enabled": self.run3_pet_enabled_var.get(),
+                "ttc_enabled": self.run3_ttc_enabled_var.get(),
+                "ldp_enabled": self.run3_ldp_enabled_var.get(),
+                "ppm": self.run3_ppm_var.get(),
+                "perspective_enabled": self.run3_perspective_enabled_var.get(),
+                "align_enabled": self.run3_align_enabled_var.get(),
+                "align_data": self.run3_align_var.get(),
+                "perspective_p1": self.run3_perspective_p1_var.get(),
+                "perspective_p2": self.run3_perspective_p2_var.get(),
+                "perspective_p3": self.run3_perspective_p3_var.get(),
+                "perspective_p4": self.run3_perspective_p4_var.get(),
+                "perspective_length_m": self.run3_perspective_length_var.get(),
+                "perspective_width_m": self.run3_perspective_width_var.get(),
+                "perspective_l12_m": self.run3_perspective_l12_var.get(),
+                "perspective_l23_m": self.run3_perspective_l23_var.get(),
+                "perspective_l34_m": self.run3_perspective_l34_var.get(),
+                "perspective_l41_m": self.run3_perspective_l41_var.get(),
+                "waiting_speed_threshold": self.run3_waiting_speed_threshold_var.get(),
+                "gap_hold_min_duration_s": self.run3_hold_min_duration_var.get(),
+                "lateral_axis_angle_deg": self.run3_lateral_axis_angle_var.get(),
+                "lc_heading_window_s": self.run3_lc_heading_window_var.get(),
+                "topview_video": self.run3_topview_video_var.get(),
+                "drone_video": self.run3_drone_video_var.get(),
+                "lc_along_limit_m": self.run3_lc_along_limit_var.get(),
+                "lc_max_lateral_m": self.run3_lc_max_lateral_var.get(),
+                "lc_motorcycle_pairs_only": self.run3_lc_motorcycle_pairs_only_var.get(),
+                "pet_threshold_s": self.run3_pet_threshold_var.get(),
+                "speed_zones": [z for z,v in self.run3_speed_zone_vars.items() if v.get()],
+                "speed_smoothing_samples": self.run3_speed_smoothing_var.get(),
+                "speed_max_kmh": self.run3_speed_max_var.get(),
+                "speed_frame_window_s": self.run3_speed_frame_window_var.get(),
+                "zone_calibrations": json.loads(json.dumps(self.run3_zone_calibrations)),
+                "lc_zones": [z for z,v in self.run3_lc_zone_vars.items() if v.get()],
+                "pet_zone6": self.run3_pet_zone6_var.get(),
+                "pet_zones": [z for z, v in self.run3_pet_zone_vars.items() if v.get()],
+                "ttc_zones": [z for z, v in self.run3_ttc_zone_vars.items() if v.get()],
+                "ldp_zones": [z for z, v in self.run3_ldp_zone_vars.items() if v.get()],
+                "pet_max_s": self.run3_pet_max_var.get(),
+                "pet_min_speed_kmh": self.run3_pet_min_speed_var.get(),
+                "write_detail_files": self.run3_write_detail_var.get(),
+                "csv_off": ",".join(name for name, var in self.run3_csv_vars.items() if not var.get()),
+                "traj_smooth_method": self.run3_traj_smooth_method_var.get(),
+                "traj_smooth_window_s": self.run3_traj_smooth_window_var.get(),
+                "ttc_include_rear_end": self.run3_ttc_include_rear_var.get(),
+                "ttc_include_lane_change": self.run3_ttc_include_lane_var.get(),
+                "ttc_include_crossing": self.run3_ttc_include_cross_var.get(),
+                "pet_include_rear_end": self.run3_pet_include_rear_var.get(),
+                "pet_include_lane_change": self.run3_pet_include_lane_var.get(),
+                "pet_include_crossing": self.run3_pet_include_cross_var.get(),
+                "headway_enabled": self.run3_headway_enabled_var.get(),
+                "headway_movements": [mv for mv, v in self.run3_headway_movement_vars.items() if v.get()],
+                "headway_max_s": self.run3_headway_max_var.get(),
+                "reference_line_source": self.run3_ref_line_source_var.get(),
+                "zone_edge_tol_px": self.run3_zone_edge_tol_var.get(),
+                "critical_gap_by_subject_class": self.run3_cg_by_subject_var.get(),
+                "critical_gap_by_lag_class": self.run3_cg_by_lag_var.get(),
+                "critical_gap_min_drivers": self.run3_cg_min_drivers_var.get(),
+                "headway_line_mapping": self.run3_headway_text.get("1.0", "end-1c") if hasattr(self, "run3_headway_text") else self.run3_headway_mapping_text,
+                "pet_show_point_xy": self.run3_pet_show_xy_var.get(),
+                "pet_show_point_drone": self.run3_pet_show_drone_var.get(),
+                "pet_show_point_video": self.run3_pet_show_video_var.get(),
+                "ttc_max_record_s": self.run3_ttc_max_record_var.get(),
+                "ttc_min_record_s": self.run3_ttc_min_record_var.get(),
+                "ttc_velocity_window_s": self.run3_ttc_velocity_window_var.get(),
+                "ttc_min_speed_kmh": self.run3_ttc_min_speed_var.get(),
+                **{key: var.get() for key, var in self.run3_risk_vars.items()},
+                "ttc_miss_margin_m": self.run3_ttc_miss_margin_var.get(),
+                "ttc_decision": self.run3_ttc_decision_var.get(),
+                "ttc_cross_time_s": self.run3_ttc_cross_time_var.get(),
+                "ttc_rear_margin_m": self.run3_ttc_rear_margin_var.get(),
+                "ttc_rear_clear_gap": self.run3_ttc_rear_gap_var.get(),
+                "ttc_show_boxes_xy": self.run3_ttc_show_xy_var.get(),
+                "ttc_show_boxes_drone": self.run3_ttc_show_drone_var.get(),
+                "ttc_show_boxes_video": self.run3_ttc_show_video_var.get(),
+                "ttc_min_rel_speed_ms": self.run3_ttc_min_rel_speed_var.get(),
+                "ttc_pair_radius_m": self.run3_ttc_pair_radius_var.get(),
+                "ttc_angle_rear_end_deg": self.run3_ttc_angle_rear_var.get(),
+                "ttc_angle_crossing_deg": self.run3_ttc_angle_cross_var.get(),
+                **{key: self.run3_geometry_vars[key].get() for key in RUN3_GEOMETRY_KEYS},
+                "ldp_smoothing_samples": self.run3_ldp_smoothing_var.get(),
+                "vehicle_lengths": {name: var.get() for name, var in self.run3_length_vars.items()},
+                "gap_subject_134": self.run3_gap_subject_134_var.get(),
+                "gap_subject_1367": self.run3_gap_subject_1367_var.get(),
+                "gap_subject_5631": self.run3_gap_subject_5631_var.get(),
+                "use_raff": self.run3_use_raff_var.get(),
+                "use_mle": self.run3_use_mle_var.get(),
+                "reference_line_mapping": self.run3_reference_text.get("1.0", "end-1c") if hasattr(self, "run3_reference_text") else self.run3_reference_mapping_text,
+                "vehicle_widths": {name: var.get() for name, var in self.run3_width_vars.items()},
+            },
+        }
+
+    def get_project(self):
+        """The whole project: every setting + the Zone / Line geometry + the list of clips with their time ranges and what to record of each (a file from before
+        projects existed has no list: loading it leaves the list as it is)."""
+        data = self.get_settings()
+        panel = getattr(self, "clips_panel", None)
+        if panel is not None:
+            data["project"] = panel.get_project()
+        data["project_version"] = 1
+        return data
+
+    def save_settings(self):
+        """Save the project (everything that can be adjusted, the chosen videos included)."""
+        path = filedialog.asksaveasfilename(
+            title="บันทึกโปรเจกต์ (การตั้งค่าทั้งหมด + โซน/Line + รายการคลิป)",
+            defaultextension=".json",
+            filetypes=[("PK Studio Project", "*.json"), ("All Files", "*.*")],
+            initialfile=self.run_name_var.get() + "_project.json"
+        )
+        if not path:
+            return
+
+        try:
+            project = self._json_safe(self.get_project())
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(project, f, indent=4, ensure_ascii=False, allow_nan=False)
+            n = len((project.get("project") or {}).get("clips", []))
+            self.status_var.set(f"บันทึกโปรเจกต์แล้ว: {os.path.basename(path)}")
+            messagebox.showinfo("บันทึกโปรเจกต์แล้ว",
+                                f"บันทึกการตั้งค่าทั้งหมด โซน/Line (ฝังในไฟล์) และรายการคลิป {n} คลิป (ช่วงเวลา + ตัวเลือกบันทึกวิดีโอ) แล้ว\n\n{path}")
+        except Exception as e:
+            messagebox.showerror("Save Error", f"Could not save the project:\n\n{e}")
+
+    def load_settings(self):
+        """Open a project file (or a settings file from before projects existed)."""
+        path = filedialog.askopenfilename(
+            title="เปิดโปรเจกต์",
+            filetypes=[("PK Studio Project", "*.json"), ("JSON files", "*.json"), ("All Files", "*.*")]
+        )
+        if not path:
+            return
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                settings = json.load(f)
+            if not isinstance(settings, dict):
+                raise ValueError("Settings file must contain a JSON object.")
+
+            missing = self.set_settings(settings) or []
+            self.status_var.set(f"เปิดโปรเจกต์แล้ว: {os.path.basename(path)}")
+            n = len((settings.get("project") or {}).get("clips", []))
+            msg = "โหลดการตั้งค่าทั้งหมดและโซน/Line แล้ว" + (f" พร้อมรายการคลิป {n} คลิป" if n else " (ไฟล์นี้เก่า ไม่มีรายการคลิป — รายการคลิปเดิมไม่เปลี่ยน)")
+            if missing:
+                msg += "\n\nไม่พบไฟล์วิดีโอเหล่านี้ในเครื่องนี้ (ยังอยู่ในรายการ ลบหรือเลือกใหม่ได้):\n" + "\n".join(missing[:12]) + ("\n..." if len(missing) > 12 else "")
+                messagebox.showwarning("เปิดโปรเจกต์", msg)
+            else:
+                messagebox.showinfo("เปิดโปรเจกต์", msg)
+        except Exception as e:
+            messagebox.showerror("Load Error", f"Could not load settings:\n\n{e}")
+
+    def set_settings(self, settings):
+        """Apply settings and restore embedded Zone geometry first, without requiring the original Zone file."""
+        pairs = [
+            ("run_name", self.run_name_var),
+            ("model", self.model_var),
+            ("video", self.video_var),
+            ("output", self.output_var),
+            ("zone_file", self.zone_line_config_var),
+            ("confidence", self.conf_var),
+            ("iou", self.iou_var),
+            ("img_size", self.img_size_var),
+            ("tracker", self.tracker_var),
+            ("device", self.device_var),
+            ("precision", self.precision_var),
+            ("frame_skip", self.frame_skip_var),
+            ("track_high", self.track_high_var),
+            ("track_low", self.track_low_var),
+            ("new_track", self.new_track_var),
+            ("track_buffer", self.track_buffer_var),
+            ("match_threshold", self.match_threshold_var),
+            ("show_preview", self.show_preview_var),
+            ("video_max_width", self.video_max_width_var),
+            ("video_fps", self.video_fps_var),
+            ("topview_max_px", self.topview_max_px_var),
+            ("topview_fps", self.topview_fps_var),
+            ("hw_decode", self.hw_decode_var),
+            ("use_tensorrt", self.use_tensorrt_var),
+            ("draw_center", self.draw_center_var),
+            ("draw_trail", self.draw_trail_var),
+            ("trail_length", self.trail_length_var),
+            ("save_video", self.save_video_var),
+            ("analysis_start_s", self.analysis_start_var),
+            ("analysis_end_s", self.analysis_end_var),
+            ("record_start_s", self.record_start_var),
+            ("record_end_s", self.record_end_var),
+            ("save_csv", self.save_csv_var),
+            ("csv_flush", self.csv_flush_var),
+            ("research_mode", self.research_mode_var),
+            ("trajectory_position", self.trajectory_position_var),
+            ("trajectory_offset", self.trajectory_offset_var),
+            ("show_zone_boundary", self.show_zone_boundary_var),
+            ("show_zone_label", self.show_zone_label_var),
+            ("show_zone_label_prefix", self.show_zone_label_prefix_var),
+            ("zone_overlay_opacity", self.zone_overlay_opacity_var),
+            ("show_label_id", self.show_label_id_var),
+            ("show_label_class", self.show_label_class_var),
+            ("show_label_conf", self.show_label_conf_var),
+            ("show_label_zone", self.show_label_zone_var),
+            ("show_label_speed", self.show_label_speed_var),
+            ("show_bbox", self.show_bbox_var),
+            ("box_smooth_pct", self.box_smooth_pct_var),
+            ("zone_confirm_frames", self.zone_confirm_frames_var),
+            ("show_ref_lines", self.show_ref_lines_var),
+            ("outside_zone_normal", self.outside_zone_normal_var),
+            ("outside_zone_xy", self.outside_zone_xy_var),
+            ("outside_zone_dr", self.outside_zone_dr_var),
+            ("show_prefix_id", self.show_prefix_id_var),
+            ("show_prefix_class", self.show_prefix_class_var),
+            ("show_prefix_conf", self.show_prefix_conf_var),
+            ("show_prefix_zone", self.show_prefix_zone_var),
+            ("show_prefix_speed", self.show_prefix_speed_var),
+            ("show_info_text", self.show_info_text_var),
+            *[(key, var) for key, var in self.xy_vars.items()],
+            *[(key, var) for key, var in self.dr_vars.items()],
+        ]
+
+        for key, variable in pairs:
+            if key in settings:
+                variable.set(settings[key])
+        for xy_key, normal_key in XY_FROM_NORMAL.items():            # an older settings file: the X-Y video shows what the normal video showed
+            if xy_key not in settings and normal_key in settings:
+                self.xy_vars[xy_key].set(settings[normal_key])
+        for dr_key, xy_key in DR_FROM_XY.items():                    # a file written before the third video: it shows what the X-Y video showed
+            if dr_key not in settings:
+                if xy_key in settings:
+                    self.dr_vars[dr_key].set(settings[xy_key])
+                elif XY_FROM_NORMAL.get(xy_key) in settings:
+                    self.dr_vars[dr_key].set(settings[XY_FROM_NORMAL[xy_key]])
+        if "outside_zone_dr" not in settings and "outside_zone_xy" in settings:
+            self.outside_zone_dr_var.set(settings["outside_zone_xy"])
+
+        run3 = settings.get("run3", {})
+        if isinstance(run3, dict):
+            zc = run3.get("zone_calibrations", {})
+            self.run3_zone_calibrations = {
+                str(k): v for k, v in zc.items()
+                if isinstance(v, dict) and len(v.get("points", [])) == 4 and len(v.get("lengths", [])) == 4
+            } if isinstance(zc, dict) else {}
+            if "csv_off" in run3:
+                off_ = {x.strip() for x in str(run3.get("csv_off") or "").split(",") if x.strip()}
+                for name_, var_ in self.run3_csv_vars.items():
+                    var_.set(name_ not in off_)
+            mapping_pairs = [
+                ("site_id", self.run3_site_id_var),
+                ("speed_enabled", self.run3_speed_enabled_var),
+                ("gap_enabled", self.run3_gap_enabled_var),
+                ("lc_enabled", self.run3_lc_enabled_var),
+                ("pet_enabled", self.run3_pet_enabled_var),
+                ("ttc_enabled", self.run3_ttc_enabled_var),
+                ("ldp_enabled", self.run3_ldp_enabled_var),
+                ("ppm", self.run3_ppm_var),
+                ("perspective_enabled", self.run3_perspective_enabled_var),
+                ("align_enabled", self.run3_align_enabled_var),
+                ("align_data", self.run3_align_var),
+                ("perspective_p1", self.run3_perspective_p1_var),
+                ("perspective_p2", self.run3_perspective_p2_var),
+                ("perspective_p3", self.run3_perspective_p3_var),
+                ("perspective_p4", self.run3_perspective_p4_var),
+                ("perspective_length_m", self.run3_perspective_length_var),
+                ("perspective_width_m", self.run3_perspective_width_var),
+                ("perspective_l12_m", self.run3_perspective_l12_var),
+                ("perspective_l23_m", self.run3_perspective_l23_var),
+                ("perspective_l34_m", self.run3_perspective_l34_var),
+                ("perspective_l41_m", self.run3_perspective_l41_var),
+                ("pet_max_s", self.run3_pet_max_var),
+                ("pet_min_speed_kmh", self.run3_pet_min_speed_var),
+                ("write_detail_files", self.run3_write_detail_var),
+                ("traj_smooth_method", self.run3_traj_smooth_method_var),
+                ("traj_smooth_window_s", self.run3_traj_smooth_window_var),
+                ("ttc_include_rear_end", self.run3_ttc_include_rear_var),
+                ("ttc_include_lane_change", self.run3_ttc_include_lane_var),
+                ("ttc_include_crossing", self.run3_ttc_include_cross_var),
+                ("pet_include_rear_end", self.run3_pet_include_rear_var),
+                ("pet_include_lane_change", self.run3_pet_include_lane_var),
+                ("pet_include_crossing", self.run3_pet_include_cross_var),
+                ("headway_enabled", self.run3_headway_enabled_var),
+                ("headway_max_s", self.run3_headway_max_var),
+                ("reference_line_source", self.run3_ref_line_source_var),
+                ("zone_edge_tol_px", self.run3_zone_edge_tol_var),
+                ("critical_gap_by_subject_class", self.run3_cg_by_subject_var),
+                ("critical_gap_by_lag_class", self.run3_cg_by_lag_var),
+                ("critical_gap_min_drivers", self.run3_cg_min_drivers_var),
+                ("pet_show_point_xy", self.run3_pet_show_xy_var),
+                ("pet_show_point_drone", self.run3_pet_show_drone_var),
+                ("pet_show_point_video", self.run3_pet_show_video_var),
+                ("ttc_max_record_s", self.run3_ttc_max_record_var),
+                ("ttc_min_record_s", self.run3_ttc_min_record_var),
+                ("ttc_velocity_window_s", self.run3_ttc_velocity_window_var),
+                ("ttc_min_speed_kmh", self.run3_ttc_min_speed_var),
+                *[(key, var) for key, var in self.run3_risk_vars.items()],
+                ("ttc_miss_margin_m", self.run3_ttc_miss_margin_var),
+                ("ttc_decision", self.run3_ttc_decision_var),
+                ("ttc_cross_time_s", self.run3_ttc_cross_time_var),
+                ("ttc_rear_margin_m", self.run3_ttc_rear_margin_var),
+                ("ttc_rear_clear_gap", self.run3_ttc_rear_gap_var),
+                ("ttc_show_boxes_xy", self.run3_ttc_show_xy_var),
+                ("ttc_show_boxes_drone", self.run3_ttc_show_drone_var),
+                ("ttc_show_boxes_video", self.run3_ttc_show_video_var),
+                ("ttc_min_rel_speed_ms", self.run3_ttc_min_rel_speed_var),
+                ("ttc_pair_radius_m", self.run3_ttc_pair_radius_var),
+                ("ttc_angle_rear_end_deg", self.run3_ttc_angle_rear_var),
+                ("ttc_angle_crossing_deg", self.run3_ttc_angle_cross_var),
+                ("speed_smoothing_samples", self.run3_speed_smoothing_var),
+                ("speed_max_kmh", self.run3_speed_max_var),
+                ("speed_frame_window_s", self.run3_speed_frame_window_var),
+                ("ldp_smoothing_samples", self.run3_ldp_smoothing_var),
+                ("waiting_speed_threshold", self.run3_waiting_speed_threshold_var),
+                ("gap_hold_min_duration_s", self.run3_hold_min_duration_var),
+                ("lateral_axis_angle_deg", self.run3_lateral_axis_angle_var),
+                ("lc_heading_window_s", self.run3_lc_heading_window_var),
+                ("topview_video", self.run3_topview_video_var),
+                ("drone_video", self.run3_drone_video_var),
+                ("lc_along_limit_m", self.run3_lc_along_limit_var),
+                ("lc_max_lateral_m", self.run3_lc_max_lateral_var),
+                ("lc_motorcycle_pairs_only", self.run3_lc_motorcycle_pairs_only_var),
+                ("pet_threshold_s", self.run3_pet_threshold_var),
+                ("gap_subject_134", self.run3_gap_subject_134_var),
+                ("gap_subject_1367", self.run3_gap_subject_1367_var),
+                ("gap_subject_5631", self.run3_gap_subject_5631_var),
+                ("use_raff", self.run3_use_raff_var),
+                ("use_mle", self.run3_use_mle_var),
+            ]
+            mapping_pairs += [(key, self.run3_geometry_vars[key]) for key in RUN3_GEOMETRY_KEYS]
+            for key, variable in mapping_pairs:
+                if key in run3:
+                    variable.set(run3[key])
+            if "pet_zones" in run3:
+                for z, var in self.run3_pet_zone_vars.items():
+                    var.set(z in set(run3.get("pet_zones") or []))
+            elif "pet_zone6" in run3:
+                self.run3_pet_zone6_var.set(bool(run3.get("pet_zone6")))
+            for key, var_map in (("ttc_zones", self.run3_ttc_zone_vars), ("ldp_zones", self.run3_ldp_zone_vars)):
+                if key in run3:
+                    for z, var in var_map.items():
+                        var.set(z in set(run3.get(key) or []) and not (key == "ldp_zones" and z in LDP_LOCKED_ZONES))
+            lengths = run3.get("vehicle_lengths", {})
+            if isinstance(lengths, dict):
+                for name, var in self.run3_length_vars.items():
+                    if name in lengths:
+                        var.set(lengths[name])
+            # Speed zone settings: new v14 key, with backward compatibility to v13.
+            speed_zone_values = run3.get("speed_zones")
+            if speed_zone_values is None:
+                legacy = set(run3.get("speed_approach_zones", [])) | set(run3.get("speed_exit_zones", []))
+                speed_zone_values = sorted(legacy)
+            for z in ZONE_IDS:
+                self.run3_speed_zone_vars[z].set(z in set(speed_zone_values or []))
+                if "lc_zones" in run3:
+                    self.run3_lc_zone_vars[z].set(z in set(run3.get("lc_zones", [])))
+            if "headway_movements" in run3:
+                for mv, var in self.run3_headway_movement_vars.items():
+                    var.set(mv in set(run3.get("headway_movements") or []))
+            self.run3_headway_mapping_text = str(run3.get("headway_line_mapping", "") or "")
+            if hasattr(self, "run3_headway_text"):
+                self.run3_headway_text.delete("1.0", "end")
+                self.run3_headway_text.insert("1.0", self.run3_headway_mapping_text)
+            self.run3_reference_mapping_text = str(run3.get("reference_line_mapping", "") or "")
+            if hasattr(self, "run3_reference_text"):
+                self.run3_reference_text.delete("1.0", "end")
+                self.run3_reference_text.insert("1.0", self.run3_reference_mapping_text)
+            widths = run3.get("vehicle_widths", {})
+            if isinstance(widths, dict):
+                for name, var in self.run3_width_vars.items():
+                    if name in widths:
+                        var.set(widths[name])
+
+        snapshot = settings.get("zone_snapshot")
+        restored = False
+        if isinstance(snapshot, dict):
+            raw_zones = snapshot.get("zones", {})
+            raw_lines = snapshot.get("lines", {})
+            if isinstance(raw_zones, dict):
+                restored_zones = {name: [] for name in ZONE_NAMES}
+                for name in ZONE_NAMES:
+                    pts = raw_zones.get(name, [])
+                    if isinstance(pts, list):
+                        restored_zones[name] = [
+                            (float(p[0]), float(p[1]))
+                            for p in pts
+                            if isinstance(p, (list, tuple)) and len(p) >= 2
+                        ]
+                self.zones = restored_zones
+                restored = any(len(v) >= 3 for v in restored_zones.values())
+
+            if isinstance(raw_lines, dict):
+                restored_lines = {name: [] for name in LINE_NAMES}
+                for name in LINE_NAMES:
+                    pts = raw_lines.get(name, [])
+                    if isinstance(pts, list):
+                        restored_lines[name] = [
+                            (float(p[0]), float(p[1]))
+                            for p in pts
+                            if isinstance(p, (list, tuple)) and len(p) >= 2
+                        ]
+                self.lines = restored_lines
+
+            self.zone_meta = snapshot.get("zone_meta", {}) or {}
+            self.zone_source_video = str(snapshot.get("zone_source_video", "") or "")
+            self.zone_source_width = snapshot.get("zone_source_width")
+            self.zone_source_height = snapshot.get("zone_source_height")
+            self.zone_file_format = snapshot.get("zone_file_format")
+            self.zone_scaled = snapshot.get("zone_scaled", []) or []
+
+        # Backward compatibility: if there is no embedded snapshot, try the saved Zone file.
+        if not restored:
+            zone_path = self.zone_line_config_var.get().strip()
+            if zone_path and os.path.isfile(zone_path):
+                self.load_pkstudio_zones()
+
+        self.refresh_measurement_status()
+        self.update_trajectory_position_controls()
+        # the project part: the list of clips (a settings file from before projects has none: the list is left as it is)
+        proj = settings.get("project")
+        if isinstance(proj, dict) and getattr(self, "clips_panel", None) is not None:
+            return self.clips_panel.set_project(proj)
+        return []
+
+    # ========================================================
+    # VALIDATION
+    # ========================================================
+
+    def validate_settings(self):
+
+        if not os.path.isfile(
+            self.model_var.get().strip()
+        ):
+
+            messagebox.showerror(
+                "Model Error",
+                "Model file not found\n\n"
+                + self.model_var.get()
+            )
+
+            return False
+
+        if not os.path.isfile(
+            self.video_var.get().strip()
+        ):
+
+            messagebox.showerror(
+                "Video Error",
+                "Video file not found\n\n"
+                + self.video_var.get()
+            )
+
+            return False
+
+        if not self.run_name_var.get().strip():
+
+            messagebox.showerror(
+                "Run Name",
+                "Please specify Run Name"
+            )
+
+            return False
+
+        try:
+
+            for label, var in (("Analyse from", self.analysis_start_var), ("Analyse to", self.analysis_end_var),
+                               ("Record from", self.record_start_var), ("Record to", self.record_end_var)):
+                try:
+                    parse_clock_time(var.get())
+                except ValueError as exc:
+                    raise ValueError(f"{label}: {exc}")
+            conf = float(self.conf_var.get())
+            iou = float(self.iou_var.get())
+            high = float(self.track_high_var.get())
+            low = float(self.track_low_var.get())
+            new_track = float(self.new_track_var.get())
+            match = float(self.match_threshold_var.get())
+
+            buffer = int(self.track_buffer_var.get())
+            trail = int(self.trail_length_var.get())
+            flush = int(self.csv_flush_var.get())
+
+            for value in [
+                conf,
+                iou,
+                high,
+                low,
+                new_track,
+                match
+            ]:
+
+                if not 0 <= value <= 1:
+
+                    raise ValueError(
+                        "Threshold values must be between 0 and 1"
+                    )
+
+            if buffer < 1:
+                raise ValueError(
+                    "Track Buffer must be greater than 0"
+                )
+
+            if trail < 1:
+                raise ValueError(
+                    "Trail Length must be greater than 0"
+                )
+
+            if flush < 1:
+                raise ValueError(
+                    "CSV Flush must be greater than 0"
+                )
+
+        except Exception as e:
+
+            messagebox.showerror(
+                "Settings Error",
+                str(e)
+            )
+
+            return False
+
+        try:
+            offset = float(self.trajectory_offset_var.get())
+            if not 0 <= offset <= 50:
+                raise ValueError("Trajectory Offset must be between 0 and 50%")
+        except Exception as e:
+            messagebox.showerror("Trajectory Position", str(e))
+            return False
+
+        if self.research_mode_var.get():
+
+            self.frame_skip_var.set(
+                "NO - Process every frame"
+            )
+
+            self.save_csv_var.set(True)
+
+        return True
+
+    # ========================================================
+    # PERSPECTIVE CALIBRATION UI
+    # ========================================================
+
+    def open_perspective_calibration(self):
+        """Open an in-app Tkinter calibration window.
+
+        The user clicks P1 -> P2 -> P3 -> P4 on one road-plane quadrilateral.
+        Coordinates are converted from the displayed image back to original-video
+        pixel coordinates automatically, so the user never needs to type x,y.
+        """
+        video_path = str(self.video_var.get() or "").strip()
+        if not video_path:
+            messagebox.showerror("Perspective Calibration", "Please select a video first.")
+            return
+        if not os.path.isfile(video_path):
+            messagebox.showerror("Perspective Calibration", f"Video not found:\n\n{video_path}")
+            return
+
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            messagebox.showerror("Perspective Calibration", "Could not open the selected video.")
+            return
+
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        default_frame = max(0, min(total_frames - 1, total_frames // 2 if total_frames else 0))
+
+        cap.set(cv2.CAP_PROP_POS_FRAMES, default_frame)
+        ok, frame = cap.read()
+        if not ok or frame is None:
+            cap.release()
+            messagebox.showerror("Perspective Calibration", "Could not read a calibration frame from the video.")
+            return
+
+        top = tk.Toplevel(self.root)
+        top.title("PK Studio — Perspective Calibration")
+        top.geometry("%dx%d+10+10" % (min(1280, top.winfo_screenwidth() - 40), min(900, top.winfo_screenheight() - 110)))
+        top.minsize(900, 600)
+        top.transient(self.root)
+        top.grab_set()
+
+        state = {
+            "cap": cap,
+            "frame": frame.copy(),
+            "frame_index": default_frame,
+            "points": [],
+            "photo": None,
+            "scale": 1.0,
+            "offset_x": 0,
+            "offset_y": 0,
+            "image_w": width,
+            "image_h": height,
+            "drag_index": None,
+        }
+
+        # Points set by an earlier calibration come back on the picture (drag to adjust, Reset Points to start over).
+        try:
+            saved = [[float(v) for v in str(var.get()).replace(";", ",").split(",")]
+                     for var in (self.run3_perspective_p1_var, self.run3_perspective_p2_var,
+                                 self.run3_perspective_p3_var, self.run3_perspective_p4_var)]
+            if len(saved) == 4 and all(len(pt) == 2 and 0 <= pt[0] <= width and 0 <= pt[1] <= height for pt in saved):
+                state["points"] = [(pt[0], pt[1]) for pt in saved]
+        except (ValueError, TypeError):
+            pass
+        top.calibration_state = state      # (also lets the tests look at the points)
+
+        controls = ttk.Frame(top, padding=8)
+        controls.pack(fill="x")
+        canvas_frame = ttk.Frame(top, padding=(8, 0, 8, 8))
+        canvas_frame.pack(fill="both", expand=True)
+
+        controls.columnconfigure(10, weight=1)
+        ttk.Label(controls, text=("ลำดับจุด: P1 → P2 → P3 → P4 | คลิกบนพื้นถนนที่เป็นพื้นที่เดียวกัน แล้วลากจุดปรับได้"
+                                  + (" | จุดที่ตั้งไว้ก่อนหน้าแสดงอยู่แล้ว — ลากแก้ได้ หรือกด Reset Points เพื่อเริ่มใหม่" if len(state["points"]) == 4 else ""))).grid(
+            row=0, column=0, columnspan=11, sticky="w", pady=(0, 6))
+
+        # row 1: choose the frame, and the two buttons that finish the dialog (always visible at the top right)
+        ttk.Label(controls, text="Frame").grid(row=1, column=0, sticky="e", padx=(0, 5))
+        frame_var = tk.StringVar(value=str(default_frame + 1))
+        frame_entry = ttk.Entry(controls, textvariable=frame_var, width=10)
+        frame_entry.grid(row=1, column=1, sticky="w")
+        ttk.Button(controls, text="Load Frame", command=lambda: load_frame()).grid(row=1, column=2, padx=5)
+        ttk.Button(controls, text="Reset Points", command=lambda: reset_points()).grid(row=1, column=3, padx=5)
+        measure_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(controls, text="วัดระยะทดสอบ (คลิก 2 จุด)", variable=measure_var,
+                        command=lambda: render()).grid(row=1, column=4, padx=(14, 0))
+        finish_bar = ttk.Frame(controls)
+        finish_bar.grid(row=1, column=10, sticky="e")
+        apply_button = ttk.Button(finish_bar, text="✅ Apply Calibration", command=lambda: apply_calibration())
+        apply_button.pack(side="left", padx=5)
+        ttk.Button(finish_bar, text="Cancel", command=lambda: (cap.release(), top.grab_release(), top.destroy())).pack(side="left", padx=5)
+
+        # row 2: the four known real lengths in one row (the sides of the quadrilateral P1-P2-P3-P4)
+        length_vars = [
+            tk.StringVar(value=str(self.run3_perspective_l12_var.get() or "")),
+            tk.StringVar(value=str(self.run3_perspective_l23_var.get() or "")),
+            tk.StringVar(value=str(self.run3_perspective_l34_var.get() or "")),
+            tk.StringVar(value=str(self.run3_perspective_l41_var.get() or "")),
+        ]
+        lengths_box = ttk.LabelFrame(controls, text="ระยะจริงของแต่ละด้าน (เมตร)", padding=(8, 4))
+        lengths_box.grid(row=2, column=0, columnspan=11, sticky="w", pady=(8, 0))
+        for i, (lab, var) in enumerate(zip(("P1→P2", "P2→P3", "P3→P4", "P4→P1"), length_vars)):
+            ttk.Label(lengths_box, text=lab).grid(row=0, column=i * 2, sticky="e", padx=(0 if i == 0 else 16, 5))
+            ttk.Entry(lengths_box, textvariable=var, width=10).grid(row=0, column=i * 2 + 1, sticky="w")
+
+        # per-zone calibration: each zone can get its OWN reference quadrilateral (own scale and perspective)
+        def current_data():
+            return {"points": list(state["points"]), "lengths": [v.get() for v in length_vars]}
+
+        def load_data(data):
+            state["points"] = [tuple(p) for p in data.get("points", [])]
+            for var, text in zip(length_vars, list(data.get("lengths", [])) + ["", "", "", ""]):
+                var.set(str(text))
+            state["measure"] = []
+
+        ctx = {"mode": "base", "drafts": {}}
+        base_initial = current_data()
+        mode_labels = ["ทั้งภาพ (ฐาน)"] + [f"Zone {z}" for z in ZONE_IDS]
+        mode_var = tk.StringVar(value=mode_labels[0])
+        ttk.Label(controls, text="ปรับเทียบสำหรับ").grid(row=1, column=5, sticky="e", padx=(14, 4))
+        mode_box = ttk.Combobox(controls, textvariable=mode_var, values=mode_labels, state="readonly", width=14)
+        mode_box.grid(row=1, column=6, sticky="w")
+        delete_zone_button = ttk.Button(controls, text="ลบของโซนนี้", command=lambda: delete_zone_calibration())
+        delete_zone_button.grid(row=1, column=7, padx=6)
+        delete_zone_button.state(["disabled"])
+        mode_status_var = tk.StringVar(value="")
+        ttk.Label(controls, textvariable=mode_status_var, foreground="#0a7a3d", wraplength=1200, justify="left").grid(row=8, column=0, columnspan=11, sticky="w")
+
+        def zone_summary_text():
+            zs = sorted(int(k) for k in self.run3_zone_calibrations)
+            return ("ปรับเทียบรายโซนแล้ว: " + ", ".join(f"Zone {z}" for z in zs)) if zs else "ยังไม่มีการปรับเทียบรายโซน"
+
+        def on_mode_change(event=None):
+            ctx["drafts"][ctx["mode"]] = current_data()
+            label = mode_var.get()
+            key = "base" if label == mode_labels[0] else label.split()[-1]
+            ctx["mode"] = key
+            if key in ctx["drafts"]:
+                load_data(ctx["drafts"][key])
+            elif key == "base":
+                load_data(base_initial)
+            else:
+                saved = self.run3_zone_calibrations.get(key)
+                load_data({"points": saved["points"], "lengths": saved["lengths"]} if saved else {})
+            apply_button.config(text="✅ Apply Calibration" if key == "base" else "✅ บันทึกโซนนี้")
+            delete_zone_button.state(["disabled"] if key == "base" else ["!disabled"])
+            mode_status_var.set("" if key == "base" else f"โหมด Zone {key}: คลิก P1–P4 ให้คลุมพื้นที่ถนนของโซนนี้ แล้วกรอกระยะจริง 4 ด้าน — {zone_summary_text()}")
+            render()
+
+        mode_box.bind("<<ComboboxSelected>>", on_mode_change)
+
+        def apply_zone_calibration():
+            z = ctx["mode"]
+            if len(state["points"]) != 4:
+                messagebox.showerror("Perspective Calibration", "Please click exactly 4 points in order: P1 → P2 → P3 → P4.", parent=top)
+                return
+            try:
+                lengths = [float(v.get().strip()) for v in length_vars]
+                if min(lengths) <= 0:
+                    raise ValueError
+            except ValueError:
+                messagebox.showerror("Perspective Calibration", "All four Known Length values must be positive numbers in meters.", parent=top)
+                return
+            area = abs(cv2.contourArea(np.float32(state["points"]).reshape((-1, 1, 2))))
+            if area < 100.0:
+                messagebox.showerror("Perspective Calibration", "The 4 selected points are too close together.", parent=top)
+                return
+            self.run3_zone_calibrations[z] = {"points": [[float(x), float(y)] for x, y in state["points"]], "lengths": lengths}
+            ctx["drafts"].pop(z, None)
+            mode_status_var.set(f"บันทึกการปรับเทียบ Zone {z} แล้ว — {zone_summary_text()} (เลือกโซนอื่นเพื่อทำต่อ หรือกด Cancel/ปิดหน้าต่างเมื่อเสร็จ)")
+            render()
+
+        def delete_zone_calibration():
+            z = ctx["mode"]
+            self.run3_zone_calibrations.pop(z, None)
+            ctx["drafts"].pop(z, None)
+            load_data({})
+            mode_status_var.set(f"ลบการปรับเทียบ Zone {z} แล้ว — {zone_summary_text()}")
+            render()
+
+        # row 3: the picked points and the calculated PPM
+        point_text_var = tk.StringVar(value="ยังไม่ได้เลือกจุด")
+        ttk.Label(controls, textvariable=point_text_var, foreground="#555555").grid(row=3, column=0, columnspan=11, sticky="w", pady=(6, 0))
+        ppm_calc_var = tk.StringVar(value="Calculated PPM: -")
+        ttk.Label(controls, textvariable=ppm_calc_var, foreground="#155a8a").grid(row=4, column=0, columnspan=11, sticky="w", pady=(2, 0))
+        ttk.Label(controls, text="ระบบคำนวณ PPM จากระยะทั้ง 4 ด้าน", foreground="#555555").grid(row=5, column=0, columnspan=11, sticky="w")
+
+        measure_text_var = tk.StringVar(value="")
+        ttk.Label(controls, textvariable=measure_text_var, foreground="#8a2be2").grid(row=6, column=0, columnspan=11, sticky="w", pady=(2, 0))
+        ttk.Label(controls, foreground="#555555", wraplength=1200, justify="left", text="ตรวจความแม่น: ติ๊ก \"วัดระยะทดสอบ\" แล้ววัดของที่รู้ขนาด (ความกว้างเลน, เส้นประ, ทางม้าลาย) ทั้งใกล้และไกลกล้อง — "
+                  "ถ้าไกลกล้องคลาดมาก ให้ขยายกรอบ P1–P4 ให้คลุมพื้นที่ที่รถวิ่งให้มากที่สุด (ด้านสั้นอย่างน้อยเท่าความกว้างถนน)").grid(
+            row=7, column=0, columnspan=11, sticky="w")
+        state["measure"] = []
+
+        def current_homography():
+            """Homography of the four points with the four typed lengths (same rule as Apply), or None."""
+            if len(state["points"]) != 4:
+                return None
+            try:
+                l12, l23, l34, l41 = [float(v.get().strip()) for v in length_vars]
+                if min(l12, l23, l34, l41) <= 0:
+                    return None
+            except ValueError:
+                return None
+            length, width_m = (l12 + l34) / 2.0, (l23 + l41) / 2.0
+            try:
+                return cv2.getPerspectiveTransform(np.float32(state["points"]), np.float32([[0, 0], [length, 0], [length, width_m], [0, width_m]]))
+            except cv2.error:
+                return None
+
+        def measure_distance(p, q):
+            """Distance in metres between two image points (original-video pixels) on the road plane, or None."""
+            Hm = current_homography()
+            if Hm is None:
+                return None
+            a, b = cv2.perspectiveTransform(np.float32([[p, q]]), Hm)[0]
+            return float(math.hypot(b[0] - a[0], b[1] - a[1]))
+
+        top.measure_distance = measure_distance
+
+        canvas = tk.Canvas(canvas_frame, background="#202020", highlightthickness=1)
+        canvas.pack(fill="both", expand=True)
+
+        def render():
+            img = state["frame"]
+            h, w = img.shape[:2]
+            cw = max(100, int(canvas.winfo_width()))
+            ch = max(100, int(canvas.winfo_height()))
+            scale = min(cw / w, ch / h)
+            if scale <= 0:
+                scale = 1.0
+            state["scale"] = scale
+            new_w = max(1, int(round(w * scale)))
+            new_h = max(1, int(round(h * scale)))
+            resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR)
+            view = resized.copy()
+            # context: zone outlines (grey) and the quadrilaterals already calibrated per zone (green)
+            for zname, zpts in self.zones.items():
+                if len(zpts) >= 3:
+                    zarr = np.array([[int(x * scale), int(y * scale)] for x, y in zpts], np.int32)
+                    cv2.polylines(view, [zarr], True, (150, 150, 150), 1, cv2.LINE_AA)
+                    cv2.putText(view, str(zname).replace("Zone ", "Z"), (int(zarr[0][0]) + 4, int(zarr[0][1]) + 14), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (190, 190, 190), 1, cv2.LINE_AA)
+            for zkey, zdat in self.run3_zone_calibrations.items():
+                if zkey == ctx["mode"]:
+                    continue
+                zarr = np.array([[int(x * scale), int(y * scale)] for x, y in zdat["points"]], np.int32)
+                cv2.polylines(view, [zarr], True, (0, 200, 0), 2, cv2.LINE_AA)
+                cv2.putText(view, f"cal Z{zkey}", (int(zarr[0][0]) + 6, int(zarr[0][1]) - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 0), 2, cv2.LINE_AA)
+            labels = ["P1", "P2", "P3", "P4"]
+            for idx, (px, py) in enumerate(state["points"]):
+                vx = int(round(px * scale))
+                vy = int(round(py * scale))
+                cv2.circle(view, (vx, vy), 7, (0, 255, 255), -1)
+                cv2.putText(view, labels[idx], (vx + 10, vy - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,255), 2, cv2.LINE_AA)
+            if len(state["points"]) >= 2:
+                for i in range(1, len(state["points"])):
+                    a = state["points"][i-1]; b = state["points"][i]
+                    cv2.line(view, (int(a[0]*scale), int(a[1]*scale)), (int(b[0]*scale), int(b[1]*scale)), (0,255,255), 2, cv2.LINE_AA)
+            if len(state["points"]) == 4:
+                a = state["points"][3]; b = state["points"][0]
+                cv2.line(view, (int(a[0]*scale), int(a[1]*scale)), (int(b[0]*scale), int(b[1]*scale)), (0,255,255), 2, cv2.LINE_AA)
+
+            if state["measure"]:
+                mp = state["measure"]
+                for q in mp:
+                    cv2.circle(view, (int(q[0] * scale), int(q[1] * scale)), 6, (255, 0, 255), -1)
+                if len(mp) == 2:
+                    cv2.line(view, (int(mp[0][0] * scale), int(mp[0][1] * scale)), (int(mp[1][0] * scale), int(mp[1][1] * scale)), (255, 0, 255), 2, cv2.LINE_AA)
+                    dist = measure_distance(mp[0], mp[1])
+                    if dist is None:
+                        measure_text_var.set("วัดไม่ได้: ต้องมีจุด P1–P4 ครบ 4 จุด และกรอกระยะจริงทั้ง 4 ด้านก่อน")
+                    else:
+                        mid = (int((mp[0][0] + mp[1][0]) / 2 * scale) + 8, int((mp[0][1] + mp[1][1]) / 2 * scale) - 8)
+                        cv2.putText(view, f"{dist:.2f} m", mid, cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 255), 2, cv2.LINE_AA)
+                        px = math.hypot(mp[1][0] - mp[0][0], mp[1][1] - mp[0][1])
+                        measure_text_var.set(f"ระยะที่วัดได้ = {dist:.2f} เมตร ({px:.0f} พิกเซล, สเกลตรงนี้ ≈ {px / dist:.0f} px/m) — เทียบกับขนาดจริงของสิ่งที่วัด")
+                else:
+                    measure_text_var.set("คลิกจุดที่สองเพื่อวัด")
+            else:
+                measure_text_var.set("")
+
+            ok, buf = cv2.imencode('.png', view)
+            if not ok:
+                return
+            photo = tk.PhotoImage(data=buf.tobytes())
+            state["photo"] = photo
+            canvas.delete("all")
+            state["offset_x"] = max(0, (cw - new_w) // 2)
+            state["offset_y"] = max(0, (ch - new_h) // 2)
+            canvas.create_image(state["offset_x"], state["offset_y"], anchor="nw", image=photo)
+            canvas.create_text(10, 10, anchor="nw", text=f"Frame {state['frame_index']+1} | Image {w}×{h}", fill="white", font=("Segoe UI", 10, "bold"))
+            point_text_var.set("  ".join(f"P{i+1}=({x:.1f},{y:.1f})" for i,(x,y) in enumerate(state["points"])) if state["points"] else "ยังไม่ได้เลือกจุด")
+            try:
+                vals = []
+                edge_defs = [
+                    (0,1,length_vars[0]),
+                    (1,2,length_vars[1]),
+                    (2,3,length_vars[2]),
+                    (3,0,length_vars[3]),
+                ]
+                for i,j,var in edge_defs:
+                    if len(state["points"]) <= j:
+                        continue
+                    real_m = float(var.get().strip())
+                    if real_m <= 0:
+                        continue
+                    px = math.hypot(state["points"][j][0]-state["points"][i][0], state["points"][j][1]-state["points"][i][1])
+                    if px > 0:
+                        vals.append(px / real_m)
+                if vals:
+                    ppm_calc_var.set(f"Calculated PPM: {sum(vals)/len(vals):.6f} pixel/m | edges={len(vals)}")
+                else:
+                    ppm_calc_var.set("Calculated PPM: -")
+            except Exception:
+                ppm_calc_var.set("Calculated PPM: -")
+
+        def load_frame():
+            try:
+                requested = int(float(frame_var.get())) - 1
+            except Exception:
+                messagebox.showerror("Perspective Calibration", "Frame must be an integer.", parent=top)
+                return
+            if total_frames > 0:
+                requested = max(0, min(total_frames - 1, requested))
+            cap.set(cv2.CAP_PROP_POS_FRAMES, requested)
+            ok, new_frame = cap.read()
+            if not ok or new_frame is None:
+                messagebox.showerror("Perspective Calibration", "Could not read that frame.", parent=top)
+                return
+            state["frame"] = new_frame.copy()
+            state["frame_index"] = requested
+            state["points"] = []
+            render()
+
+        def reset_points():
+            state["points"] = []
+            state["measure"] = []
+            render()
+
+        def event_to_image(event):
+            sx = state["scale"]
+            ox = state["offset_x"]
+            oy = state["offset_y"]
+            x = (event.x - ox) / sx
+            y = (event.y - oy) / sx
+            return float(x), float(y)
+
+        def on_click(event):
+            x, y = event_to_image(event)
+            if x < 0 or y < 0 or x > state["image_w"] or y > state["image_h"]:
+                return
+            if measure_var.get():
+                if len(state["measure"]) >= 2:
+                    state["measure"] = []
+                state["measure"].append((x, y))
+                render()
+                return
+            if len(state["points"]) >= 4:
+                candidates = [(i, math.hypot(px-x, py-y)) for i,(px,py) in enumerate(state["points"])]
+                i, d = min(candidates, key=lambda q: q[1])
+                if d <= max(12.0 / max(state["scale"], 1e-6), 20.0):
+                    state["drag_index"] = i
+                    return
+            if len(state["points"]) < 4:
+                state["points"].append((x, y))
+                render()
+
+        def on_drag(event):
+            idx = state.get("drag_index")
+            if idx is None or idx >= len(state["points"]):
+                return
+            x, y = event_to_image(event)
+            x = max(0.0, min(float(state["image_w"]), x))
+            y = max(0.0, min(float(state["image_h"]), y))
+            state["points"][idx] = (x, y)
+            render()
+
+        def on_release(event):
+            state["drag_index"] = None
+
+        def apply_calibration():
+            if ctx["mode"] != "base":
+                apply_zone_calibration()
+                return
+            if len(state["points"]) != 4:
+                messagebox.showerror("Perspective Calibration", "Please click exactly 4 points in order: P1 → P2 → P3 → P4.", parent=top)
+                return
+            try:
+                real_lengths = [float(v.get().strip()) for v in length_vars]
+                if any(v <= 0 for v in real_lengths):
+                    raise ValueError
+                l12, l23, l34, l41 = real_lengths
+            except Exception:
+                messagebox.showerror("Perspective Calibration", "All four Known Length values must be positive numbers in meters.", parent=top)
+                return
+
+            pts = np.array(state["points"], dtype=np.float32)
+            area = abs(cv2.contourArea(pts.reshape((-1,1,2))))
+            if area < 100.0:
+                messagebox.showerror("Perspective Calibration", "The 4 selected points are too close together. Select a larger road-plane area.", parent=top)
+                return
+
+            # A four-corner homography needs a fully specified target quadrilateral.
+            # Four side lengths alone do not uniquely determine that quadrilateral,
+            # so for the rectangular road patch used here we use the mean of opposite
+            # measured sides as the target length/width, while retaining all four
+            # measured sides as calibration/QC inputs.
+            length = (l12 + l34) / 2.0
+            width_m = (l23 + l41) / 2.0
+            src = np.float32(state["points"])
+            dst = np.float32([[0.0,0.0],[length,0.0],[length,width_m],[0.0,width_m]])
+            try:
+                H = cv2.getPerspectiveTransform(src, dst)
+            except Exception as exc:
+                messagebox.showerror("Perspective Calibration", f"Could not create perspective transform:\n\n{exc}", parent=top)
+                return
+            if not np.isfinite(H).all():
+                messagebox.showerror("Perspective Calibration", "The selected points produced an invalid transformation.", parent=top)
+                return
+
+            self.run3_perspective_p1_var.set(f"{state['points'][0][0]:.3f},{state['points'][0][1]:.3f}")
+            self.run3_perspective_p2_var.set(f"{state['points'][1][0]:.3f},{state['points'][1][1]:.3f}")
+            self.run3_perspective_p3_var.set(f"{state['points'][2][0]:.3f},{state['points'][2][1]:.3f}")
+            self.run3_perspective_p4_var.set(f"{state['points'][3][0]:.3f},{state['points'][3][1]:.3f}")
+            self.run3_perspective_length_var.set(f"{length:g}")
+            self.run3_perspective_width_var.set(f"{width_m:g}")
+            self.run3_perspective_l12_var.set(f"{l12:g}")
+            self.run3_perspective_l23_var.set(f"{l23:g}")
+            self.run3_perspective_l34_var.set(f"{l34:g}")
+            self.run3_perspective_l41_var.set(f"{l41:g}")
+            self.run3_perspective_enabled_var.set(True)
+
+            edge_specs = [(0,1,l12),(1,2,l23),(2,3,l34),(3,0,l41)]
+            edge_ppm = []
+            for i,j,real_m in edge_specs:
+                px = math.hypot(state["points"][j][0]-state["points"][i][0], state["points"][j][1]-state["points"][i][1])
+                if real_m > 0 and px > 0:
+                    edge_ppm.append(px / real_m)
+            reference_ppm = (sum(edge_ppm) / len(edge_ppm)) if edge_ppm else 0.0
+            if reference_ppm > 0:
+                self.run3_ppm_var.set(f"{reference_ppm:.6f}")
+            ppm_calc_var.set(f"PPM = {reference_ppm:.6f} pixel/m | 4-edge mean")
+            self.run3_result_text.set(f"Perspective calibrated: Frame {state['frame_index']+1}, {state['image_w']}×{state['image_h']} | PPM auto-calculated")
+
+            # Save a site-specific calibration JSON beside the selected output when possible.
+            try:
+                out_dir = str(self.output_var.get() or "").strip()
+                if out_dir:
+                    os.makedirs(out_dir, exist_ok=True)
+                    site = re.sub(r"[^A-Za-z0-9_-]+", "_", self.run3_site_id_var.get().strip() or "Unknown")
+                    cal_path = os.path.join(out_dir, f"Site_{site}_Perspective_Calibration.json")
+                    payload = {
+                        "Site_ID": self.run3_site_id_var.get().strip(),
+                        "video_path": video_path,
+                        "frame_index_zero_based": state["frame_index"],
+                        "frame_number_one_based": state["frame_index"] + 1,
+                        "image_width": state["image_w"],
+                        "image_height": state["image_h"],
+                        "P1": list(state["points"][0]), "P2": list(state["points"][1]),
+                        "P3": list(state["points"][2]), "P4": list(state["points"][3]),
+                        "Known_Length_P1_P2_m": l12,
+                        "Known_Length_P2_P3_m": l23,
+                        "Known_Length_P3_P4_m": l34,
+                        "Known_Length_P4_P1_m": l41,
+                        "Homography_Target_Length_m": length,
+                        "Homography_Target_Width_m": width_m,
+                        "Reference_PPM_pixel_per_meter": reference_ppm,
+                        "Edge_PPM": {"P1-P2": edge_ppm[0] if len(edge_ppm)>0 else None, "P2-P3": edge_ppm[1] if len(edge_ppm)>1 else None, "P3-P4": edge_ppm[2] if len(edge_ppm)>2 else None, "P4-P1": edge_ppm[3] if len(edge_ppm)>3 else None},
+                        "point_order": "P1->P2->P3->P4",
+                        "calibration_method": "Four-point planar homography with four-side metric inputs",
+                    }
+                    with open(cal_path, "w", encoding="utf-8") as f:
+                        json.dump(payload, f, indent=2, ensure_ascii=False)
+                    self.status_var.set(f"Perspective calibration saved: {os.path.basename(cal_path)}")
+            except Exception as exc:
+                self.status_var.set(f"Perspective applied; JSON save skipped: {exc}")
+
+            top.grab_release()
+            top.destroy()
+
+        def on_resize(event=None):
+            render()
+
+        canvas.bind("<Button-1>", on_click)
+        canvas.bind("<B1-Motion>", on_drag)
+        canvas.bind("<ButtonRelease-1>", on_release)
+        canvas.bind("<Configure>", on_resize)
+
+        def on_close():
+            try:
+                cap.release()
+            finally:
+                try:
+                    top.grab_release()
+                except Exception:
+                    pass
+                top.destroy()
+        top.protocol("WM_DELETE_WINDOW", on_close)
+        top.calibration_api = {          # (lets the tests drive the dialog without clicking)
+            "set_mode": lambda label: (mode_var.set(label), on_mode_change()),
+            "apply": apply_calibration, "delete_zone": delete_zone_calibration,
+            "length_vars": length_vars, "ctx": ctx, "mode_labels": mode_labels,
+        }
+
+        # Initial render after the canvas gets its first size.
+        top.after(100, render)
+
+    # ========================================================
+    # RUN 3 VALIDATION
+    # ========================================================
+
+    def _run3_float(self, value, name, positive=True):
+        text = str(value).strip()
+        if not text:
+            raise ValueError(f"Run 3 requires {name}.")
+        try:
+            number = float(text)
+        except Exception as exc:
+            raise ValueError(f"Run 3 {name} must be numeric.") from exc
+        if positive and number <= 0:
+            raise ValueError(f"Run 3 {name} must be greater than 0.")
+        return number
+
+    def _run3_parse_xy(self, text, label):
+        raw = str(text or "").strip()
+        if not raw:
+            raise ValueError(f"Perspective correction: {label} is required")
+        parts = [p.strip() for p in raw.replace(";", ",").split(",")]
+        if len(parts) != 2:
+            raise ValueError(f"Perspective correction: {label} must be x,y in pixels")
+        return float(parts[0]), float(parts[1])
+
+    def _align_status_text(self):
+        try:
+            data = json.loads(self.run3_align_var.get() or "{}")
+        except (ValueError, TypeError):
+            data = {}
+        if not data.get("pairs"):
+            return "ยังไม่ได้จัดแนว"
+        info = data.get("info", {})
+        kind = ALIGN_KINDS.get(data.get("kind", ""), (0, data.get("kind", "")))[1]
+        txt = f"{kind} · {len(data['pairs'])} คู่"
+        if info.get("rms_m") is not None:
+            txt += f" · คลาดเฉลี่ย {info['rms_m'] * 100:.0f} ซม."
+        if info.get("loo_rms_m") is not None:
+            txt += f" (เว้นจุดตรวจ {info['loo_rms_m'] * 100:.0f} ซม.)"
+        return txt + ("" if self.run3_align_enabled_var.get() else " — ยังไม่ได้ติ๊กใช้")
+
+    def open_align(self):
+        video = self._edit_video_path()
+        if not video or not os.path.isfile(video):
+            messagebox.showerror("จัดแนวกับภาพโดรน", "เลือกวิดีโอก่อน (ใช้เฟรมจากวิดีโอนี้)")
+            return None
+        try:
+            initial = json.loads(self.run3_align_var.get() or "{}")
+        except (ValueError, TypeError):
+            initial = {}
+        return AlignDialog(self, video, self.save_align, initial=initial)
+
+    def save_align(self, data):
+        self.run3_align_var.set(json.dumps(data))
+        self.run3_align_enabled_var.set(True)
+        self._align_cache = None
+        info = data.get("info", {})
+        self.run3_result_text.set(f"จัดแนวกับภาพโดรน: {len(data['pairs'])} คู่" + (f", คลาดเฉลี่ย {info['rms_m'] * 100:.0f} ซม." if info.get("rms_m") is not None else ""))
+
+    def open_zone_editor(self):
+        """The zone editor on the video | drone | X-Y views (needs a saved Align, the zones and the drone picture)."""
+        video = self._edit_video_path()
+        if not video or not os.path.isfile(video):
+            messagebox.showerror("แก้รูปโซน", "เลือกวิดีโอก่อน")
+            return None
+        if not any(len(self.zones.get(z, [])) >= 3 for z in ZONE_NAMES):
+            messagebox.showerror("แก้รูปโซน", "ยังไม่มีโซนที่วาดไว้ — โหลดไฟล์โซนก่อน (แท็บ ② ไฟล์โซนและเส้น)")
+            return None
+        try:
+            data = json.loads(self.run3_align_var.get() or "{}")
+        except (ValueError, TypeError):
+            data = {}
+        if not data.get("pairs"):
+            messagebox.showerror("แก้รูปโซน", "ยังไม่ได้จัดแนวกับภาพโดรน — กด \"จัดแนว…\" ก่อน (ต้องมีคู่จุดและสเกล)")
+            return None
+        try:
+            cfg = self._run3_align_cfg(silent=False, force=True)
+        except Exception as exc:
+            messagebox.showerror("แก้รูปโซน", str(exc))
+            return None
+        if not os.path.isfile(str((data.get("drone") or {}).get("path", ""))):
+            messagebox.showerror("แก้รูปโซน", "ไม่พบภาพโดรนที่ใช้จัดแนว — เปิด \"จัดแนว…\" แล้วเลือกภาพโดรนใหม่")
+            return None
+
+        def saved(path):
+            if messagebox.askyesno("ไฟล์โซนใหม่", f"บันทึกแล้ว:\n{path}\n\nใช้ไฟล์ใหม่นี้เป็นไฟล์โซนของโปรแกรมเลย (แทนไฟล์ที่โหลดอยู่) ใช่ไหม?"):
+                try:
+                    self._load_pkstudio_json(path)
+                except Exception as exc:
+                    messagebox.showerror("ไฟล์โซนใหม่", str(exc))
+        return ZoneAlignEditor(self, video, data, cfg, on_saved=saved)
+
+    def _run3_align_drone_source(self):
+        """(path, frame) of the drone / top-view picture saved with the Align (the background of the X-Y-on-drone video), or None."""
+        try:
+            d = (json.loads(self.run3_align_var.get() or "{}").get("drone") or {})
+            path = str(d.get("path", "") or "")
+            return (path, d.get("frame") or None) if path else None
+        except Exception:
+            return None
+
+    def _run3_align_cfg(self, silent=False, force=False):
+        """The usable Align config (see align_build) when 'use the Align result' is ticked, else None. The pairs were clicked on a frame of
+        a given size; for a video of another size the video points are scaled."""
+        if not bool(self.run3_align_enabled_var.get()) and not force:
+            return None
+        try:
+            text = self.run3_align_var.get()
+            key = (text, tuple(self._actual_video_size()))
+            cache = getattr(self, "_align_cache", None)
+            if cache is not None and cache[0] == key:
+                cfg = cache[1]
+            else:
+                data = json.loads(text or "{}")
+                if not data.get("pairs"):
+                    raise ValueError("Align: ยังไม่มีคู่จุด — เปิด \"จัดแนว…\" ก่อน หรือเอาติ๊กออก")
+                aw, ah = self._actual_video_size()
+                vw, vh = (data.get("video_size") or [aw, ah])
+                if aw and ah and vw and vh and (aw != vw or ah != vh):
+                    for q in data["pairs"]:
+                        q["s"] = [q["s"][0] * aw / float(vw), q["s"][1] * ah / float(vh)]
+                    data["video_size"] = [aw, ah]
+                cfg = align_build(data)
+                self._align_cache = (key, cfg)
+            if "error" in cfg:
+                raise ValueError("Align: " + cfg["error"])
+            return cfg
+        except Exception:
+            if silent:
+                return None
+            raise
+
+    def _run3_get_perspective_matrix(self, silent=False):
+        if not bool(self.run3_perspective_enabled_var.get()):
+            return None
+        try:
+            p1 = self._run3_parse_xy(self.run3_perspective_p1_var.get(), "P1")
+            p2 = self._run3_parse_xy(self.run3_perspective_p2_var.get(), "P2")
+            p3 = self._run3_parse_xy(self.run3_perspective_p3_var.get(), "P3")
+            p4 = self._run3_parse_xy(self.run3_perspective_p4_var.get(), "P4")
+            # Prefer the four measured side lengths; target is the mean-opposite-side rectangle.
+            raw4 = [
+                self.run3_perspective_l12_var.get(), self.run3_perspective_l23_var.get(),
+                self.run3_perspective_l34_var.get(), self.run3_perspective_l41_var.get(),
+            ]
+            if all(str(v).strip() for v in raw4):
+                l12, l23, l34, l41 = [float(v) for v in raw4]
+                if any(v <= 0 for v in (l12,l23,l34,l41)):
+                    raise ValueError("Perspective correction: all four side lengths must be > 0")
+                length_m = (l12 + l34) / 2.0
+                width_m = (l23 + l41) / 2.0
+            else:
+                length_m = float(self.run3_perspective_length_var.get())
+                width_m = float(self.run3_perspective_width_var.get())
+            if length_m <= 0 or width_m <= 0:
+                raise ValueError("Perspective correction: calibration lengths must be > 0")
+            src = np.float32([p1,p2,p3,p4])
+            dst = np.float32([[0,0],[length_m,0],[length_m,width_m],[0,width_m]])
+            H = cv2.getPerspectiveTransform(src, dst)
+            return {"H": H, "length_m": length_m, "width_m": width_m, "points": [p1,p2,p3,p4], "four_side_lengths_m": raw4}
+        except Exception:
+            if silent:
+                return None
+            raise
+
+    @staticmethod
+    def _run3_transform_point(point, perspective):
+        if perspective is None or point is None:
+            return point
+        arr = np.array([[list(point)]], dtype=np.float32)
+        mapped = cv2.perspectiveTransform(arr, perspective["H"])[0,0]
+        return float(mapped[0]), float(mapped[1])
+
+    @staticmethod
+    def _run3_metric_segment_distance_sum(points):
+        if len(points) < 2:
+            return 0.0
+        return sum(math.hypot(b[0]-a[0], b[1]-a[1]) for a,b in zip(points, points[1:]))
+
+    @staticmethod
+    def _run3_unique_output_path(path):
+        base, ext = os.path.splitext(path)
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        candidate = f"{base}_{stamp}{ext}"
+        if not os.path.exists(candidate):
+            return candidate
+        for i in range(1,1000):
+            candidate = f"{base}_{stamp}_{i}{ext}"
+            if not os.path.exists(candidate):
+                return candidate
+        raise IOError(f"Could not create unique output path for {path}")
+
+    def _run3_open_csv_safe(self, desired_path):
+        try:
+            return open(desired_path, "w", newline="", encoding="utf-8-sig"), desired_path
+        except PermissionError:
+            fallback = self._run3_unique_output_path(desired_path)
+            return open(fallback, "w", newline="", encoding="utf-8-sig"), fallback
+
+    def validate_run3_settings(self):
+        keys = ("speed", "gap", "lc", "pet", "ttc", "ldp")
+        enabled = {k: bool(getattr(self, f"run3_{k}_enabled_var").get()) for k in keys}
+        if not any(enabled.values()):
+            return True
+
+        if not self.run3_site_id_var.get().strip():
+            raise ValueError("Run 3 Site_ID is required when Run 3 is enabled.")
+
+        if self.run3_align_enabled_var.get():
+            self._run3_align_cfg(silent=False)
+        if self.run3_perspective_enabled_var.get():
+            self._run3_get_perspective_matrix(silent=False)
+
+        # Every Run 3 indicator now uses metric coordinates.
+        self._run3_float(self.run3_ppm_var.get(), "PPM")
+        self._run3_float(self.run3_lateral_axis_angle_var.get(), "road direction angle (deg)", positive=False)
+
+        def need_zone(var_map, label):
+            if not any(v.get() for v in var_map.values()):
+                raise ValueError(f"Select at least one Zone for {label}.")
+
+        if enabled["speed"]:
+            need_zone(self.run3_speed_zone_vars, "Speed")
+            self._run3_float(self.run3_speed_smoothing_var.get(), "speed smoothing samples")
+            self._run3_float(self.run3_speed_max_var.get(), "max plausible speed (km/h)")
+            self._run3_float(self.run3_speed_frame_window_var.get(), "per-frame speed window (s)")
+        if enabled["lc"]:
+            need_zone(self.run3_lc_zone_vars, "Lateral Clearance")
+            self._run3_float(self.run3_lc_heading_window_var.get(), "LC heading window (s)")
+        if enabled["lc"] or enabled["ttc"]:
+            for name in RUN3_VEHICLE_CLASSES:
+                self._run3_float(self.run3_width_vars[name].get(), f"vehicle width for {name}")
+        if enabled["lc"]:
+            for name in RUN3_VEHICLE_CLASSES:
+                self._run3_float(self.run3_length_vars[name].get(), f"vehicle length for {name} (Lateral Clearance needs the length)")
+        if enabled["ttc"]:
+            need_zone(self.run3_ttc_zone_vars, "TTC")
+            if str(self.run3_ttc_max_record_var.get()).strip():
+                self._run3_float(self.run3_ttc_max_record_var.get(), "TTC record limit (s)")
+            if str(self.run3_ttc_min_record_var.get()).strip():
+                self._run3_float(self.run3_ttc_min_record_var.get(), "TTC lowest value to count (s)", positive=False)
+            self._run3_float(self.run3_ttc_velocity_window_var.get(), "TTC velocity window (s)")
+            self._run3_float(self.run3_ttc_min_speed_var.get(), "TTC minimum vehicle speed (km/h)", positive=False)
+            self._run3_float(self.run3_ttc_min_rel_speed_var.get(), "TTC minimum relative speed (m/s)", positive=False)
+            self._run3_float(self.run3_ttc_miss_margin_var.get(), "TTC miss-distance margin (m)", positive=False)
+            self._run3_float(self.run3_ttc_cross_time_var.get(), "TTC crossing time difference (s)", positive=False)
+            self._run3_float(self.run3_ttc_rear_margin_var.get(), "TTC rear-end margin (m)", positive=False)
+            for name in RUN3_VEHICLE_CLASSES:
+                self._run3_float(self.run3_width_vars[name].get(), f"vehicle width for {name} (TTC uses the vehicle rectangle)")
+                self._run3_float(self.run3_length_vars[name].get(), f"vehicle length for {name} (TTC uses the vehicle rectangle)")
+            self._run3_float(self.run3_ttc_pair_radius_var.get(), "TTC pair screening radius (m)")
+            a1 = self._run3_float(self.run3_ttc_angle_rear_var.get(), "TTC rear-end angle (deg)")
+            a2 = self._run3_float(self.run3_ttc_angle_cross_var.get(), "TTC crossing angle (deg)")
+            if not 0 < a1 < a2 < 180:
+                raise ValueError("Run 3 TTC angles must satisfy 0 < rear-end angle < crossing angle < 180 degrees.")
+        for key in RISK_SETTING_KEYS:
+            try:
+                parse_risk_limits(self.run3_risk_vars[key].get(), RISK_SETTING_ASCENDING[key])
+            except ValueError as exc:
+                raise ValueError(f"Run 3 risk-level limits ({key}): {exc}.")
+        for key in RUN3_GEOMETRY_KEYS:
+            text = str(self.run3_geometry_vars[key].get()).strip()
+            if text:   # must be numeric when entered (lane widths are required when LDP is enabled)
+                self._run3_float(text, f"road geometry {key}", positive=(key != "median_m"))
+        if enabled["ldp"]:
+            need_zone(self.run3_ldp_zone_vars, "LDP")
+            self._run3_float(self.run3_ldp_smoothing_var.get(), "LDP smoothing samples")
+            for key in ("lane_entry_motorcycle_m", "lane_entry_car_m", "lane_opp_motorcycle_m", "lane_opp_car_m"):
+                self._run3_float(self.run3_geometry_vars[key].get(), f"road geometry {key} (required by LDP)")
+        if enabled["pet"]:
+            need_zone(self.run3_pet_zone_vars, "PET")
+            self._run3_float(self.run3_pet_threshold_var.get(), "PET threshold (s)")
+            if str(self.run3_pet_max_var.get()).strip():
+                self._run3_float(self.run3_pet_max_var.get(), "PET max (s)")
+            if str(self.run3_pet_min_speed_var.get()).strip():
+                self._run3_float(self.run3_pet_min_speed_var.get(), "PET minimum vehicle speed (km/h)")
+        if enabled["gap"]:
+            if not any([
+                self.run3_gap_subject_134_var.get(),
+                self.run3_gap_subject_1367_var.get(),
+                self.run3_gap_subject_5631_var.get(),
+            ]):
+                raise ValueError("Select at least one Gap Acceptance subject movement.")
+            self._run3_float(self.run3_waiting_speed_threshold_var.get(), "Gap Acceptance stop speed threshold (km/h)")
+            self._run3_float(self.run3_hold_min_duration_var.get(), "Gap Acceptance stop minimum duration (s)")
+            if not (self.run3_use_raff_var.get() or self.run3_use_mle_var.get()):
+                raise ValueError("Select at least one Critical Gap method.")
+            self.run3_reference_mapping_text = (
+                self.run3_reference_text.get("1.0", "end-1c").strip()
+                if hasattr(self, "run3_reference_text") else self.run3_reference_mapping_text.strip()
+            )
+        return True
+
+    def collect_run3_warnings(self):
+        """Non-blocking pre-flight checks. Returns a list of warning strings.
+
+        These are situations that would otherwise produce empty or partial
+        Run 3 output without any message (the run still completes).
+        """
+        warnings = []
+        keys = {
+            "speed": ("Speed", self.run3_speed_zone_vars),
+            "lc": ("Lateral Clearance", self.run3_lc_zone_vars),
+            "ttc": ("TTC", self.run3_ttc_zone_vars),
+            "pet": ("PET", self.run3_pet_zone_vars),
+            "ldp": ("LDP", self.run3_ldp_zone_vars),
+        }
+        # A Zone file (and its Lines) belongs to ONE camera view. Warn when the Video is a different one.
+        zone_video = str(getattr(self, "zone_source_video", "") or "").strip()
+        video_now = self.video_var.get().strip()
+        if self.zone_line_config_var.get().strip() and zone_video and video_now:
+            if os.path.basename(zone_video).lower() != os.path.basename(video_now).lower():
+                warnings.append(
+                    f"The Zone file was drawn on the video '{os.path.basename(zone_video)}' but the Video to process is "
+                    f"'{os.path.basename(video_now)}'. Zones, Lines and the scale (PPM / Perspective) belong to one camera "
+                    "view; with another video the results (Movement, LDP, Gap Acceptance ...) will be empty or wrong.")
+            else:
+                aw, ah = self._actual_video_size()
+                zw, zh = getattr(self, "zone_source_width", None), getattr(self, "zone_source_height", None)
+                if aw and ah and zw and zh and abs(aw / float(ah) - zw / float(zh)) > 0.02:
+                    warnings.append(
+                        f"The Zone file was drawn on {zw}x{zh} frames but the video is {aw}x{ah} (different shape): "
+                        "the Zones cannot be scaled correctly.")
+        position = str(self.trajectory_position_var.get()).strip()
+        if (bool(self.run3_perspective_enabled_var.get()) or self.run3_ppm_var.get().strip()) and not position.startswith("Bottom"):
+            warnings.append(
+                f"Trajectory Position = '{position}' (ขั้น ② ทางแยก): PPM / Perspective Calibration วัดบนพื้นถนน แต่จุดนี้ไม่ใช่จุดที่ล้อแตะพื้น "
+                "(เช่น Top = หัวคนขี่) ความเร็วและระยะจะเพี้ยน (โดยทั่วไปสูงเกินจริง) — แนะนำ Bottom")
+        defined = {z for z in ZONE_IDS if len(self.zones.get(f"Zone {z}", [])) >= 3}
+        any_enabled = any(bool(getattr(self, f"run3_{k}_enabled_var").get())
+                          for k in ("speed", "gap", "lc", "pet", "ttc", "ldp"))
+        if any_enabled and not defined:
+            warnings.append(
+                "Run 3 is enabled but no Zone is loaded. Zones are required for every "
+                "Run 3 indicator, so all Run 3 outputs will be empty."
+            )
+            return warnings
+        for key, (label, var_map) in keys.items():
+            if not bool(getattr(self, f"run3_{key}_enabled_var").get()):
+                continue
+            missing = sorted(z for z, v in var_map.items() if v.get() and z not in defined)
+            if missing:
+                warnings.append(
+                    f"{label}: Zone {', '.join(str(z) for z in missing)} selected but not defined in the "
+                    f"loaded Zone file (defined: {', '.join(str(z) for z in sorted(defined))}). "
+                    "Those zones will produce no data."
+                )
+
+        # Gap Acceptance: a Line per conflicting stream gives the best reference time; without a
+        # usable Line the program uses the time a vehicle first enters the stream's origin zone.
+        if bool(self.run3_gap_enabled_var.get()):
+            subjects = [m for m, var in (("1-3-4", self.run3_gap_subject_134_var),
+                                         ("1-3-6-7", self.run3_gap_subject_1367_var),
+                                         ("5-6-3-1", self.run3_gap_subject_5631_var)) if var.get()]
+            text = (self.run3_reference_text.get("1.0", "end-1c")
+                    if hasattr(self, "run3_reference_text") else self.run3_reference_mapping_text)
+            fallback = (" For such streams the program uses the time each vehicle first enters the origin zone "
+                        "of the stream instead (more approximate; button 'วาด Line…' gives better results).")
+            try:
+                mapping = self._run3_parse_reference_mapping(text)
+            except Exception as exc:
+                mapping = None
+                warnings.append(f"Gap Acceptance: Reference Line Mapping is invalid ({exc})." + fallback)
+            if mapping is not None:
+                site = self.run3_site_id_var.get().strip()
+                site_map = {mv: ln for (st, mv), ln in mapping.items() if str(st).strip() == site}
+                needed = sorted({c for m in subjects for c in RUN3_GAP_CONFLICT_MAP[m]})
+                source = self.run3_ref_line_source_var.get() if hasattr(self, "run3_ref_line_source_var") else "zone_edge"
+                tol = 6.0
+                try:
+                    tol = float(self.run3_zone_edge_tol_var.get() or 6.0)
+                except Exception:
+                    pass
+                cfg_ref = {"reference_line_source": source, "zone_edge_tol_px": tol}
+                no_edge, undrawn, missing = [], [], []
+                for cs in needed:
+                    names = self._run3_reference_names(cs, mapping, site, cfg_ref)
+                    if any(len(self._run3_named_line(n, tol)) == 2 for n in names):
+                        continue                       # this stream has a usable reference line
+                    row = site_map.get(cs)
+                    edge_expected = source == "zone_edge" or (source == "per_stream" and row is None)
+                    if edge_expected and cs in ZONE_EDGE_DEFAULT:
+                        no_edge.append(cs)
+                    if row is not None:
+                        undrawn.append(f"{row} ({cs})")
+                    elif not (edge_expected and cs in ZONE_EDGE_DEFAULT):
+                        missing.append(cs)
+                undrawn = sorted(set(undrawn))
+                if no_edge:
+                    warnings.append("Gap Acceptance: the zones of stream(s) " + ", ".join(
+                        f"{c_} (Zone {ZONE_EDGE_DEFAULT[c_][0]}|{ZONE_EDGE_DEFAULT[c_][1]})" for c_ in no_edge)
+                        + " share no edge (draw the zones so that they touch, or choose 'Line ที่วาดไว้')." + fallback)
+                parts = []
+                if missing:
+                    parts.append("no Line mapped for stream(s) " + ", ".join(missing) + f" (Site_ID '{site}')")
+                if undrawn:
+                    parts.append("mapped Line is not drawn/loaded in the Zone/Line file: " + ", ".join(undrawn))
+                if parts:
+                    warnings.append("Gap Acceptance: " + "; ".join(parts) + "." + fallback)
+        # the X-Y-on-drone video needs the Align (video pixels -> the drone picture) and the picture file
+        clips = getattr(getattr(self, "clips_panel", None), "clips", []) or []
+        if any(cl.get("drone_video") for cl in clips):
+            src = self._run3_align_drone_source()
+            if self._run3_align_cfg(silent=True) is None or not src or not os.path.isfile(src[0]):
+                warnings.append("วิดีโอ X–Y บนภาพโดรน: ต้องติ๊ก \"ใช้ผลการจัดแนวแทน PPM / Perspective\" และมีภาพโดรนที่ใช้จัดแนวอยู่ในเครื่อง (ขั้น ② ทางแยก → จัดแนว…) มิฉะนั้นจะไม่สร้างวิดีโอนี้")
+        return warnings
+
+    # ========================================================
+    # DEVICE
+    # ========================================================
+
+    def offer_restart_with_cuda_python(self, error_text):
+        """GPU selected but this Python has a CPU-only PyTorch: look for another installed
+        Python with CUDA and offer to reopen PK Studio with it. True = restarting."""
+        try:
+            self.status_var.set("กำลังหา Python ที่ใช้ GPU ได้...")
+            self.root.update_idletasks()
+            cuda_python = find_cuda_python()
+        except Exception:
+            cuda_python = None
+        if not cuda_python:
+            return False
+        if not messagebox.askyesno(
+                "CUDA / Device Error",
+                error_text + "\n\n"
+                "พบ Python ที่ใช้ GPU ได้:\n" + cuda_python + "\n\n"
+                "ปิดหน้าต่างนี้แล้วเปิด PK Studio ใหม่ด้วย Python ตัวนั้นเลยหรือไม่?\n"
+                "(ค่าที่ยังไม่ได้บันทึกจะหาย — กด No เพื่อใช้ CPU ต่อ)"):
+            return False
+        env = os.environ.copy()
+        env[BOOTSTRAP_MARKER] = "1"
+        try:
+            subprocess.Popen([cuda_python, os.path.abspath(sys.argv[0]), *sys.argv[1:]], env=env)
+        except Exception as exc:
+            messagebox.showerror("Restart", f"เปิดใหม่ไม่สำเร็จ: {exc}")
+            return False
+        self.root.after(200, self.root.destroy)
+        return True
+
+    def resolve_device(self):
+
+        selected = self.device_var.get()
+
+        if selected == "CPU":
+            return "cpu"
+
+        if selected == "GPU DirectML":
+            if os.name != "nt":
+                raise RuntimeError("GPU DirectML works on Windows only")
+            return "directml"
+
+        if selected == "GPU 0":
+
+            if not torch.cuda.is_available():
+
+                raise RuntimeError(
+                    "GPU 0 was selected, but this PyTorch environment "
+                    "cannot use CUDA\n\n"
+                    f"Python:\n{sys.executable}\n\n"
+                    f"PyTorch:\n{torch.__version__}\n\n"
+                    "CUDA available: False"
+                )
+
+            return "cuda:0"
+
+        if torch.cuda.is_available():
+            return "cuda:0"
+
+        return "cpu"
+
+    # ========================================================
+    # FRAME SKIP
+    # ========================================================
+
+    def get_frame_skip(self):
+
+        text = self.frame_skip_var.get()
+
+        if text.startswith("NO"):
+            return 1
+
+        if "1 - " in text:
+            return 2
+
+        if "2 - " in text:
+            return 3
+
+        if "3 - " in text:
+            return 4
+
+        if "4 - " in text:
+            return 5
+
+        return 1
+
+    def get_frame_skip_from_text(self, text):
+
+        if text.startswith("NO"):
+            return 1
+
+        if "1 - " in text:
+            return 2
+
+        if "2 - " in text:
+            return 3
+
+        if "3 - " in text:
+            return 4
+
+        if "4 - " in text:
+            return 5
+
+        return 1
+
+    # ========================================================
+    # SAFE RUN NAME
+    # ========================================================
+
+    def safe_filename(self, name):
+
+        invalid = '<>:"/\\|?*'
+
+        for char in invalid:
+            name = name.replace(char, "_")
+
+        return name.strip()
+
+    # ========================================================
+    # BYTE TRACK YAML
+    # ========================================================
+
+    @staticmethod
+    def _tracker_signature(settings):
+        """Settings that must be the same for a tracker to be carried over to the next clip."""
+        keys = ("model", "tracker", "confidence", "iou", "img_size", "track_high", "track_low", "new_track",
+                "track_buffer", "match_threshold", "precision", "device", "frame_skip")
+        return tuple(str(settings.get(k)) for k in keys)
+
+    def create_bytetrack_yaml(self, output_dir, run_name="Run"):
+
+        yaml_path = os.path.join(
+            output_dir,
+            "ByteTrack.yaml"
+        )
+
+        text = (
+            "tracker_type: bytetrack\n"
+            f"track_high_thresh: "
+            f"{float(self.track_high_var.get())}\n"
+            f"track_low_thresh: "
+            f"{float(self.track_low_var.get())}\n"
+            f"new_track_thresh: "
+            f"{float(self.new_track_var.get())}\n"
+            f"track_buffer: "
+            f"{int(self.track_buffer_var.get())}\n"
+            f"match_thresh: "
+            f"{float(self.match_threshold_var.get())}\n"
+            "fuse_score: True\n"
+        )
+
+        with open(
+            yaml_path,
+            "w",
+            encoding="utf-8"
+        ) as f:
+
+            f.write(text)
+
+        return yaml_path
+
+    # ========================================================
+    # START
+    # ========================================================
+
+    # ========================================================
+    # PAUSE
+    # ========================================================
+
+    def toggle_pause(self):
+
+        if not self.running:
+            return
+
+        if self.pause_event.is_set():
+
+            self.pause_event.clear()
+
+            self.pause_button.config(
+                text="▶ RESUME"
+            )
+
+            self.status_var.set("Paused")
+
+        else:
+
+            self.pause_event.set()
+
+            self.pause_button.config(
+                text="Ⅱ PAUSE"
+            )
+
+            self.status_var.set(
+                "Processing..."
+            )
+
+    # ========================================================
+    # STOP
+    # ========================================================
+
+    def request_stop(self):
+
+        if not self.running:
+            return
+
+        self.stop_event.set()
+        self.pause_event.set()
+
+        self.status_var.set(
+            "Stopping..."
+        )
+
+    # ========================================================
+    # UI UPDATE
+    # ========================================================
+
+    def post_ui(self, fn):
+        """Thread-safe: ask the main (Tk) thread to run fn() soon."""
+        self._ui_queue.put(fn)
+
+    def _poll_ui_queue(self):
+        try:
+            while True:
+                fn = self._ui_queue.get_nowait()
+                try:
+                    fn()
+                except Exception:
+                    log.exception("UI callback failed")
+        except queue.Empty:
+            pass
+        try:
+            self.root.after(50, self._poll_ui_queue)
+        except tk.TclError:
+            pass   # window already closed
+
+    def update_ui(
+        self,
+        status=None,
+        progress=None,
+        timing=None
+    ):
+
+        def update():
+
+            if status is not None:
+                self.status_var.set(status)
+
+            if progress is not None:
+                self.progress_var.set(progress)
+
+            if timing is not None:
+                self.time_var.set(timing)
+
+        self.post_ui(update)
+
+    # ========================================================
+    # PROCESSING
+    # ========================================================
+
+    def run_processing(self, settings):
+
+        cap = None
+        writer = None
+        reader = None
+        csv_file = None
+
+        try:
+
+            model_path = settings["model"]
+            video_path = settings["video"]
+            output_dir = settings["output"]
+
+            # "Continues the previous clip": the tracker of the clip analysed right before this one is carried on, so a
+            # vehicle that was being tracked keeps its ID, and new vehicles get the next numbers. The time range, the
+            # recording and every result file stay separate for each clip.
+            carry = self._carry if settings.get("continue_tracker") else None
+            self._carry = None                  # only the clip run right before can be continued
+            tracker_sig = self._tracker_signature(settings)
+            if carry is not None and carry.get("sig") != tracker_sig:
+                carry = None                    # the tracker / detection settings changed: start a new tracker
+            # vehicle IDs continue after the previous clips of the folder (a continued clip keeps its predecessor's numbering)
+            id_offset = carry["id_offset"] if carry else int(settings.get("id_offset", 0) or 0)
+
+            os.makedirs(
+                output_dir,
+                exist_ok=True
+            )
+
+            run_name = self.safe_filename(
+                settings["run_name"]
+            )
+
+            rt = self._rt or {}
+            self._run3_live_perspective = (self._run3_cfg or {}).get("perspective")
+
+            # =========================================================
+            # CSV OUTPUTS — ONLY 3 MAIN CSV FILES
+            # =========================================================
+            # 1) Detection_Records.csv   = raw per-frame detections
+            # 2) ID_Zone_Summary.csv     = one summary per tracked ID
+            # 3) Zone_Summary.csv        = one aggregate summary per Zone
+            #
+            # Legacy Research_*.csv files are intentionally NOT exported.
+            # This keeps the output folder limited to the agreed 3 CSV files.
+
+            output_video = os.path.join(
+                output_dir,
+                "Tracking_Result.mp4"
+            )
+
+            output_csv = os.path.join(
+                output_dir,
+                "Detection_Records.csv"
+            )
+
+            output_id_zone_summary = os.path.join(
+                output_dir,
+                "ID_Zone_Summary.csv"
+            )
+
+            output_zone_summary = os.path.join(
+                output_dir,
+                "Zone_Summary.csv"
+            )
+
+            # Non-CSV metadata files are still allowed.
+            output_summary = os.path.join(
+                output_dir,
+                "Run_Summary.json"
+            )
+
+            output_settings = os.path.join(
+                output_dir,
+                "Settings.json"
+            )
+
+            output_tracker_yaml = os.path.join(
+                output_dir,
+                "ByteTrack.yaml"
+            )
+
+            output_measurement_summary = os.path.join(
+                output_dir,
+                "Measurement_Summary.json"
+            )
+
+            with open(
+                output_settings,
+                "w",
+                encoding="utf-8"
+            ) as f:
+                json.dump(
+                    settings,
+                    f,
+                    indent=4,
+                    ensure_ascii=False
+                )
+
+            device = self.resolve_device()
+
+            precision = settings["precision"]
+
+            use_fp16 = False
+
+            if precision == "FP16":
+
+                if device.startswith("cuda"):
+                    use_fp16 = True
+
+            elif precision == "Auto":
+
+                if device.startswith("cuda"):
+                    try:
+                        dev_index = int(device.split(":")[1]) if ":" in device else 0
+                    except ValueError:
+                        dev_index = 0
+                    use_fp16 = fp16_is_faster(dev_index)       # FP32 on the GTX 16 series, where FP16 is much slower
+
+            if precision == "FP16" and not device.startswith("cuda") and device != "directml":
+
+                raise RuntimeError(
+                    "FP16 requires a CUDA/GPU device"
+                )
+
+            self.update_ui(
+                status=(
+                    "กำลังโหลดโมเดล... "
+                    f"({device})"
+                )
+            )
+
+            print()
+            print("=" * 75)
+            print("PK Studio - Vehicle Traffic Analysis")
+            print("RUN 1 + 2 : Detection + Tracking + Trajectory + Zone/Line Measurement")
+            print("=" * 75)
+            print()
+            print("Python      :", sys.executable)
+            print("PyTorch     :", torch.__version__)
+            print("CUDA        :", torch.cuda.is_available())
+
+            if torch.cuda.is_available():
+                print(
+                    "GPU         :",
+                    torch.cuda.get_device_name(0)
+                )
+
+            print()
+            print("Run Name    :", run_name)
+            print("Model       :", model_path)
+            print("Video       :", video_path)
+            print("Output      :", output_dir)
+            print()
+            print("Device      :", device)
+            print(
+                "Precision   :",
+                "FP16" if use_fp16 else "FP32"
+            )
+            print()
+
+            model_is_engine = False
+            if carry:
+                model = carry["model"]
+                model_is_engine = bool(carry.get("model_is_engine"))
+            else:
+                model, used = load_yolo_model(model_path, bool(settings.get("use_tensorrt")), int(settings.get("img_size") or 640), device)
+                model_is_engine = str(used).lower().endswith((".engine", ".onnx"))
+                print("Model file  :", used)
+
+            cap = open_video_capture(video_path, bool(settings.get("hw_decode")))
+
+            if not cap.isOpened():
+
+                raise RuntimeError(
+                    "Unable to open video"
+                )
+
+            width = int(
+                cap.get(
+                    cv2.CAP_PROP_FRAME_WIDTH
+                )
+            )
+
+            height = int(
+                cap.get(
+                    cv2.CAP_PROP_FRAME_HEIGHT
+                )
+            )
+
+            fps = cap.get(
+                cv2.CAP_PROP_FPS
+            )
+
+            if fps <= 0:
+                fps = 30.0
+
+            total_frames = int(
+                cap.get(
+                    cv2.CAP_PROP_FRAME_COUNT
+                )
+            )
+
+            # Analysis window and recording window (times are video times; frame N is at (N-1)/fps)
+            video_total_frames = total_frames
+            a_start = parse_clock_time(settings.get("analysis_start_s", ""))
+            a_end = parse_clock_time(settings.get("analysis_end_s", ""))
+            first_frame, last_frame = window_frames(a_start, a_end, fps, total_frames)
+            r_start = parse_clock_time(settings.get("record_start_s", ""))
+            r_end = parse_clock_time(settings.get("record_end_s", ""))
+            rec_first, rec_last = first_frame, last_frame
+            if r_start is not None:
+                rec_first = max(first_frame, window_frames(r_start, None, fps, 0)[0])
+            if r_end is not None:
+                rec_end_frame = window_frames(None, r_end, fps, 0)[1]
+                rec_last = rec_end_frame if rec_last is None else min(rec_last, rec_end_frame)
+            rec_last_eff = rec_last if rec_last is not None else 10 ** 12
+            window_start0 = first_frame - 1
+            if last_frame is not None:
+                total_frames = last_frame      # progress / ETA / "Frame: i/total" run to the end of the window
+
+            rec_ratio = output_fps_ratio(settings.get("video_fps", "0"), fps)         # the share of the frames the result video keeps
+            rec_written = 0
+            if settings["save_video"]:
+
+                fourcc = cv2.VideoWriter_fourcc(
+                    *"mp4v"
+                )
+
+                out_size = scaled_video_size(width, height, settings.get("video_max_width", "0"))
+                writer = cv2.VideoWriter(
+                    output_video,
+                    fourcc,
+                    fps * rec_ratio,
+                    out_size
+                )
+
+                if not writer.isOpened():
+
+                    raise RuntimeError(
+                        "Unable to create output video"
+                    )
+
+                writer = BackgroundVideoWriter(writer, size=(None if out_size == (width, height) else out_size))      # encoding (and the scaling) runs beside the detection
+
+            tracker_name = settings["tracker"]
+
+            if tracker_name == "ByteTrack":
+
+                tracker_path = (
+                    self.create_bytetrack_yaml(
+                        output_dir,
+                        run_name
+                    )
+                )
+
+                # Keep the exact research filename in the run summary.
+                output_tracker_yaml = tracker_path
+
+            else:
+
+                tracker_path = "botsort.yaml"
+                output_tracker_yaml = None
+
+            if settings["save_csv"]:
+
+                csv_file = open(
+                    output_csv,
+                    "w",
+                    newline="",
+                    encoding="utf-8-sig"
+                )
+
+                csv_writer = csv.writer(
+                    csv_file
+                )
+
+                # v28(131): no class_id (class_name says it), no bbox width / height / area (from the corners), no trajectory_position / trajectory_offset
+                # (the same on every row, they are in Settings.json)
+                csv_writer.writerow([
+                    "frame", "timestamp", "track_id", "class_name",
+                    "confidence", "bbox_x1", "bbox_y1", "bbox_x2", "bbox_y2",
+                    "trajectory_x", "trajectory_y",
+                    "zone"
+                ])
+
+            else:
+
+                csv_writer = None
+
+            # =================================================
+            # INTERNAL / LEGACY RESEARCH WRITERS
+            # =================================================
+            # Keep these as no-op writers so the existing tracking logic can
+            # continue calculating internal statistics without creating extra
+            # CSV files on disk.
+            null_writer = _NullCSVWriter()
+            track_stats_file = null_writer
+            id_switch_file = null_writer
+            detection_loss_file = null_writer
+            processing_log_file = null_writer
+            measurement_events_file = null_writer
+            line_summary_file = null_writer
+
+            track_stats_writer = null_writer
+            id_switch_writer = null_writer
+            detection_loss_writer = null_writer
+            processing_log_writer = null_writer
+            measurement_events_writer = null_writer
+            line_summary_writer = null_writer
+
+            # The two summary CSVs are real output files.
+            zone_summary_file = open(
+                output_zone_summary,
+                "w",
+                newline="",
+                encoding="utf-8-sig"
+            )
+            zone_summary_writer = csv.writer(zone_summary_file)
+            zone_summary_writer.writerow([
+                "zone", "unique_ids", "total_entries", "average_duration_seconds",
+                "min_duration_seconds", "max_duration_seconds",
+                "first_entry_timestamp", "last_entry_timestamp"
+            ])
+
+            id_zone_summary_file = open(
+                output_id_zone_summary,
+                "w",
+                newline="",
+                encoding="utf-8-sig"
+            )
+            id_zone_summary_writer = csv.writer(id_zone_summary_file)
+            id_zone_summary_writer.writerow([
+                "track_id", "class_name", "first_seen_timestamp", "last_seen_timestamp",
+                "track_duration_seconds", "first_zone", "last_zone", "zone_sequence",
+                "unique_zones_visited", "zone_transition_count", "total_zone_time_seconds"
+            ])
+
+            # Integrated measurement state. This is updated directly from Run 1 tracking.
+            zone_track_state = {}
+            line_track_state = {}
+            zone_assignment_summary = defaultdict(lambda: defaultdict(int))
+            trajectory_position = settings.get("trajectory_position", self.trajectory_position_var.get())
+            trajectory_offset = float(settings.get("trajectory_offset", self.trajectory_offset_var.get() or 0))
+            try:
+                zone_confirmation_frames = max(1, int(float(settings.get("zone_confirm_frames", 1) or 1)))
+            except (TypeError, ValueError):
+                zone_confirmation_frames = 1
+            try:
+                box_smooth_alpha = 1.0 - max(0.0, min(90.0, float(settings.get("box_smooth_pct", 0) or 0))) / 100.0
+            except (TypeError, ValueError):
+                box_smooth_alpha = 1.0
+            box_ema = {}                                    # track id -> (last frame, smoothed box) for the drawn box / trail
+            zone_entry_count = defaultdict(int)
+            zone_exit_count = defaultdict(int)
+            line_cross_count = defaultdict(int)
+
+            # Per-track research state.
+            track_stats = {}
+            active_tracks = {}
+            recent_lost_tracks = deque(maxlen=100)
+            id_switch_warning_count = 0
+            detection_loss_count = 0
+            max_active_tracks = 0
+            total_frames_with_detection = 0
+            input_finished = False
+
+            conf = float(
+                settings["confidence"]
+            )
+
+            iou = float(
+                settings["iou"]
+            )
+
+            img_size = int(
+                settings["img_size"]
+            )
+
+            frame_skip = self.get_frame_skip_from_text(
+                settings["frame_skip"]
+            )
+
+            csv_flush_every = int(
+                settings["csv_flush"]
+            )
+
+            trail_length = int(
+                settings["trail_length"]
+            )
+
+            show_preview = settings[
+                "show_preview"
+            ]
+
+            self.validate_measurements()
+            measurement_enabled = (
+                any(len(v) >= 3 for v in self.zones.values())
+                or any(len(v) >= 2 for v in self.lines.values())
+            )
+            if not hasattr(self, "zone_meta"):
+                self.zone_meta = {}
+            print("Measurement :", "Enabled (Zones/Lines integrated)" if measurement_enabled else "Disabled")
+            if measurement_enabled:
+                print("Zones       :", [k for k, v in self.zones.items() if len(v) >= 3])
+                print("Lines       :", [k for k, v in self.lines.items() if len(v) == 2])
+                print("Trajectory Position:", self.trajectory_position_var.get())
+                print("Trajectory Offset  :", self.trajectory_offset_var.get(), "%")
+
+            window_name = "PK Studio - Run 1"
+            # V27: drawing is only needed when frames are shown or saved.
+            render_needed = bool(show_preview) or writer is not None
+
+            if show_preview:
+
+                cv2.namedWindow(
+                    window_name,
+                    cv2.WINDOW_NORMAL
+                )
+
+                cv2.resizeWindow(
+                    window_name,
+                    width,
+                    height
+                )
+
+            trails = {}
+            zones_available_run = any(len(self.zones.get(z, [])) >= 3 for z in ZONE_NAMES)
+
+            frame_index = 0
+            if first_frame > 1:
+                # jump to the start of the analysis window (frame_index keeps the original video frame number)
+                cap.set(cv2.CAP_PROP_POS_FRAMES, first_frame - 1)
+                if int(cap.get(cv2.CAP_PROP_POS_FRAMES)) != first_frame - 1:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)      # seeking not exact in this file: read forward instead
+                    for _skip in range(first_frame - 1):
+                        if not cap.grab():
+                            break
+                frame_index = first_frame - 1
+            processed_frames = 0
+            total_detections = 0
+            untracked_detections = 0
+
+            # decoding runs beside the detection; a frame is only skipped (not decoded) when nothing uses it
+            reader = BackgroundFrameReader(
+                cap,
+                lambda n: not (frame_skip > 1 and not render_needed and (n % frame_skip) != 0),
+                frame_index,
+                last_frame,
+            )
+
+            start_time = time.time()
+
+            print()
+            print("Image Size  :", img_size)
+            print("Confidence  :", conf)
+            print("IoU         :", iou)
+            print("Tracker     :", tracker_name)
+            print("Frame Skip  :", frame_skip)
+            print()
+            print("Video       :", width, "x", height)
+            print("FPS         :", fps)
+            print("Total Frame :", total_frames)
+            print()
+            print("=" * 75)
+            print()
+
+            self.update_ui(
+                status=(
+                    "Processing... "
+                    f"Device={device} | "
+                    f"{'FP16' if use_fp16 else 'FP32'}"
+                )
+            )
+
+            # =================================================
+            # MAIN LOOP
+            # =================================================
+
+            while True:
+
+                if self.stop_event.is_set():
+                    break
+
+                self.pause_event.wait()
+
+                if self.stop_event.is_set():
+                    break
+
+                if last_frame is not None and frame_index >= last_frame:
+                    input_finished = True      # end of the analysis window
+                    break
+
+                # V27: skipped frames are only grabbed (not decoded) when
+                # nothing has to be drawn/saved for them.
+                if frame_skip > 1 and not render_needed and (frame_index % frame_skip) != 0:
+                    if not reader.next()[0]:
+                        input_finished = True
+                        break
+                    frame_index += 1
+                    if frame_index % 50 == 0:
+                        self.update_ui(progress=f"{frame_index}/{total_frames}")
+                    continue
+
+                success, frame = reader.next()
+
+                if not success:
+                    input_finished = True
+                    break
+
+                frame_index += 1
+
+                # Draw Zone overlay BEFORE detections/tracks so bounding boxes and
+                # trajectory lines are rendered on top of the translucent Zone.
+                if measurement_enabled and render_needed:
+                    self.draw_measurement_overlay(
+                        frame, frame_index, fps, zone_track_state, line_track_state,
+                        zone_entry_count, line_cross_count
+                    )
+
+                should_process = (
+                    (frame_index - 1)
+                    % frame_skip
+                    == 0
+                )
+
+                if should_process:
+
+                    processed_frames += 1
+
+                    track_kwargs = {
+                        "persist": True,
+                        "tracker": tracker_path,
+                        "conf": conf,
+                        "iou": iou,
+                        "imgsz": img_size,
+                        "device": "cpu" if device == "directml" else device,        # DirectML: the ONNX Runtime session does the GPU work, Ultralytics only does the rest
+                        "verbose": False,
+                    }
+
+                    if use_fp16 and not model_is_engine:
+
+                        # Ultralytics >= 8.4 renamed half -> quantize (half is deprecated);
+                        # older versions only know half.
+                        try:
+                            from ultralytics.cfg import DEFAULT_CFG_DICT as _ucfg
+                            _fp16_key = "quantize" if "quantize" in _ucfg else "half"
+                        except Exception:
+                            _fp16_key = "half"
+                        track_kwargs[_fp16_key] = 16 if _fp16_key == "quantize" else True
+
+                    results = model.track(
+                        frame,
+                        **track_kwargs
+                    )
+
+                    result = results[0]
+                    boxes = result.boxes
+
+                    if (
+                        boxes is not None
+                        and boxes.xyxy is not None
+                    ):
+
+                        xyxy = (
+                            boxes.xyxy
+                            .cpu()
+                            .numpy()
+                        )
+
+                        if boxes.conf is not None:
+
+                            confs = (
+                                boxes.conf
+                                .cpu()
+                                .numpy()
+                            )
+
+                        else:
+
+                            confs = []
+
+                        if boxes.cls is not None:
+
+                            classes = (
+                                boxes.cls
+                                .cpu()
+                                .numpy()
+                            )
+
+                        else:
+
+                            classes = []
+
+                        if boxes.id is not None:
+
+                            track_ids = (
+                                boxes.id
+                                .cpu()
+                                .numpy()
+                                .astype(int)
+                            )
+
+                        else:
+
+                            track_ids = (
+                                [-1] * len(xyxy)
+                            )
+
+                        for i in range(
+                            len(xyxy)
+                        ):
+
+                            x1, y1, x2, y2 = map(
+                                int,
+                                xyxy[i]
+                            )
+
+                            confidence = (
+                                float(confs[i])
+                                if i < len(confs)
+                                else 0.0
+                            )
+
+                            class_id = (
+                                int(classes[i])
+                                if i < len(classes)
+                                else -1
+                            )
+
+                            track_id = (
+                                int(track_ids[i])
+                                if i < len(track_ids)
+                                else -1
+                            )
+                            if track_id >= 0:
+                                track_id += id_offset
+
+                            try:
+
+                                if isinstance(
+                                    result.names,
+                                    dict
+                                ):
+
+                                    class_name = (
+                                        result.names.get(
+                                            class_id,
+                                            str(class_id)
+                                        )
+                                    )
+
+                                else:
+
+                                    class_name = (
+                                        result.names[
+                                            class_id
+                                        ]
+                                    )
+
+                            except Exception:
+
+                                class_name = str(
+                                    class_id
+                                )
+
+                            center_x = int(
+                                (x1 + x2) / 2
+                            )
+
+                            center_y = int(
+                                (y1 + y2) / 2
+                            )
+
+                            total_detections += 1
+                            if track_id < 0:
+                                untracked_detections += 1
+
+                            if track_id >= 0:
+                                # Create/update research statistics for this track.
+                                timestamp = (frame_index - 1) / fps
+                                state = track_stats.setdefault(
+                                    track_id,
+                                    {
+                                        "class_id": class_id,
+                                        "class_name": class_name,
+                                        "first_frame": frame_index,
+                                        "last_frame": frame_index,
+                                        "observed_frames": 0,
+                                        "detection_count": 0,
+                                        "loss_events": 0,
+                                        "max_gap_frames": 0,
+                                        "confidence_sum": 0.0,
+                                        "center_x_sum": 0.0,
+                                        "center_y_sum": 0.0,
+                                        "total_distance_px": 0.0,
+                                        "previous_center": None,
+                                    }
+                                )
+
+                                # A gap before this observation is a detection-loss event.
+                                if state["last_frame"] < frame_index - 1:
+                                    gap = frame_index - state["last_frame"] - 1
+                                    state["loss_events"] += 1
+                                    state["max_gap_frames"] = max(
+                                        state["max_gap_frames"], gap
+                                    )
+                                    detection_loss_count += 1
+                                    detection_loss_writer.writerow([
+                                        track_id,
+                                        state["class_name"],
+                                        state["last_frame"] + 1,
+                                        frame_index - 1,
+                                        gap,
+                                        f"{state['last_frame'] / fps:.6f}",
+                                        f"{(frame_index - 1) / fps:.6f}",
+                                        True,
+                                        frame_index,
+                                    ])
+
+                                state["last_frame"] = frame_index
+                                state["observed_frames"] += 1
+                                state["detection_count"] += 1
+                                state["confidence_sum"] += confidence
+                                state["center_x_sum"] += center_x
+                                state["center_y_sum"] += center_y
+
+                                if state["previous_center"] is not None:
+                                    px, py = state["previous_center"]
+                                    state["total_distance_px"] += (
+                                        ((center_x - px) ** 2 + (center_y - py) ** 2) ** 0.5
+                                    )
+
+                                state["previous_center"] = (center_x, center_y)
+
+                                # Re-association heuristic:
+                                # if a recently lost track and a new track appear very
+                                # close together, record a warning rather than claiming
+                                # a definite ID switch.
+                                for lost in list(recent_lost_tracks):
+                                    if (
+                                        lost["track_id"] != track_id
+                                        and lost["class_id"] == class_id
+                                        and frame_index - lost["last_frame"] <= 10
+                                    ):
+                                        dx = center_x - lost["center_x"]
+                                        dy = center_y - lost["center_y"]
+                                        distance = (dx * dx + dy * dy) ** 0.5
+                                        bbox_diag = (
+                                            ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
+                                        )
+                                        threshold = max(50.0, bbox_diag * 0.75)
+
+                                        if distance <= threshold:
+                                            id_switch_warning_count += 1
+                                            id_switch_writer.writerow([
+                                                frame_index,
+                                                f"{timestamp:.6f}",
+                                                lost["track_id"],
+                                                track_id,
+                                                class_name,
+                                                f"{distance:.2f}",
+                                                "New ID appeared near recently lost ID",
+                                                "WARNING",
+                                            ])
+                                            break
+
+                                active_tracks[track_id] = {
+                                    "track_id": track_id,
+                                    "last_frame": frame_index,
+                                    "center_x": center_x,
+                                    "center_y": center_y,
+                                    "class_id": class_id,
+                                    "class_name": class_name,
+                                }
+
+                                # ==============================
+                                # INTEGRATED ZONE MEASUREMENT
+                                # ==============================
+                                if measurement_enabled:
+                                    # Zone membership uses the selected Trajectory Position only.
+                                    # The bounding box itself is not used for Zone assignment.
+                                    point = self.get_zone_reference_point(x1, y1, x2, y2)
+                                    candidate, raw_confidence, overlap_map, custom_point, decision_scores = self.assign_zone_candidate(
+                                        x1, y1, x2, y2
+                                    )
+
+                                    # Zone membership is determined only by the selected
+                                    # Trajectory Position. The bounding-box area is not used
+                                    # for Zone assignment.
+                                    method_now = "Trajectory Position"
+                                    no_zone = candidate is None
+                                    zstate = zone_track_state.setdefault(track_id, {
+                                        "candidate_zone": None,
+                                        "candidate_count": 0,
+                                        "candidate_confidence": 0.0,
+                                        "confirmed_zone": None,
+                                        "confirmed_confidence": 0.0,
+                                        "previous_confirmed_zone": None,
+                                        "previous_confirmed_point": None,
+                                        "no_zone_count": 0,
+                                        "zone_states": {},
+                                        # Short trajectory history used only for the
+                                        # on-screen live-speed display. This does not
+                                        # replace the research calculation.
+                                        "live_speed_history": [],
+                                        "live_speed_kmh": None,
+                                    })
+
+                                    zstate["no_zone_count"] = 0 if not no_zone else zstate.get("no_zone_count", 0) + 1
+
+                                    confirmed_zone, zone_changed = self.confirm_zone(
+                                        zstate, candidate, raw_confidence,
+                                        frame_index, 1
+                                    )
+                                    zstate["last_point"] = point
+                                    zstate["last_bbox"] = (x1, y1, x2, y2)
+                                    zstate["last_candidate"] = candidate
+                                    zstate["last_candidate_confidence"] = raw_confidence
+                                    zstate["last_overlap"] = overlap_map
+                                    zstate["last_method"] = method_now
+
+                                    # --------------------------------------------------
+                                    # LIVE SPEED FOR ON-SCREEN OBJECT LABEL
+                                    # --------------------------------------------------
+                                    # Uses the same Trajectory Position point and the
+                                    # configured PPM. A short rolling window is used
+                                    # only to make the displayed speed less noisy.
+                                    # research values are still calculated later
+                                    # by Run 3 and are not changed by this display value.
+                                    live_ppm = rt.get("live_ppm", 0.0)
+                                    hist = zstate.get("live_speed_history", [])
+                                    hist.append(((frame_index - 1) / fps, point[0], point[1]))
+                                    if len(hist) > 6:
+                                        hist = hist[-6:]
+                                    zstate["live_speed_history"] = hist
+                                    zstate["live_speed_kmh"] = None
+                                    if len(hist) >= 2:
+                                        t0 = hist[0][0]
+                                        t1 = hist[-1][0]
+                                        dt_live = float(t1) - float(t0)
+                                        if dt_live > 0:
+                                            live_persp = getattr(self, "_run3_live_perspective", None)
+                                            if live_persp is not None:
+                                                metric_points = [self._run3_transform_point((hh[1],hh[2]), live_persp) for hh in hist]
+                                                dist_m_live = self._run3_metric_segment_distance_sum(metric_points)
+                                                zstate["live_speed_kmh"] = (dist_m_live / dt_live) * 3.6
+                                            elif live_ppm > 0:
+                                                dist_px_live = self._run3_segment_distance_sum([(hh[1],hh[2]) for hh in hist])
+                                                zstate["live_speed_kmh"] = (dist_px_live / live_ppm) / dt_live * 3.6
+
+                                    if candidate:
+                                        zone_assignment_summary[candidate]["observations"] += 1
+                                    if confirmed_zone:
+                                        zone_assignment_summary[confirmed_zone]["confirmed_frames"] += 1
+
+                                    timestamp_now = (frame_index - 1) / fps
+                                    previous_zone_point = zstate.get("previous_confirmed_point")
+                                    previous_confirmed_zone = zstate.get("previous_confirmed_zone")
+
+                                    # Close the previous confirmed Zone when a new Zone is confirmed.
+                                    if previous_confirmed_zone and previous_confirmed_zone != confirmed_zone:
+                                        oldzs = zstate.get("zone_states", {}).get(previous_confirmed_zone)
+                                        if oldzs and oldzs.get("inside"):
+                                            # V27(1): the visit ends at the last observed
+                                            # sample inside the Zone and is stored so the
+                                            # summaries can use it after the state is reset.
+                                            exit_time = float(oldzs.get("last_inside_time") or oldzs["entry_time"])
+                                            duration = max(0.0, exit_time - float(oldzs["entry_time"]))
+                                            oldzs.setdefault("visits", []).append((float(oldzs["entry_time"]), exit_time))
+                                            avg_speed = oldzs["distance_px"] / duration if duration > 0 else 0.0
+                                            zone_exit_count[previous_confirmed_zone] += 1
+                                            measurement_events_writer.writerow([
+                                                frame_index, f"{timestamp_now:.6f}", track_id, class_name,
+                                                "ZONE", previous_confirmed_zone, "EXIT",
+                                                f"{duration:.6f}", f"{oldzs['distance_px']:.3f}",
+                                                f"{avg_speed:.6f}", "ZONE_CHANGE"
+                                            ])
+                                            oldzs["inside"] = False
+                                            oldzs["entry_frame"] = None
+                                            oldzs["entry_time"] = None
+                                            oldzs["distance_px"] = 0.0
+                                            oldzs["last_point"] = None
+
+                                    zone_states = zstate["zone_states"]
+                                    for zname in ZONE_NAMES:
+                                        if len(self.zones.get(zname, [])) < 3:
+                                            continue
+                                        zs = zone_states.setdefault(zname, {
+                                            "inside": False,
+                                            "entry_frame": None,
+                                            "entry_time": None,
+                                            "last_inside_time": None,
+                                            "visits": [],
+                                            "distance_px": 0.0,
+                                            "last_point": None,
+                                        })
+
+                                        if confirmed_zone == zname:
+                                            if not zs["inside"]:
+                                                zs["inside"] = True
+                                                zs["entry_frame"] = frame_index
+                                                zs["entry_time"] = timestamp_now
+                                                zs["last_inside_time"] = timestamp_now
+                                                zs["distance_px"] = 0.0
+                                                zs["last_point"] = point
+                                                zone_entry_count[zname] += 1
+                                                measurement_events_writer.writerow([
+                                                    frame_index, f"{timestamp_now:.6f}", track_id, class_name,
+                                                    "ZONE", zname, "ENTRY", "0.000000", "0.000", "", "CONFIRMED"
+                                                ])
+                                            elif previous_confirmed_zone == zname and previous_zone_point is not None:
+                                                zs["last_inside_time"] = timestamp_now
+                                                px, py = previous_zone_point
+                                                zs["distance_px"] += (
+                                                    (point[0] - px) ** 2 + (point[1] - py) ** 2
+                                                ) ** 0.5
+                                                zs["last_point"] = point
+
+                                    zstate["previous_confirmed_zone"] = confirmed_zone
+                                    zstate["previous_confirmed_point"] = point if confirmed_zone else None
+
+                                # ==============================
+                                    # INTEGRATED LINE MEASUREMENT
+                                    # ==============================
+                                    lstate = line_track_state.setdefault(track_id, {})
+                                    previous_point = lstate.get("previous_point")
+                                    timestamp_now = (frame_index - 1) / fps
+                                    for lname in LINE_NAMES:
+                                        line = self.lines.get(lname, [])
+                                        if len(line) != 2:
+                                            continue
+                                        direction = self.line_crossing(previous_point, point, line)
+                                        if direction:
+                                            line_cross_count[lname] += 1
+                                            measurement_events_writer.writerow([frame_index, f"{timestamp_now:.6f}", track_id, class_name, "LINE", lname, "CROSS", "", "", "", direction])
+                                            line_summary_writer.writerow([lname, track_id, class_name, frame_index, f"{timestamp_now:.6f}", direction])
+                                    lstate["previous_point"] = point
+
+                                # Remove stale active tracks from the current active set.
+                                for old_id in list(active_tracks):
+                                    if frame_index - active_tracks[old_id]["last_frame"] > 1:
+                                        old = active_tracks.pop(old_id)
+                                        recent_lost_tracks.append(old)
+
+                            # what is DRAWN (box, label place, trail, decision point) follows an exponential average of the box of the same vehicle, so that a
+                            # box that flickers from frame to frame does not make the picture sway; nothing recorded in the CSV files changes
+                            dx1, dy1, dx2, dy2 = x1, y1, x2, y2
+                            if box_smooth_alpha < 1.0 and track_id >= 0:
+                                prev_ema = box_ema.get(track_id)
+                                cur_box = (float(x1), float(y1), float(x2), float(y2))
+                                if prev_ema is not None and frame_index - prev_ema[0] <= 5:
+                                    cur_box = tuple(box_smooth_alpha * a_ + (1.0 - box_smooth_alpha) * b_ for a_, b_ in zip(cur_box, prev_ema[1]))
+                                box_ema[track_id] = (frame_index, cur_box)
+                                dx1, dy1, dx2, dy2 = (int(round(v_)) for v_ in cur_box)
+
+                            if track_id >= 0:
+
+                                if track_id not in trails:
+                                    trails[track_id] = deque(maxlen=trail_length)
+
+                                # IMPORTANT: the trajectory trail follows the same
+                                # Trajectory Position used for Zone assignment.
+                                # It no longer uses the geometric bbox center.
+                                trajectory_point = self.get_zone_reference_point(
+                                    dx1, dy1, dx2, dy2
+                                )
+                                trails[track_id].append(trajectory_point)
+
+                            # A Zone-enabled run displays the object ONLY while the
+                            # selected Reference Point is inside a Zone.
+                            confirmed_label = None
+                            if measurement_enabled and track_id >= 0:
+                                confirmed_label = zone_track_state.get(track_id, {}).get("confirmed_zone")
+
+                            zones_available = zones_available_run
+                            # vehicles outside every zone: point only / nothing / in full (Settings: "รถที่อยู่นอกโซน")
+                            plan = outside_zone_plan(rt.get("outside_zone_normal", "dot"), confirmed_label is not None, zones_available)
+                            show_object = plan["object"]
+                            outside_full = zones_available and confirmed_label is None and plan["object"]
+
+                            if render_needed and rt.get("show_decision_point") and plan["point"]:
+                                # The point that decides the zone: filled yellow = inside a zone, red ring = in no zone
+                                # (such a vehicle is not drawn at all, so this is the only way to see why).
+                                dpx, dpy = self.get_zone_reference_point(dx1, dy1, dx2, dy2)
+                                dpx, dpy = int(round(dpx)), int(round(dpy))
+                                dr = max(5, int(round(0.004 * max(frame.shape[0], frame.shape[1]))))
+                                cv2.circle(frame, (dpx, dpy), dr + 2, (255, 255, 255), -1)
+                                if confirmed_label is not None:
+                                    cv2.circle(frame, (dpx, dpy), dr, (0, 255, 255), -1)
+                                else:
+                                    cv2.circle(frame, (dpx, dpy), dr, (0, 0, 255), 2)
+
+                            if show_object and render_needed:
+                                if rt.get("show_bbox", True):
+                                    cv2.rectangle(
+                                        frame,
+                                        (dx1, dy1),
+                                        (dx2, dy2),
+                                        (0, 255, 0),
+                                        2
+                                    )
+
+                                if (
+                                    settings["draw_trail"]
+                                    and (confirmed_label or outside_full)
+                                    and track_id >= 0
+                                    and track_id in trails
+                                ):
+                                    points = list(trails[track_id])
+                                    for p in range(1, len(points)):
+                                        cv2.line(
+                                            frame,
+                                            points[p - 1],
+                                            points[p],
+                                            (255, 0, 255),
+                                            2
+                                        )
+
+                                if confirmed_label or outside_full:
+                                    # Individual vehicle label controls.
+                                    # Live speed is display-only; research values remain
+                                    # calculated by Run 3 from the stored trajectory.
+                                    live_speed = zone_track_state.get(track_id, {}).get("live_speed_kmh")
+                                    parts = []
+                                    if rt.get("show_label_id", True):
+                                        value = str(track_id)
+                                        parts.append(f"ID {value}" if rt.get("show_prefix_id", False) else value)
+                                    if rt.get("show_label_class", True):
+                                        # Display the human-readable class name, not the numeric class_id.
+                                        # The numeric class_id remains available in Run 2 raw records for audit.
+                                        value = str(class_name).strip() or str(class_id)
+                                        parts.append(f"Class {value}" if rt.get("show_prefix_class", False) else value)
+                                    if rt.get("show_label_conf", True):
+                                        value = f"{confidence:.2f}"
+                                        parts.append(f"Conf {value}" if rt.get("show_prefix_conf", False) else value)
+                                    if rt.get("show_label_zone", True):
+                                        zn = re.search(r"(\d+)", str(confirmed_label or ""))
+                                        value = zn.group(1) if zn else "-"
+                                        parts.append(f"Zone {value}" if rt.get("show_prefix_zone", False) else value)
+                                    if rt.get("show_label_speed", True):
+                                        value = f"{live_speed:.1f}" if live_speed is not None else "-"
+                                        parts.append(f"Speed {value}" if rt.get("show_prefix_speed", False) else value)
+                                    label = " | ".join(parts)
+                                    if label:
+                                        label_y = max(dy1 - 10, 20)
+                                        cv2.putText(
+                                            frame, label, (dx1, label_y),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.55,
+                                            (0, 255, 0), 2, cv2.LINE_AA
+                                        )
+
+                            if csv_writer is not None:
+
+                                timestamp = (
+                                    (frame_index - 1) / fps
+                                )
+
+                                trajectory_point_csv = self.get_zone_reference_point(x1, y1, x2, y2)
+                                csv_writer.writerow([
+                                    frame_index, f"{timestamp:.6f}", track_id, class_name,
+                                    f"{confidence:.6f}", x1, y1, x2, y2,
+                                    trajectory_point_csv[0], trajectory_point_csv[1],
+                                    (zone_track_state.get(track_id, {}).get("confirmed_zone", "") if measurement_enabled else "")
+                                ])
+
+                    if active_tracks:
+                        max_active_tracks = max(
+                            max_active_tracks,
+                            len(active_tracks)
+                        )
+
+                    if boxes is not None and len(boxes) > 0:
+                        total_frames_with_detection += 1
+
+                    if (
+                        csv_file is not None
+                        and processed_frames
+                        % csv_flush_every == 0
+                    ):
+
+                        csv_file.flush()
+
+                elapsed = (
+                    time.time()
+                    - start_time
+                )
+
+                processing_fps = (
+                    processed_frames / elapsed
+                    if elapsed > 0
+                    else 0
+                )
+
+                percent = (
+                    (frame_index - window_start0)
+                    / max(1, total_frames - window_start0)
+                    * 100
+                    if total_frames > 0
+                    else 0
+                )
+
+                if processing_fps > 0:
+
+                    remaining_frames = (
+                        total_frames
+                        - frame_index
+                    )
+
+                    eta_seconds = (
+                        remaining_frames
+                        / processing_fps
+                    )
+
+                else:
+
+                    eta_seconds = 0
+
+                elapsed_text = self.format_time(
+                    elapsed
+                )
+
+                eta_text = self.format_time(
+                    eta_seconds
+                )
+
+                info_lines = [
+                    f"Frame: {frame_index}/{total_frames}",
+                    f"Processed: {processed_frames}",
+                    f"FPS: {processing_fps:.2f}",
+                    f"Device: {device}",
+                    f"Precision: {'FP16' if use_fp16 else 'FP32'}",
+                    f"Elapsed: {elapsed_text}",
+                    f"ETA: {eta_text}",
+                ]
+
+                y_pos = 30
+
+                for line in (info_lines if (render_needed and rt.get("show_info_text", True)) else ()):
+
+                    text_size, _ = cv2.getTextSize(
+                        line,
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        2
+                    )
+
+                    text_width = text_size[0]
+
+                    text_x = (
+                        width
+                        - text_width
+                        - 20
+                    )
+
+                    cv2.putText(
+                        frame,
+                        line,
+                        (
+                            text_x,
+                            y_pos
+                        ),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        (255, 255, 255),
+                        2,
+                        cv2.LINE_AA
+                    )
+
+                    y_pos += 27
+
+                if writer is not None and rec_first <= frame_index <= rec_last_eff and (frame_index - rec_first) >= output_frame_offset(rec_written, rec_ratio):
+
+                    writer.write(
+                        frame
+                    )
+                    rec_written += 1
+
+                if show_preview:
+
+                    cv2.imshow(
+                        window_name,
+                        frame
+                    )
+
+                    key = (
+                        cv2.waitKey(1)
+                        & 0xFF
+                    )
+
+                    if key == ord("q"):
+
+                        self.stop_event.set()
+                        break
+
+                if (
+                    frame_index % 20 == 0
+                    or frame_index == 1
+                ):
+
+                    self.update_ui(
+                        progress=(
+                            f"{frame_index}/"
+                            f"{total_frames} "
+                            f"({percent:.1f}%)"
+                        ),
+                        timing=(
+                            f"FPS {processing_fps:.2f} | "
+                            f"Elapsed {elapsed_text} | "
+                            f"ETA {eta_text}"
+                        )
+                    )
+
+                if frame_index % 20 == 0 or frame_index == 1:
+                    processing_log_writer.writerow([
+                        frame_index,
+                        f"{frame_index / fps:.6f}",
+                        processed_frames,
+                        f"{processing_fps:.6f}",
+                        total_detections,
+                        len(active_tracks),
+                        device,
+                        "FP16" if use_fp16 else "FP32",
+                        "processing"
+                    ])
+
+                if frame_index % 100 == 0:
+
+                    print(
+                        f"Frame {frame_index}/"
+                        f"{total_frames} | "
+                        f"Processed {processed_frames} | "
+                        f"FPS {processing_fps:.2f}"
+                    )
+
+            # =================================================
+            # FINALIZE OUTPUTS
+            # =================================================
+            # IMPORTANT: Do not close research CSV files before the
+            # final statistics / processing-log rows are written.
+            # Pressing Q sets stop_event and reaches this block, so
+            # closing them here first would cause:
+            #     I/O operation on closed file.
+
+            if reader is not None:
+                reader.close()
+
+            if cap is not None:
+                cap.release()
+
+            if writer is not None:
+                writer.release()
+
+            # Finalize track statistics and research summary.
+            for track_id, state in sorted(track_stats.items()):
+                duration_frames = (
+                    state["last_frame"] - state["first_frame"] + 1
+                )
+                duration_seconds = duration_frames / fps if fps > 0 else 0
+                continuity_ratio = (
+                    state["observed_frames"] / duration_frames
+                    if duration_frames > 0 else 0
+                )
+                avg_conf = (
+                    state["confidence_sum"] / state["detection_count"]
+                    if state["detection_count"] > 0 else 0
+                )
+                avg_x = (
+                    state["center_x_sum"] / state["detection_count"]
+                    if state["detection_count"] > 0 else 0
+                )
+                avg_y = (
+                    state["center_y_sum"] / state["detection_count"]
+                    if state["detection_count"] > 0 else 0
+                )
+                avg_step = (
+                    state["total_distance_px"] / max(1, state["observed_frames"] - 1)
+                )
+                status = (
+                    "Continuous"
+                    if continuity_ratio >= 0.95
+                    else "Has Detection Loss"
+                )
+
+                track_stats_writer.writerow([
+                    track_id,
+                    state["class_id"],
+                    state["class_name"],
+                    state["first_frame"],
+                    state["last_frame"],
+                    state["observed_frames"],
+                    f"{duration_seconds:.6f}",
+                    state["detection_count"],
+                    f"{continuity_ratio:.6f}",
+                    state["loss_events"],
+                    state["max_gap_frames"],
+                    f"{avg_conf:.6f}",
+                    f"{avg_x:.3f}",
+                    f"{avg_y:.3f}",
+                    f"{state['total_distance_px']:.3f}",
+                    f"{avg_step:.3f}",
+                    status,
+                ])
+
+            self._carry = {"model": model, "model_is_engine": model_is_engine, "id_offset": id_offset, "sig": tracker_sig}     # the next clip may continue this tracker
+
+            # Finalize a compact per-ID route summary before closing any files.
+            if measurement_enabled:
+                for track_id in sorted(zone_track_state):
+                    state_info = track_stats.get(track_id, {})
+                    last_time_final = (state_info.get("last_frame", frame_index) - 1) / fps if fps > 0 else 0.0
+                    visits = clean_zone_visits(collect_zone_visits(
+                        zone_track_state[track_id].get("zone_states", {}), last_time_final
+                    ))
+                    if not visits:
+                        continue
+                    class_name_final = state_info.get("class_name", "")
+                    zones_sequence = []
+                    for zname, _s, _e in visits:
+                        if not zones_sequence or zones_sequence[-1] != zname:
+                            zones_sequence.append(zname)
+                    total_zone_time = sum(max(0.0, e - s0) for _z, s0, e in visits)
+                    first_seen_final = float(state_info.get("first_frame", 1) - 1) / fps if fps > 0 else 0.0
+                    last_seen_final = float(state_info.get("last_frame", frame_index) - 1) / fps if fps > 0 else 0.0
+                    unique_zones = []
+                    for z in zones_sequence:
+                        if z not in unique_zones:
+                            unique_zones.append(z)
+                    transitions = len(zones_sequence) - 1
+                    id_zone_summary_writer.writerow([
+                        track_id, class_name_final,
+                        f"{first_seen_final:.6f}", f"{last_seen_final:.6f}",
+                        f"{max(0.0, last_seen_final-first_seen_final):.6f}",
+                        zones_sequence[0], zones_sequence[-1],
+                        " > ".join(zones_sequence),
+                        " | ".join(unique_zones), transitions,
+                        f"{total_zone_time:.6f}"
+                    ])
+
+            # Finalize Zone_Summary as one aggregate row per Zone.
+            if measurement_enabled:
+                zone_aggregate = defaultdict(lambda: {
+                    "ids": set(), "durations": [], "entries": 0,
+                    "first_entry": None, "last_entry": None
+                })
+                for track_id, zmap in zone_track_state.items():
+                    state_info = track_stats.get(track_id, {})
+                    last_frame_final = state_info.get("last_frame", frame_index)
+                    last_time_final = (last_frame_final - 1) / fps if fps > 0 else 0.0
+                    for zname, start_t, end_t in clean_zone_visits(
+                        collect_zone_visits(zmap.get("zone_states", {}), last_time_final)
+                    ):
+                        duration = max(0.0, float(end_t) - float(start_t))
+                        agg = zone_aggregate[zname]
+                        agg["ids"].add(track_id)
+                        agg["durations"].append(duration)
+                        agg["entries"] += 1
+                        agg["first_entry"] = start_t if agg["first_entry"] is None else min(agg["first_entry"], start_t)
+                        agg["last_entry"] = start_t if agg["last_entry"] is None else max(agg["last_entry"], start_t)
+
+                for zname in ZONE_NAMES:
+                    agg = zone_aggregate.get(zname)
+                    if not agg or not agg["durations"]:
+                        continue
+                    durations = agg["durations"]
+                    zone_summary_writer.writerow([
+                        zname, len(agg["ids"]), agg["entries"],
+                        f"{sum(durations)/len(durations):.6f}",
+                        f"{min(durations):.6f}", f"{max(durations):.6f}",
+                        f"{agg['first_entry']:.6f}", f"{agg['last_entry']:.6f}"
+                    ])
+
+                zone_summary_file.flush()
+                id_zone_summary_file.flush()
+                with open(output_measurement_summary, "w", encoding="utf-8") as mf:
+                    json.dump({
+                        "measurement_enabled": measurement_enabled,
+                        "zones_defined": [k for k,v in self.zones.items() if len(v) >= 3],
+                        "lines_defined": [k for k,v in self.lines.items() if len(v) == 2],
+                        "zone_source_file": self.zone_line_config_var.get().strip(),
+                        "zone_source_video": self.zone_source_video,
+                        "zone_source_resolution": {"width": self.zone_source_width, "height": self.zone_source_height},
+                        "zone_entries": dict(zone_entry_count),
+                        "zone_exits": dict(zone_exit_count),
+                        "line_crossings": dict(line_cross_count),
+                        "zone_assignment": {
+                            "method": "Trajectory Position",
+                            "trajectory_position": self.trajectory_position_var.get(),
+                            "trajectory_offset_percent": float(self.trajectory_offset_var.get()),
+                            "temporal_confirmation_frames": 0,
+                             "zone_assignment_rule": "Trajectory Position point-in-polygon only",
+                            "summary_flicker_merge_s": ZONE_FLICKER_MERGE_S,
+                            "assignment_observations": {
+                                z: dict(v) for z, v in zone_assignment_summary.items()
+                            },
+                        },
+                        "outputs": {
+                            "detection_records": output_csv,
+                            "id_zone_summary": output_id_zone_summary,
+                            "zone_summary": output_zone_summary,
+                        }
+                    }, mf, indent=4, ensure_ascii=False)
+
+            # Flush final processing event.
+            elapsed_before_summary = time.time() - start_time
+            final_fps = (
+                processed_frames / elapsed_before_summary
+                if elapsed_before_summary > 0 else 0
+            )
+            processing_log_writer.writerow([
+                frame_index,
+                f"{frame_index / fps:.6f}",
+                processed_frames,
+                f"{final_fps:.6f}",
+                total_detections,
+                len(active_tracks),
+                device,
+                "FP16" if use_fp16 else "FP32",
+                "stopped_by_user" if self.stop_event.is_set()
+                else ("completed_end_of_video" if input_finished else "stopped")
+            ])
+
+            # Close files only AFTER every final row has been written.
+            if csv_file is not None:
+                try:
+                    csv_file.flush()
+                    csv_file.close()
+                except Exception:
+                    pass
+
+            for summary_file in (zone_summary_file, id_zone_summary_file):
+                try:
+                    summary_file.close()
+                except Exception:
+                    pass
+
+            if show_preview:
+                cv2.destroyAllWindows()
+
+            total_time = (
+                time.time()
+                - start_time
+            )
+
+            average_fps = (
+                processed_frames / total_time
+                if total_time > 0
+                else 0
+            )
+
+            stopped = (
+                self.stop_event.is_set()
+            )
+
+            print()
+            print("=" * 75)
+
+            if stopped:
+                print("RUN 1 STOPPED")
+            else:
+                print("RUN 1 FINISHED")
+
+            print("=" * 75)
+
+            print("Python          :", sys.executable)
+            print("PyTorch         :", torch.__version__)
+            print(
+                "CUDA Available  :",
+                torch.cuda.is_available()
+            )
+
+            if torch.cuda.is_available():
+
+                print(
+                    "GPU             :",
+                    torch.cuda.get_device_name(0)
+                )
+
+            print("Device          :", device)
+            print(
+                "Precision       :",
+                "FP16" if use_fp16 else "FP32"
+            )
+
+            print("Run Name        :", run_name)
+            print("Total Frames    :", total_frames)
+            print("Processed Frames:", processed_frames)
+            print("Detections      :", total_detections)
+            print("Untracked (ID -1):", untracked_detections)
+            print(
+                "Processing Time :",
+                f"{total_time:.2f} sec"
+            )
+            print(
+                "Average FPS     :",
+                f"{average_fps:.2f}"
+            )
+
+            if settings["save_video"]:
+
+                print()
+                print("Video:")
+                print(output_video)
+
+            if settings["save_csv"]:
+
+                print()
+                print("CSV OUTPUTS (3 files):")
+                print("1.", output_csv)
+                print("2.", output_id_zone_summary)
+                print("3.", output_zone_summary)
+
+            # Research summary.
+            stop_reason = (
+                "Stopped by user"
+                if stopped
+                else (
+                    "Completed: end of input video"
+                    if input_finished
+                    else "Stopped: processing loop ended"
+                )
+            )
+
+            run_summary = {
+                "run_name": run_name,
+                "run_type": "Run 1 + 2 Integrated Research",
+                "status": "stopped" if stopped else "completed",
+                "stop_reason": stop_reason,
+                "model": model_path,
+                "video": video_path,
+                "output_directory": output_dir,
+                "device": device,
+                "precision": "FP16" if use_fp16 else "FP32",
+                "tracker": tracker_name,
+                "total_frames": video_total_frames,
+                "analysis_window": {
+                    "start_s": a_start, "end_s": a_end,
+                    "first_frame": first_frame, "last_frame": last_frame,
+                    "note": "timestamps in the CSV files are the original video times",
+                },
+                "recorded_video_window": ({"first_frame": rec_first, "last_frame": rec_last} if writer is not None else None),
+                "processed_frames": processed_frames,
+                "frames_with_detection": total_frames_with_detection,
+                "total_detections": total_detections,
+                "untracked_detections": untracked_detections,
+                "unique_track_ids": len(track_stats),
+                "max_track_id": (max(track_stats) if track_stats else id_offset),
+                "id_offset": id_offset,
+                "tracker_continued_from_previous_clip": carry is not None,
+                "max_active_tracks": max_active_tracks,
+                "id_switch_warnings": id_switch_warning_count,
+                "detection_loss_events": detection_loss_count,
+                "zone_assignment": {
+                    "method": "Trajectory Position",
+                    "trajectory_position": self.trajectory_position_var.get(),
+                    "trajectory_offset_percent": float(self.trajectory_offset_var.get()),
+                    "temporal_confirmation_frames": 0,
+                             "zone_assignment_rule": "Trajectory Position point-in-polygon only",
+                            "summary_flicker_merge_s": ZONE_FLICKER_MERGE_S,
+                },
+                "processing_time_seconds": round(total_time, 6),
+                "average_fps": round(average_fps, 6),
+                "outputs": {
+                    "detection_records": output_csv,
+                    "id_zone_summary": output_id_zone_summary,
+                    "zone_summary": output_zone_summary,
+                    "tracking_result": output_video if settings["save_video"] else None,
+                    "run_summary": output_summary,
+                    "settings": output_settings,
+                    "bytetrack_yaml": output_tracker_yaml if tracker_name == "ByteTrack" else None,
+                    "measurement_summary": output_measurement_summary if measurement_enabled else None,
+                },
+            }
+
+            with open(output_summary, "w", encoding="utf-8") as f:
+                json.dump(
+                    run_summary,
+                    f,
+                    indent=4,
+                    ensure_ascii=False
+                )
+
+            print()
+            print("Research Outputs:")
+            for key, value in run_summary["outputs"].items():
+                if value:
+                    print(f"{key:22}: {value}")
+            print()
+            print("Summary:")
+            print("Stop Reason         :", stop_reason)
+            print("Unique Track IDs    :", len(track_stats))
+            print("ID Switch Warnings  :", id_switch_warning_count)
+            print("Detection Losses    :", detection_loss_count)
+            print("Detection Records   :", output_csv)
+            print("ID Zone Summary     :", output_id_zone_summary)
+            print("Zone Summary        :", output_zone_summary)
+            print("Run Summary         :", output_summary)
+            print("=" * 75)
+
+            # ------------------------------------------------------------
+            # RUN 3 — execute only after Run 1 + Run 2 files are closed.
+            # ------------------------------------------------------------
+            self.run3_last_outputs = {}
+            self.run3_last_summary = {}
+            cfg = self._run3_cfg or {}
+            self.run3_was_requested = any(
+                cfg.get(k + "_enabled") for k in ("speed", "gap", "lc", "pet", "ttc", "ldp")
+            )
+            # Run 3 is a post-processing step that uses the completed/partial
+            # Run 2 CSVs. It must still execute when the user presses STOP,
+            # because Run 1 + Run 2 finalize and close their files first.
+            # STOP means: stop video processing, then analyze the data already
+            # produced by Run 2.
+            if self.run3_was_requested:
+                self.post_ui(lambda: self.status_var.set(
+                    "Run 3 — analyzing Run 2 data" + (" (partial run after STOP)" if stopped else "")
+                ))
+                self.run3_last_outputs = self.run3_processing(settings, output_dir, run_name)
+                # Add Run 3 information to the existing Run 1 + 2 summary JSON.
+                try:
+                    with open(output_summary, "r", encoding="utf-8") as sf:
+                        integrated_summary = json.load(sf)
+                    integrated_summary["run_type"] = "Run 1 + 2 + 3 Integrated Research"
+                    integrated_summary["run3"] = self.run3_last_summary
+                    with open(output_summary, "w", encoding="utf-8") as sf:
+                        json.dump(integrated_summary, sf, indent=4, ensure_ascii=False)
+                except Exception:
+                    log.exception("Could not add the Run 3 result to %s", output_summary)
+                    print("WARNING: could not add the Run 3 result to the summary JSON:", output_summary)
+
+            self.post_ui(
+                lambda: self.finish_integrated_ui(
+                    stopped,
+                    output_video,
+                    output_csv,
+                    output_settings,
+                    output_summary,
+                    output_id_zone_summary,
+                    output_zone_summary
+                )
+            )
+
+        except Exception as e:
+
+            try:
+                if cap is not None:
+                    if reader is not None:
+                        reader.close()
+                    cap.release()
+            except Exception:
+                pass
+
+            try:
+                if writer is not None:
+                    writer.release()
+            except Exception:
+                pass
+
+            try:
+                if csv_file is not None:
+                    csv_file.close()
+            except Exception:
+                pass
+
+            for summary_file in (
+                locals().get("zone_summary_file"),
+                locals().get("id_zone_summary_file"),
+            ):
+                try:
+                    if summary_file is not None:
+                        summary_file.close()
+                except Exception:
+                    pass
+
+            try:
+                cv2.destroyAllWindows()
+            except Exception:
+                pass
+
+            print()
+            print("=" * 75)
+            print("RUN 1 ERROR")
+            print("=" * 75)
+            print(str(e))
+            print("=" * 75)
+
+            # Tkinter callbacks run after this except block exits; capture the
+            # exception text now instead of closing over Python's exception variable.
+            error_message = str(e)
+            self._last_run_error = error_message
+            self.post_ui(
+                lambda message=error_message: self.show_error(
+                    message
+                )
+            )
+
+    # ========================================================
+    # RUN 3 PROCESSING
+    # ========================================================
+
+    @staticmethod
+    def _run3_read_csv(path):
+        if not os.path.isfile(path):
+            raise FileNotFoundError(path)
+        with open(path, "r", newline="", encoding="utf-8-sig") as f:
+            return list(csv.DictReader(f))
+
+    def _run3_build_movement_index(self, tracks, summaries=None, mapping=None, site_id=None):
+        """One canonical Movement per Vehicle_ID (SPEC v28 section 3).
+
+        The Movement comes from the flicker-cleaned zone sequence built from the
+        Run 2 Detection_Records (same cleaning as the Run 2 summaries). Returns
+        (movement_by_id, status_by_id, sequence_by_id); status is one of
+        Exact / Partial / Ambiguous / Unclassified / Insufficient.
+        """
+        movement_by_id, status_by_id, sequence_by_id = {}, {}, {}
+        for tid, rows in tracks.items():
+            seq = zone_sequence_from_samples([(r["_timestamp"], r.get("_zone_num")) for r in rows])
+            movement, status = classify_movement_robust(seq)
+            key = str(tid)
+            movement_by_id[key] = movement
+            status_by_id[key] = status
+            sequence_by_id[key] = seq
+        return movement_by_id, status_by_id, sequence_by_id
+
+    @staticmethod
+    def _run3_float_safe(value):
+        try:
+            return float(value)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _run3_point_from_row(row):
+        x = Run1App._run3_float_safe(row.get("trajectory_x"))
+        y = Run1App._run3_float_safe(row.get("trajectory_y"))
+        if x is None or y is None:
+            return None
+        return (x, y)
+
+    @staticmethod
+    def _run3_bbox_center(row):
+        try:
+            x1 = float(row["bbox_x1"]); y1 = float(row["bbox_y1"])
+            x2 = float(row["bbox_x2"]); y2 = float(row["bbox_y2"])
+            return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _run3_segment_distance_sum(points):
+        total = 0.0
+        for a, b in zip(points, points[1:]):
+            total += math.hypot(b[0] - a[0], b[1] - a[1])
+        return total
+
+    @staticmethod
+    def _run3_interp_point_time(p0, t0, p1, t1, target):
+        vx = p1[0] - p0[0]
+        vy = p1[1] - p0[1]
+        den = vx * vx + vy * vy
+        if den <= 0:
+            return None
+        u = ((target[0] - p0[0]) * vx + (target[1] - p0[1]) * vy) / den
+        if u < 0 or u > 1:
+            return None
+        return (t0 + u * (t1 - t0), (p0[0] + u * vx, p0[1] + u * vy))
+
+    @staticmethod
+    def _run3_line_crossing_time(prev_point, prev_t, curr_point, curr_t, line):
+        """Return the timestamp of an observed sample that first crosses the line.
+        No temporal interpolation is used. The event time is therefore quantized
+        to an actually observed frame, consistent with the requested no-interpolation rule.
+        """
+        if not prev_point or not curr_point or len(line) < 2:
+            return None
+        a, b = line[0], line[1]
+        def side(p):
+            return (b[0]-a[0])*(p[1]-a[1]) - (b[1]-a[1])*(p[0]-a[0])
+        s0 = side(prev_point); s1 = side(curr_point)
+        if s0 == 0 and s1 == 0:
+            return None
+        if s0 == 0:
+            return prev_t
+        if s1 == 0:
+            return curr_t
+        if (s0 < 0 < s1) or (s0 > 0 > s1):
+            return curr_t
+        return None
+
+    def _run3_load_inputs(self, output_dir, run_name):
+        """Load only the Run 2 sources needed for Run 3 calculations.
+
+        Detection Records are the frame/trajectory source. ID Zone Summary is
+        the track-level route/movement source. Zone Summary remains a Run 2 audit
+        output, but is not re-read or used as a duplicate Run 3 calculation source.
+        """
+        cc = _tools_module("combine_clips")
+        det = cc.result_file(output_dir, "Detection_Records.csv", run_name) or os.path.join(output_dir, "Detection_Records.csv")
+        ids = cc.result_file(output_dir, "ID_Zone_Summary.csv", run_name) or os.path.join(output_dir, "ID_Zone_Summary.csv")
+        zone = cc.result_file(output_dir, "Zone_Summary.csv", run_name) or os.path.join(output_dir, "Zone_Summary.csv")
+        return (
+            self._run3_read_csv(det),
+            self._run3_read_csv(ids),
+            [],
+            det, ids, zone,
+        )
+
+    @staticmethod
+    def _run3_canonical_class(value):
+        """Normalize vehicle class labels coming from Run 2 without changing class meaning."""
+        raw = str(value or "").strip().lower()
+        aliases = {
+            "bus": "Bus", "car": "Car", "motorcycle": "Motorcycle",
+            "motorbike": "Motorcycle", "motor cycle": "Motorcycle",
+            "pickup": "Pickup", "pickup truck": "Pickup",
+            "sidecar": "Sidecar", "side car": "Sidecar", "motorcycle sidecar": "Sidecar",
+            "truck": "Truck", "van": "Van", "person": "person",
+        }
+        return aliases.get(raw, str(value or "").strip())
+
+    @staticmethod
+    def _run3_time_tolerance(tracks):
+        """Use an observed-frame tolerance rather than exact timestamp equality.
+        This does not interpolate positions; it only matches observed samples
+        that are close in time, which is useful when one tracker misses a frame.
+        """
+        intervals = []
+        for rows in tracks.values():
+            ts = [r.get("_timestamp") for r in rows if r.get("_timestamp") is not None]
+            for a,b in zip(ts, ts[1:]):
+                d=b-a
+                if d > 0:
+                    intervals.append(d)
+        if not intervals:
+            return 0.05
+        med=float(np.median(intervals))
+        return max(0.02, min(0.10, med*2.5))
+
+    def _run3_build_tracks(self, detection_rows, id_rows):
+        self._run3_untracked_rows = 0
+        tracks = defaultdict(list)
+        for row in detection_rows:
+            tid = str(row.get("track_id", "")).strip()
+            if not tid or tid == "-1":
+                if tid == "-1":
+                    self._run3_untracked_rows += 1
+                continue
+            ts = self._run3_float_safe(row.get("timestamp"))
+            if ts is None:
+                continue
+            row2 = dict(row)
+            row2["class_name"] = self._run3_canonical_class(row2.get("class_name", ""))
+            row2["_timestamp"] = ts
+            row2["_point"] = self._run3_point_from_row(row2)
+            row2["_center"] = self._run3_bbox_center(row2)
+            row2["_zone_num"] = None
+            z = str(row.get("zone", ""))
+            m = re.search(r"(\d+)", z)
+            if m:
+                row2["_zone_num"] = int(m.group(1))
+            tracks[tid].append(row2)
+        for rows in tracks.values():
+            rows.sort(key=lambda r: r["_timestamp"])
+        summaries = {str(r.get("track_id", "")): r for r in id_rows}
+        return tracks, summaries
+
+    # ========================================================
+    # RUN 3 — CONFIGURATION SNAPSHOT (MAIN THREAD ONLY)
+    # ========================================================
+    # V27: Every Run 3 Tk variable is read ONCE on the main thread when START
+    # is pressed. The worker thread then uses this plain dict only. Calling
+    # tk.Variable.get() from the worker thread is not thread-safe and each
+    # call is marshalled to the Tk main loop; in V26 several .get() calls sat
+    # inside nested per-row / per-pair loops (PET, Gap, LC), which was the
+    # main reason Run 3 became very slow on long videos.
+
+    def _run3_snapshot_config(self):
+        def num(var, default=None):
+            try:
+                text = str(var.get()).strip()
+                return float(text) if text else default
+            except Exception:
+                return default
+
+        def zones_of(var_map):
+            return {z for z, v in var_map.items() if bool(v.get())}
+
+        ppm = num(self.run3_ppm_var, 0.0) or 0.0
+        gap_movements = []
+        if self.run3_gap_subject_134_var.get(): gap_movements.append("1-3-4")
+        if self.run3_gap_subject_1367_var.get(): gap_movements.append("1-3-6-7")
+        if self.run3_gap_subject_5631_var.get(): gap_movements.append("5-6-3-1")
+        mapping_text = (
+            self.run3_reference_text.get("1.0", "end-1c")
+            if hasattr(self, "run3_reference_text") else self.run3_reference_mapping_text
+        )
+        pet_max = num(self.run3_pet_max_var, None)
+        pet_min_speed = num(self.run3_pet_min_speed_var, None)
+        geometry = {key: num(self.run3_geometry_vars[key], None) for key in RUN3_GEOMETRY_KEYS}
+        def lane_total(a, b):
+            return geometry[a] + geometry[b] if geometry[a] is not None and geometry[b] is not None else None
+        w_entry = lane_total("lane_entry_motorcycle_m", "lane_entry_car_m")
+        w_opp = lane_total("lane_opp_motorcycle_m", "lane_opp_car_m")
+        return {
+            "site_id": self.run3_site_id_var.get().strip(),
+            "speed_enabled": bool(self.run3_speed_enabled_var.get()),
+            "gap_enabled": bool(self.run3_gap_enabled_var.get()),
+            "lc_enabled": bool(self.run3_lc_enabled_var.get()),
+            "pet_enabled": bool(self.run3_pet_enabled_var.get()),
+            "ttc_enabled": bool(self.run3_ttc_enabled_var.get()),
+            "ldp_enabled": bool(self.run3_ldp_enabled_var.get()),
+            "ppm": ppm,
+            "perspective_enabled": bool(self.run3_perspective_enabled_var.get()),
+            "perspective": self._run3_get_perspective_matrix(silent=True),
+            "align": self._run3_align_cfg(silent=True),
+            "axis_deg": num(self.run3_lateral_axis_angle_var, 0.0) or 0.0,
+            "speed_zones": zones_of(self.run3_speed_zone_vars),
+            "speed_smoothing_samples": max(1, int(num(self.run3_speed_smoothing_var, 5) or 1)),
+            "speed_max_kmh": max(0.0, num(self.run3_speed_max_var, 80.0) or 0.0),
+            "speed_frame_window_s": max(0.05, num(self.run3_speed_frame_window_var, 0.5) or 0.5),
+            "zone_calibrations": self._run3_clean_zone_calibrations(),
+            "lc_zones": zones_of(self.run3_lc_zone_vars),
+            "pet_zones": zones_of(self.run3_pet_zone_vars),
+            "ttc_zones": zones_of(self.run3_ttc_zone_vars),
+            "ldp_zones": zones_of(self.run3_ldp_zone_vars),
+            "waiting_threshold": num(self.run3_waiting_speed_threshold_var, GAP_HOLD_SPEED_KMH),
+            "hold_min_duration_s": num(self.run3_hold_min_duration_var, GAP_HOLD_MIN_S),
+            "lc_heading_window_s": num(self.run3_lc_heading_window_var, 0.5),
+            "topview_video": bool(self.run3_topview_video_var.get()),
+            "drone_video": bool(self.run3_drone_video_var.get()),
+            "align_drone": self._run3_align_drone_source(),
+            "lc_along_limit_m": max(0.0, num(self.run3_lc_along_limit_var, 0.0) or 0.0),
+            "lc_max_lateral_m": max(0.0, num(self.run3_lc_max_lateral_var, 3.5) or 0.0),
+            "lc_motorcycle_pairs_only": bool(self.run3_lc_motorcycle_pairs_only_var.get()),
+            "pet_threshold": num(self.run3_pet_threshold_var, 1.0),
+            "pet_max_s": pet_max if (pet_max is not None and pet_max > 0) else None,
+            "write_detail_files": bool(self.run3_write_detail_var.get()),
+            "csv_off": {name for name, var in self.run3_csv_vars.items() if not var.get()},
+            "traj_smooth_method": (str(self.run3_traj_smooth_method_var.get()).strip() if str(self.run3_traj_smooth_method_var.get()).strip() in SMOOTH_METHODS else "none"),
+            "traj_smooth_window_s": max(0.0, num(self.run3_traj_smooth_window_var, 0.3) or 0.0),
+            "ttc_include_rear_end": bool(self.run3_ttc_include_rear_var.get()),
+            "ttc_include_lane_change": bool(self.run3_ttc_include_lane_var.get()),
+            "ttc_include_crossing": bool(self.run3_ttc_include_cross_var.get()),
+            "pet_include_rear_end": bool(self.run3_pet_include_rear_var.get()),
+            "pet_include_lane_change": bool(self.run3_pet_include_lane_var.get()),
+            "pet_include_crossing": bool(self.run3_pet_include_cross_var.get()),
+            "headway_enabled": bool(self.run3_headway_enabled_var.get()),
+            "headway_movements": [mv for mv, v in self.run3_headway_movement_vars.items() if v.get()],
+            "headway_max_s": num(self.run3_headway_max_var, None),
+            "reference_line_source": (self.run3_ref_line_source_var.get() if self.run3_ref_line_source_var.get() in ("drawn", "per_stream") else "zone_edge"),
+            "zone_edge_tol_px": num(self.run3_zone_edge_tol_var, 6.0) or 6.0,
+            "critical_gap_by_subject_class": bool(self.run3_cg_by_subject_var.get()),
+            "critical_gap_by_lag_class": bool(self.run3_cg_by_lag_var.get()),
+            "critical_gap_min_drivers": num(self.run3_cg_min_drivers_var, None),
+            "headway_mapping_text": (self.run3_headway_text.get("1.0", "end-1c") if hasattr(self, "run3_headway_text") else self.run3_headway_mapping_text),
+            "pet_show_point_xy": bool(self.run3_pet_show_xy_var.get()),
+            "pet_show_point_drone": bool(self.run3_pet_show_drone_var.get()),
+            "pet_show_point_video": bool(self.run3_pet_show_video_var.get()),
+            "pet_min_speed_kmh": pet_min_speed if (pet_min_speed is not None and pet_min_speed > 0) else None,
+            "ttc_max_record_s": (None if not str(self.run3_ttc_max_record_var.get()).strip() else num(self.run3_ttc_max_record_var, 3.0)),
+            "ttc_min_record_s": (None if not str(self.run3_ttc_min_record_var.get()).strip() else num(self.run3_ttc_min_record_var, 0.0)),
+            "ttc_velocity_window_s": num(self.run3_ttc_velocity_window_var, 0.5),
+            "ttc_min_speed_kmh": num(self.run3_ttc_min_speed_var, 5.0),
+            "risk_limits": {
+                "ttc_s": self._risk_limits("risk_ttc_limits_s", "ttc_s"), "pet_s": self._risk_limits("risk_pet_limits_s", "pet_s"),
+                "ldp_pct": self._risk_limits("risk_ldp_limits_pct", "ldp_pct"), "speed_kmh": self._risk_limits("risk_speed_limits_kmh", "speed_kmh"),
+                "ldp_speed_kmh": self._risk_limits("risk_ldp_speed_limits_kmh", "ldp_speed_kmh"),
+            },
+            "ttc_miss_margin_m": num(self.run3_ttc_miss_margin_var, 0.5),
+            "ttc_decision": (str(self.run3_ttc_decision_var.get()).strip() if str(self.run3_ttc_decision_var.get()).strip() in TTC_DECISION_MODES else "by_type"),
+            "ttc_cross_time_s": max(0.0, num(self.run3_ttc_cross_time_var, 1.0) or 0.0),
+            "ttc_rear_margin_m": num(self.run3_ttc_rear_margin_var, 1.0) or 0.0,
+            "ttc_rear_clear_gap": bool(self.run3_ttc_rear_gap_var.get()),
+            "ttc_show_boxes_xy": bool(self.run3_ttc_show_xy_var.get()),
+            "ttc_show_boxes_drone": bool(self.run3_ttc_show_drone_var.get()),
+            "ttc_show_boxes_video": bool(self.run3_ttc_show_video_var.get()),
+            "ttc_min_rel_speed_ms": num(self.run3_ttc_min_rel_speed_var, 0.5),
+            "ttc_pair_radius_m": num(self.run3_ttc_pair_radius_var, 20.0),
+            "ttc_angle_rear_end_deg": num(self.run3_ttc_angle_rear_var, TTC_ANGLE_REAR_END_DEG),
+            "ttc_angle_crossing_deg": num(self.run3_ttc_angle_cross_var, TTC_ANGLE_CROSSING_DEG),
+            "geometry": geometry,
+            "w_entry_m": w_entry, "w_opp_m": w_opp,
+            "ldp_smoothing_samples": int(num(self.run3_ldp_smoothing_var, 5) or 1),
+            "gap_movements": gap_movements,
+            "use_raff": bool(self.run3_use_raff_var.get()),
+            "use_mle": bool(self.run3_use_mle_var.get()),
+            "mapping_text": mapping_text,
+            "widths": {n: num(v, None) for n, v in self.run3_width_vars.items()},
+            "lengths": {n: num(v, None) for n, v in self.run3_length_vars.items()},
+        }
+
+    # ========================================================
+    # RUN 3 — SHARED HELPERS
+    # ========================================================
+
+    def _risk_limits(self, key, default_key):
+        """The three limits of a risk table as entered (the default when empty or invalid - validation reports the error before a run)."""
+        try:
+            return parse_risk_limits(self.run3_risk_vars[key].get(), RISK_SETTING_ASCENDING[key])
+        except ValueError:
+            return RISK_DEFAULT_LIMITS[default_key]
+
+    @staticmethod
+    def _run3_calibration_mode(c):
+        if c.get("align") is not None:
+            return "Align_" + c["align"]["kind"]
+        return "Perspective_Homography" if c["perspective"] is not None else "PPM_Only"
+
+    @staticmethod
+    def _run3_qc_calibration(c):
+        if c.get("align") is not None:
+            return ""
+        return "Perspective_Not_Calibrated" if (c["perspective_enabled"] and c["perspective"] is None) else ""
+
+    def _run3_to_metric(self, pts, c):
+        """Pixel points (N x 2) -> road-aligned metric points (N x 2).
+
+        Column 0 = longitudinal (along the road), column 1 = lateral.
+        Perspective: x axis follows P1->P2, y axis follows P2->P3.
+        PPM only: pixel / PPM rotated by the road-direction angle.
+        Distances are rotation-invariant, so Speed and PET are unaffected by
+        the rotation; only the lateral indicators (LC, LDP) use the axes.
+        """
+        pts = np.asarray(pts, dtype=np.float64).reshape(-1, 2)
+        if len(pts) == 0:
+            return pts
+        if c.get("align") is not None:                                    # the Align result: video pixels -> metres in the drone's plane
+            return align_apply(c["align"], pts)
+        persp = c["perspective"]
+        if persp is not None:
+            mapped = cv2.perspectiveTransform(pts.reshape(-1, 1, 2).astype(np.float32), persp["H"])
+            return mapped.reshape(-1, 2).astype(np.float64)
+        m = pts / c["ppm"]
+        th = math.radians(c["axis_deg"])
+        road_u = np.array([math.cos(th), math.sin(th)])
+        lat_u = np.array([-math.sin(th), math.cos(th)])
+        return np.stack([m @ road_u, m @ lat_u], axis=1)
+
+    TOPVIEW_FIELDS = ["frame", "timestamp", "track_id", "class_name", "zone", "x_m", "y_m", "cx_m", "cy_m", "calibration_mode"]
+
+    def _run3_topview_rows(self, tracks, c):
+        """Every observed point in road-plane metres (the SAME numbers the indicators use):
+        x_m, y_m = the Trajectory Position point (zone / speed point); cx_m, cy_m = the box centre."""
+        mode = self._run3_calibration_mode(c)
+        rows = []
+        for tid, trows in tracks.items():
+            for r in trows:
+                m = r.get("_m")
+                if m is None:
+                    continue
+                mc = r.get("_mc")
+                rows.append({
+                    "frame": r.get("frame", ""), "timestamp": r.get("timestamp", ""), "track_id": tid,
+                    "class_name": r.get("class_name", ""), "zone": r.get("zone", ""),
+                    "x_m": f"{m[0]:.4f}", "y_m": f"{m[1]:.4f}",
+                    "cx_m": f"{mc[0]:.4f}" if mc is not None else "", "cy_m": f"{mc[1]:.4f}" if mc is not None else "",
+                    "calibration_mode": mode,
+                })
+        rows.sort(key=lambda x: (float(x["timestamp"] or 0), str(x["track_id"])))
+        return rows
+
+    @staticmethod
+    def _run3_draw_ttc_boxes(img, sh, to_px):
+        """What TTC found in one frame: for every counted pair a line from each vehicle to the point where their straight paths cross, a red cross there
+        and the TTC written beside it (parallel paths: the two vehicles are joined). `to_px` maps metres -> picture pixels (the X-Y canvas)."""
+        for mk in sh.get("marks", ()):
+            has_x = mk.get("cross") is not None
+            pts = np.asarray(to_px(np.array([mk["pa"], mk["pb"], mk["label"]], dtype=float)), dtype=float)
+            ip = [tuple(int(round(v)) for v in q) for q in pts]
+            if has_x:                                                         # each vehicle -> the point where the two paths cross
+                for k in (0, 1):
+                    cv2.line(img, ip[k], ip[2], (0, 165, 255), 2, cv2.LINE_AA)
+                cx, cy = ip[2]
+                cv2.line(img, (cx - 9, cy - 9), (cx + 9, cy + 9), (0, 0, 255), 3, cv2.LINE_AA)
+                cv2.line(img, (cx - 9, cy + 9), (cx + 9, cy - 9), (0, 0, 255), 3, cv2.LINE_AA)
+            else:                                                             # parallel paths: no crossing point, only the pair is joined
+                cv2.line(img, ip[0], ip[1], (0, 165, 255), 1, cv2.LINE_AA)
+            cx, cy = ip[2]
+            cv2.putText(img, f"{mk['ttc']:.2f}s", (cx + 10, cy - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 3, cv2.LINE_AA)
+            cv2.putText(img, f"{mk['ttc']:.2f}s", (cx + 10, cy - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
+        return img
+
+    @staticmethod
+    def _run3_draw_pet_marks(img, marks, to_px):
+        """The crossing point PET used: a magenta X with the PET value written beside it. `to_px` maps metres -> picture pixels."""
+        for mk in marks:
+            q = np.asarray(to_px(np.array([mk["cross"]], dtype=float)), dtype=float)[0]
+            cx, cy = int(round(q[0])), int(round(q[1]))
+            for width, colour in ((6, (255, 255, 255)), (3, (255, 0, 255))):
+                cv2.line(img, (cx - 9, cy - 9), (cx + 9, cy + 9), colour, width, cv2.LINE_AA)
+                cv2.line(img, (cx - 9, cy + 9), (cx + 9, cy - 9), colour, width, cv2.LINE_AA)
+            label = f"PET {mk['pet']:.2f}s"
+            cv2.putText(img, label, (cx + 12, cy + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 3, cv2.LINE_AA)
+            cv2.putText(img, label, (cx + 12, cy + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1, cv2.LINE_AA)
+        return img
+
+    @staticmethod
+    def _run3_video_size(video_path):
+        """(width, height) of the input video, or None."""
+        if not video_path or not os.path.isfile(str(video_path)):
+            return None
+        cap = cv2.VideoCapture(str(video_path))
+        try:
+            w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            return (w, h) if w > 0 and h > 0 else None
+        finally:
+            cap.release()
+
+    @staticmethod
+    def _run3_record_first_frame(settings, video_path):
+        """The number (1-based) of the first frame the normal video (Tracking_Result.mp4) holds: the start of the analysis window or of the
+        recording window, as the detection run decided it. 1 when there is no window or the video cannot be opened."""
+        settings = settings or {}
+        cap = cv2.VideoCapture(video_path) if video_path and os.path.isfile(str(video_path)) else None
+        if cap is None or not cap.isOpened():
+            return 1
+        try:
+            fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+            total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        finally:
+            cap.release()
+        try:
+            first, _last = window_frames(parse_clock_time(settings.get("analysis_start_s", "")), parse_clock_time(settings.get("analysis_end_s", "")), fps, total)
+            r_start = parse_clock_time(settings.get("record_start_s", ""))
+            if r_start is not None:
+                first = max(first, window_frames(r_start, None, fps, 0)[0])
+            return first
+        except Exception:
+            return 1
+
+    def _run3_overlay_ttc_boxes(self, tracks, c, result_path, first_frame=1, draw_ttc=True, draw_pet=False, src_size=None, frame_ratio=1.0):
+        """Draws the vehicle rectangles that TTC used on the NORMAL roadside video (Tracking_Result.mp4) after Run 3, so there is no third video: the
+        picture i of that video is frame `first_frame + output_frame_offset(i, frame_ratio)` (frame_ratio < 1: the video keeps only some of the frames); the 4 corners of every rectangle (metres) are mapped back into the picture with the
+        calibration that is set. The video is read, drawn on and written to a temporary file that then takes the place of the original (if that file is
+        locked, e.g. open in a player, it is tried again for a few seconds; then the result is saved as Tracking_Result_TTC.mp4; no temporary file is left). Returns the path of the result or None."""
+        shapes = getattr(self, "_run3_ttc_shapes", None) if draw_ttc else None
+        pet_shapes = getattr(self, "_run3_pet_shapes", None) if draw_pet else None      # also the PET crossing marks (magenta X)
+        if not (shapes or pet_shapes) or not result_path or not os.path.isfile(result_path):
+            return None
+        fwd = lambda q: self._run3_to_metric(q, c)
+        cap = cv2.VideoCapture(result_path)
+        if not cap.isOpened():
+            return None
+        W, H = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        # the result video can be smaller than the input video (video_max_width): the marks are in input-video pixels -> scale them
+        sx = W / float(src_size[0]) if src_size and src_size[0] else 1.0
+        sy = H / float(src_size[1]) if src_size and src_size[1] else 1.0
+        scale_px = (lambda a: a) if (abs(sx - 1.0) < 1e-9 and abs(sy - 1.0) < 1e-9) else (lambda a: np.asarray(a, dtype=float) * np.array([sx, sy]))
+        tmp_path = os.path.splitext(result_path)[0] + "._ttc_tmp.mp4"
+        self._run3_overlay_note = ""
+        try:
+            if os.path.isfile(tmp_path):
+                os.remove(tmp_path)                                  # a leftover of an earlier run
+        except OSError:
+            pass
+        writer = BackgroundVideoWriter(cv2.VideoWriter(tmp_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (W, H)))      # encoding beside the drawing
+        if not writer.isOpened():
+            writer.release()
+            cap.release()
+            raise RuntimeError("Unable to write the video with the TTC rectangles")
+        drawn_ok = False
+        reader = PrefetchCapture(cap)                                                                  # decoding beside the drawing
+        try:
+            i = 0
+            while True:
+                ok, img = reader.read()
+                if not ok:
+                    break
+                fno = first_frame + output_frame_offset(i, frame_ratio)
+                sh = shapes.get(fno) if shapes else None
+                marks = [mk for mk in (sh.get("marks", []) if sh else []) if mk.get("px") is not None]
+                if marks:
+                    dst = np.concatenate([np.array([mk["pa"], mk["pb"], mk["label"]], dtype=float) for mk in marks])
+                    init = np.concatenate([np.tile(np.asarray(mk["px"], dtype=float), (3, 1)) for mk in marks])
+                    pix = scale_px(invert_map(fwd, dst, init))
+                    sh2 = {"hot": sh["hot"], "pairs": sh["pairs"],
+                           "marks": [dict(mk, pa=pix[3 * k], pb=pix[3 * k + 1], label=pix[3 * k + 2], cross=(pix[3 * k + 2] if mk.get("cross") is not None else None))
+                                     for k, mk in enumerate(marks)]}
+                    img = self._run3_draw_ttc_boxes(img, sh2, lambda q: q)
+                pm = [mk for mk in (pet_shapes.get(fno, []) if pet_shapes else []) if mk.get("px") is not None]
+                if pm:
+                    dst = np.array([mk["cross"] for mk in pm], dtype=float)
+                    init = np.array([np.asarray(mk["px"], dtype=float) for mk in pm])
+                    ppix = scale_px(invert_map(fwd, dst, init))
+                    img = self._run3_draw_pet_marks(img, [dict(mk, cross=ppix[k]) for k, mk in enumerate(pm)], lambda q: q)
+                writer.write(img)
+                i += 1
+            drawn_ok = True
+        finally:
+            reader.close()
+            writer.release()
+            cap.release()
+            if not drawn_ok:
+                try:
+                    os.remove(tmp_path)                              # an error while drawing: no half-written third video is left behind
+                except OSError:
+                    pass
+        if replace_with_retry(tmp_path, result_path):
+            self._run3_overlay_note = "marks drawn into Tracking_Result.mp4"
+            return result_path
+        alt = os.path.splitext(result_path)[0] + "_TTC.mp4"
+        if replace_with_retry(tmp_path, alt, tries=1):
+            self._run3_overlay_note = ("Tracking_Result.mp4 is in use (close the player and run again): the marks were saved in "
+                                       + os.path.basename(alt) + " instead")
+            return alt
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        self._run3_overlay_note = "Tracking_Result.mp4 and Tracking_Result_TTC.mp4 are in use: the marks were not drawn (close the player and run again)"
+        return None
+
+    TOPVIEW_PALETTE = [(255, 160, 40), (80, 200, 80), (60, 60, 255), (200, 120, 255), (0, 200, 255), (255, 255, 80), (180, 180, 255), (60, 220, 160)]
+
+    def _run3_drone_picture(self, source):
+        """The drone / top-view picture of the Align, (path, frame) -> BGR array or None (cached)."""
+        if not source:
+            return None
+        cache = getattr(self, "_drone_pic_cache", None)
+        if cache is None or cache[0] != tuple(source):
+            cache = (tuple(source), read_picture_any(source[0], source[1]))
+            self._drone_pic_cache = cache
+        return cache[1]
+
+    def _run3_topview_scene(self, tracks, c, video_path, display, max_px=1280, allow_empty=False, drone=False):
+        """What the X-Y picture and the X-Y video share: the canvas (same shape as the video), the metre grid, the zones (drawn like in the
+        normal video: same switches, same opacity) and the observed points per frame. Returns a dict or None when there is nothing to draw."""
+        dsp = dict(display or {})
+        pref = "dr_" if drone else "xy_"                                  # the X-Y video / the X-Y-on-drone video each have their own switches
+
+        def flag(key, default):
+            v = dsp.get(pref + key, dsp.get("xy_" + key, dsp.get(key, default)))      # its own twin first, then the X-Y one, then the normal-video switch of the same name
+            return v if isinstance(v, bool) else str(v).strip().lower() in ("1", "true", "yes")
+
+        try:
+            zone_alpha = max(0.0, min(1.0, float(dsp.get(pref + "zone_overlay_opacity", dsp.get("xy_zone_overlay_opacity", dsp.get("zone_overlay_opacity", 45)))) / 100.0))
+        except (TypeError, ValueError):
+            zone_alpha = 0.45
+        per_frame = defaultdict(list)
+        all_pts = []
+        for tid, rows in tracks.items():
+            for r in rows:
+                if r.get("_m") is None:
+                    continue
+                try:
+                    fr = int(float(r.get("frame", "")))
+                except (TypeError, ValueError):
+                    fr = int(round(r["_timestamp"] * 1000))
+                per_frame[fr].append((tid, r["_timestamp"], r["_m"], r))
+                all_pts.append(r["_m"])
+        zone_m = []
+        for zname, poly in self._zone_polygons():
+            zone_m.append((zname, self._run3_to_metric(np.asarray(poly, dtype=float), c)))
+            all_pts.extend(map(tuple, zone_m[-1][1]))
+        if not per_frame and not (allow_empty and zone_m):
+            return None
+        if drone:
+            cfg_al, pic = c.get("align"), self._run3_drone_picture(c.get("align_drone"))
+            if cfg_al is None or pic is None:
+                return None                                              # needs the Align (video pixels -> the drone's plane) and its picture
+            f_ = min(1.0, max_px / float(max(pic.shape[:2])))
+            W, H = int(round(pic.shape[1] * f_)), int(round(pic.shape[0] * f_))
+            base = cv2.resize(pic, (W, H), interpolation=cv2.INTER_AREA)
+            cv = {"w": W, "h": H, "scale": None}
+
+            def to_px(pts_m, _cfg=cfg_al, _f=f_):
+                return align_plane_to_drone(_cfg, np.asarray(pts_m, dtype=float).reshape(-1, 2)) * _f
+        else:
+            aspect = None
+            if video_path and os.path.isfile(video_path):
+                cap0 = cv2.VideoCapture(video_path)
+                vw, vh = cap0.get(cv2.CAP_PROP_FRAME_WIDTH), cap0.get(cv2.CAP_PROP_FRAME_HEIGHT)
+                cap0.release()
+                if vw > 0 and vh > 0:
+                    aspect = vw / vh
+            # the picture is centred on the study area (the zones, with room around them for vehicles that are about to enter); a vehicle far
+            # away does not move it. Without zones: all the points.
+            zone_pts = [tuple(q) for _z, pts_ in zone_m for q in pts_]
+            cv = topview_canvas(zone_pts, max_px, margin_m=6.0, aspect=aspect) if len(zone_pts) >= 3 else topview_canvas(all_pts, max_px, aspect=aspect)
+            W, H = cv["w"], cv["h"]
+            base = np.full((H, W, 3), 38, np.uint8)
+
+            def to_px(pts_m, _cv=cv):
+                return topview_px(_cv, pts_m)
+            step = 5.0 if max(W, H) / cv["scale"] <= 80 else 10.0
+            grid = base.copy()
+            labels = []
+            x = math.ceil(cv["xmin"] / step) * step
+            while (x - cv["xmin"]) * cv["scale"] < W:
+                px = int(round((x - cv["xmin"]) * cv["scale"]))
+                cv2.line(grid, (px, 0), (px, H - 1), (255, 255, 255), 1)
+                labels.append((f"{x:g}", (px + 2, H - 4)))
+                x += step
+            y = math.ceil(cv["ymin"] / step) * step
+            while (y - cv["ymin"]) * cv["scale"] < H:
+                py = int(round((y - cv["ymin"]) * cv["scale"]))
+                cv2.line(grid, (0, py), (W - 1, py), (255, 255, 255), 1)
+                labels.append((f"{y:g}", (2, py - 3)))
+                y += step
+            if flag("show_grid", True):
+                base = cv2.addWeighted(grid, 0.22, base, 0.78, 0)
+                for text_, org_ in labels:
+                    cv2.putText(base, text_, org_, cv2.FONT_HERSHEY_SIMPLEX, 0.4, (235, 235, 235), 1, cv2.LINE_AA)
+        if flag("show_zone_boundary", True) or flag("show_zone_label", True):
+            zlayer = base.copy()
+            meta_all = getattr(self, "zone_meta", {})
+            for zname, pts in zone_m:
+                meta = meta_all.get(zname, {})
+                try:
+                    zcol = tuple(int(max(0, min(255, v))) for v in meta.get("color_bgr", [0, 200, 0])[:3])
+                    if len(zcol) != 3:
+                        zcol = (0, 200, 0)
+                except Exception:
+                    zcol = (0, 200, 0)
+                q = np.round(to_px(pts)).astype(np.int32).reshape(-1, 1, 2)
+                if flag("show_zone_boundary", True):
+                    cv2.polylines(zlayer, [q], True, zcol, 1, cv2.LINE_AA)
+                if flag("show_zone_label", True) and meta.get("show_label", True):
+                    cx, cy = q.reshape(-1, 2).mean(axis=0)
+                    text_ = zname if flag("show_zone_label_prefix", True) else zname.replace("Zone ", "", 1)
+                    (tw, th), _ = cv2.getTextSize(text_, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
+                    cv2.putText(zlayer, text_, (int(cx) - tw // 2, int(cy) + th // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.55, zcol, 1, cv2.LINE_AA)
+            base = cv2.addWeighted(zlayer, max(zone_alpha, 0.35), base, 1.0 - max(zone_alpha, 0.35), 0)
+        if flag("show_ref_lines", True):                                  # the reference lines of Gap Acceptance / Headway, as in the normal video
+            for label, p1, p2 in self._run3_display_ref_lines(c):
+                q = np.round(to_px(self._run3_to_metric(np.array([p1, p2], dtype=float), c))).astype(int)
+                a_, b_ = (int(q[0][0]), int(q[0][1])), (int(q[1][0]), int(q[1][1]))
+                cv2.line(base, a_, b_, (255, 255, 255), 3, cv2.LINE_AA)
+                cv2.circle(base, a_, 5, (255, 255, 255), -1, cv2.LINE_AA)
+                cv2.circle(base, b_, 5, (255, 255, 255), -1, cv2.LINE_AA)
+                cv2.putText(base, label, ((a_[0] + b_[0]) // 2 + 6, max(14, (a_[1] + b_[1]) // 2 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+        title = (f"X-Y on the drone picture · {self._run3_calibration_mode(c)}" if drone
+                 else f"X-Y plane in metres (x right, y down) · {cv['scale']:.1f} px/m · {self._run3_calibration_mode(c)}")
+        cv2.putText(base, title, (6, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1, cv2.LINE_AA)
+        mode = str((dsp.get("outside_zone_dr", dsp.get("outside_zone_xy", "show")) if drone else dsp.get("outside_zone_xy", "show")) or "show")
+        return {"cv": cv, "base": base, "W": W, "H": H, "per_frame": per_frame, "flag": flag, "dsp": dsp, "mode": mode, "zones": bool(zone_m), "zone_m": zone_m,
+                "to_px": to_px, "pref": pref}
+
+    def preview_xy_plane(self):
+        """A look at the X-Y plane BEFORE a run: the zones (and the metre grid) drawn with the calibration that is set now (Align / Perspective /
+        PPM), with the real length of every zone edge written next to the picture - to see at once whether the zones come out right."""
+        if not any(len(self.zones.get(z, [])) >= 3 for z in ZONE_NAMES):
+            messagebox.showerror("ตัวอย่างผัง X–Y", "ยังไม่มีโซนที่วาดไว้ — โหลดไฟล์โซนก่อน (แท็บ ② ไฟล์โซนและเส้น)")
+            return None
+        try:
+            c = self._run3_snapshot_config()
+        except Exception as exc:
+            messagebox.showerror("ตัวอย่างผัง X–Y", f"ตั้งค่าการแปลงเป็นเมตรไม่ครบ: {exc}")
+            return None
+        video = str(self.video_var.get() or "").strip()
+        scene = self._run3_topview_scene({}, c, video if os.path.isfile(video) else None, self.get_settings(), 1400, allow_empty=True)
+        if scene is None:
+            return None
+        lines = [f"การแปลงเป็นเมตรที่ใช้อยู่: {self._run3_calibration_mode(c)}", "ความยาวจริงของขอบโซน (เมตร) ตามการแปลงนี้:"]
+        for zname, pts in scene["zone_m"]:
+            n = len(pts)
+            edges = [float(np.hypot(*(np.asarray(pts[(k + 1) % n]) - np.asarray(pts[k])))) for k in range(n)]
+            lines.append(f"  {zname}: " + " · ".join(f"{k + 1}→{(k + 1) % n + 1} {e:.1f}" for k, e in enumerate(edges)))
+        lines += ["", "เทียบกับความยาวที่รู้ (เช่น ความกว้างเลน) ถ้าไม่ตรง แก้การปรับเทียบ/จัดแนวก่อนรัน"]
+        win = tk.Toplevel(self.root)
+        win.title("ตัวอย่างผัง X–Y (ก่อนรัน)")
+        sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+        win.geometry(f"{min(1500, sw - 40)}x{min(900, sh - 90)}+20+20")
+        txt = tk.Text(win, height=min(24, len(lines) + 1), width=44, wrap="word")
+        txt.insert("end", "\n".join(lines))
+        txt.config(state="disabled")
+        txt.pack(side="right", fill="y", padx=6, pady=6)
+        lab = tk.Label(win, bg="#202020")
+        lab.pack(side="left", fill="both", expand=True)
+        img = scene["base"]
+        ok, buf = cv2.imencode(".png", img)
+        photo = tk.PhotoImage(data=base64.b64encode(buf.tobytes()))
+        lab.configure(image=photo)
+        lab.image = photo                                                # (kept so the picture is not collected)
+
+        def save():
+            path = filedialog.asksaveasfilename(parent=win, defaultextension=".png", filetypes=[("PNG", "*.png")], initialfile="XY_preview.png")
+            if path:
+                with open(path, "wb") as f:                              # (any letters in the path)
+                    f.write(buf.tobytes())
+        ttk.Button(txt.master, text="บันทึกภาพ…", command=save).pack(side="bottom", pady=4)
+        win.scene, win.lines = scene, lines
+        return win
+
+    def _run3_write_xy_plot(self, tracks, c, output_dir, video_path=None, display=None, max_px=1600):
+        """Trajectory_XY.png: every track as a line on the X-Y plane (colour per ID, start dot + ID), zones and the metre grid."""
+        scene = self._run3_topview_scene(tracks, c, video_path, display, max_px)
+        if scene is None:
+            return None
+        cv, img, mode = scene["cv"], scene["base"].copy(), scene["mode"]
+        for k, (tid, rows) in enumerate(sorted(tracks.items(), key=lambda it: str(it[0]))):
+            rs = sorted((r for r in rows if r.get("_m") is not None), key=lambda r: r["_timestamp"])
+            if not rs:
+                continue
+            col = self.TOPVIEW_PALETTE[k % len(self.TOPVIEW_PALETTE)]
+            runs, cur, dots = [], [], []                       # runs of points that are drawn as a line; points drawn as dots only
+            for r in rs:
+                plan = outside_zone_plan(mode, str(r.get("zone", "")).strip() != "", scene["zones"])
+                if plan["object"]:
+                    cur.append(r["_m"])
+                else:
+                    if cur:
+                        runs.append(cur)
+                        cur = []
+                    if plan["point"]:
+                        dots.append(r["_m"])
+            if cur:
+                runs.append(cur)
+            for run in runs:
+                q = np.round(topview_px(cv, np.asarray(run, dtype=float))).astype(np.int32)
+                if len(q) > 1:
+                    cv2.polylines(img, [q.reshape(-1, 1, 2)], False, col, 2, cv2.LINE_AA)
+            for d in dots:
+                dq = topview_px(cv, [d])[0]
+                cv2.circle(img, (int(round(dq[0])), int(round(dq[1]))), 2, col, -1, cv2.LINE_AA)
+            if runs:
+                q0 = np.round(topview_px(cv, [runs[0][0]])[0]).astype(int)
+                cv2.circle(img, (int(q0[0]), int(q0[1])), 4, col, -1, cv2.LINE_AA)
+                cv2.putText(img, str(tid), (int(q0[0]) + 5, int(q0[1]) - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 1, cv2.LINE_AA)
+        out_path = os.path.join(output_dir, "Trajectory_XY.png")
+        ok, buf = cv2.imencode(".png", img)
+        if not ok:
+            return None
+        with open(out_path, "wb") as f:                       # (cv2.imwrite cannot write a path with Thai letters on Windows)
+            f.write(buf.tobytes())
+        return out_path
+
+    def _run3_write_topview_video(self, tracks, c, output_dir, video_path=None, max_px=1280, display=None, drone=False):
+        """Tracking_Topview.mp4: the X-Y plane in metres, same shape as the video, one picture per processed frame: the zones, every vehicle as
+        its REFERENCE POINT (yellow = in a zone, red ring = in none), the labels and the trajectory as set for the normal video
+        (ID / Class / Conf / Zone / Speed, with or without their prefix, trajectory length)."""
+        scene = self._run3_topview_scene(tracks, c, video_path, display, max_px, drone=drone)
+        if scene is None:
+            return None
+        cv, base, W, H, per_frame, flag, dsp = scene["cv"], scene["base"], scene["W"], scene["H"], scene["per_frame"], scene["flag"], scene["dsp"]
+        xy_mode, zones_exist, to_px, pref = scene["mode"], scene["zones"], scene["to_px"], scene["pref"]
+        try:
+            trail_n = max(1, int(float(dsp.get(pref + "trail_length", dsp.get("xy_trail_length", dsp.get("trail_length", 30))))))
+        except (TypeError, ValueError):
+            trail_n = 30
+        kind = "drone" if drone else "xy"
+        try:                                                              # the part of the clip to record (blank = the whole analysed part)
+            rec_from = parse_clock_time(str(dsp.get(kind + "_start_s", "") or ""))
+            rec_to = parse_clock_time(str(dsp.get(kind + "_end_s", "") or ""))
+        except Exception:
+            rec_from = rec_to = None
+        frames = sorted(per_frame)
+        times = sorted({per_frame[f][0][1] for f in frames})
+        dts = np.diff(times)
+        dts = dts[dts > 0]
+        # one picture per processed frame, played at the rate the frames were sampled (60 fps video -> 60 fps here),
+        # so the Topview video lasts as long as the analysed part of the real video
+        fps_out = float(min(120.0, max(1.0, 1.0 / float(np.median(dts))))) if len(dts) else 30.0
+        out_name = "Tracking_Topview_Drone.mp4" if drone else "Tracking_Topview.mp4"
+        out_path = os.path.join(output_dir, out_name)
+        tv_ratio = output_fps_ratio(dsp.get("topview_fps", "0"), fps_out)       # a lower rate keeps only some of the pictures (the trails still use every frame)
+        tv_seen = tv_kept = 0
+        writer = BackgroundVideoWriter(cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*"mp4v"), fps_out * tv_ratio, (W, H)))      # the encoding runs beside the drawing
+        if not writer.isOpened():
+            writer.release()
+            raise RuntimeError("Unable to create " + out_name)
+        trails = defaultdict(deque)
+        speed_hist = defaultdict(deque)
+        shapes = getattr(self, "_run3_ttc_shapes", None) if (c.get("ttc_enabled") and c.get("ttc_show_boxes_" + kind)) else None
+        pet_shapes = getattr(self, "_run3_pet_shapes", None) if (c.get("pet_enabled") and c.get("pet_show_point_" + kind)) else None
+        try:
+            for fr in frames:
+                now = per_frame[fr][0][1]
+                if (rec_from is not None and now < rec_from) or (rec_to is not None and now > rec_to):
+                    continue                                              # outside the part to record
+                img = base.copy()
+                sh = shapes.get(fr) if shapes else None
+                if sh and sh.get("marks"):
+                    img = self._run3_draw_ttc_boxes(img, sh, to_px)
+                pm = pet_shapes.get(fr) if pet_shapes else None
+                if pm:
+                    img = self._run3_draw_pet_marks(img, pm, to_px)
+                marks = []
+                for tid, t, m, rec in per_frame[fr]:
+                    plan = outside_zone_plan(xy_mode, str(rec.get("zone", "")).strip() != "", zones_exist)
+                    if not plan["point"]:
+                        continue                                  # outside every zone and set to be hidden
+                    pt = to_px([m])[0]
+                    trails[tid].append(tuple(pt))
+                    while len(trails[tid]) > trail_n:
+                        trails[tid].popleft()
+                    hist = speed_hist[tid]
+                    hist.append((t, m))
+                    while len(hist) > 1 and hist[0][0] < t - 0.5:
+                        hist.popleft()
+                    spd = None
+                    if len(hist) >= 2 and hist[-1][0] > hist[0][0]:
+                        spd = math.hypot(hist[-1][1][0] - hist[0][1][0], hist[-1][1][1] - hist[0][1][1]) / (hist[-1][0] - hist[0][0]) * 3.6
+                    marks.append((tid, pt, rec, spd, plan["object"]))
+                for tid, pt, rec, spd, full in marks:
+                    if full and flag("draw_trail", False) and len(trails[tid]) > 1:
+                        cv2.polylines(img, [np.round(np.array(trails[tid])).astype(np.int32).reshape(-1, 1, 2)], False, (255, 0, 255), 2, cv2.LINE_AA)
+                    p_ = (int(round(pt[0])), int(round(pt[1])))
+                    inside = str(rec.get("zone", "")).strip() != ""
+                    if flag("show_point", True):
+                        cv2.circle(img, p_, 7, (255, 255, 255), -1, cv2.LINE_AA)
+                        cv2.circle(img, p_, 5, (0, 255, 255) if inside else (0, 0, 255), -1 if inside else 2, cv2.LINE_AA)
+                    parts = []
+                    if not full:
+                        continue                                  # outside every zone, point only
+                    if flag("show_label_id", True):
+                        parts.append(f"ID {tid}" if flag("show_prefix_id", False) else str(tid))
+                    if flag("show_label_class", True):
+                        v_ = str(rec.get("class_name", "")).strip()
+                        parts.append(f"Class {v_}" if flag("show_prefix_class", False) else v_)
+                    if flag("show_label_conf", True):
+                        try:
+                            v_ = f"{float(rec.get('confidence', '')):.2f}"
+                        except (TypeError, ValueError):
+                            v_ = "-"
+                        parts.append(f"Conf {v_}" if flag("show_prefix_conf", False) else v_)
+                    if flag("show_label_zone", True):
+                        zn = re.search(r"(\d+)", str(rec.get("zone", "") or ""))
+                        v_ = zn.group(1) if zn else "-"
+                        parts.append(f"Zone {v_}" if flag("show_prefix_zone", False) else v_)
+                    if flag("show_label_speed", True):
+                        v_ = f"{spd:.1f}" if spd is not None else "-"
+                        parts.append(f"Speed {v_}" if flag("show_prefix_speed", False) else v_)
+                    if parts:
+                        cv2.putText(img, " | ".join(parts), (p_[0] + 8, max(14, p_[1] - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2, cv2.LINE_AA)
+                if flag("show_time", True):
+                    cv2.putText(img, f"t = {now:.2f} s   frame {fr}", (6, H - 22), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+                if tv_seen >= output_frame_offset(tv_kept, tv_ratio):
+                    writer.write(img)
+                    tv_kept += 1
+                tv_seen += 1
+        finally:
+            writer.release()
+        return out_path
+
+    def _run3_remove_duplicate_tracks(self, tracks):
+        """Remove the frames of a track that duplicates another track (same vehicle, two IDs).
+        Modifies `tracks` in place; returns report rows. Without this, the two IDs look like
+        two vehicles standing on top of each other (negative Lateral Clearance, fake TTC/PET)."""
+        frame_boxes = defaultdict(list)
+        for tid, rows in tracks.items():
+            for r in rows:
+                try:
+                    box = (float(r["bbox_x1"]), float(r["bbox_y1"]), float(r["bbox_x2"]), float(r["bbox_y2"]))
+                    frame = int(float(r["frame"]))
+                except Exception:
+                    continue
+                frame_boxes[frame].append((tid, box))
+        length = {tid: len(rows) for tid, rows in tracks.items()}
+        dup = find_duplicate_tracks(frame_boxes, length)
+        report = []
+        for drop, info in dup.items():
+            rows = tracks.get(drop, [])
+            keep_rows = []
+            removed = []
+            for r in rows:
+                try:
+                    frame = int(float(r["frame"]))
+                except Exception:
+                    frame = None
+                (removed if frame in info["frames"] else keep_rows).append(r)
+            cls = rows[0].get("class_name", "") if rows else ""
+            report.append({
+                "Duplicate_ID": drop, "Kept_ID": info["keep"], "Vehicle_Class": cls,
+                "Frames_Removed": len(removed),
+                "First_Frame": min(info["frames"]), "Last_Frame": max(info["frames"]),
+                "Remaining_Rows_Of_Duplicate_ID": len(keep_rows),
+            })
+            if len(keep_rows) >= 2:
+                tracks[drop] = keep_rows
+            else:
+                tracks.pop(drop, None)
+        return report
+
+    def _run3_clean_zone_calibrations(self):
+        """Valid per-zone calibrations -> {zone number: {"points": [(x, y) x 4], "lengths": [4 floats]}}."""
+        out = {}
+        for key, cal in self.run3_zone_calibrations.items():
+            try:
+                z = int(key)
+                pts = [(float(a), float(b)) for a, b in cal["points"]]
+                lengths = [float(v) for v in cal["lengths"]]
+            except (ValueError, TypeError, KeyError):
+                continue
+            if z in ZONE_IDS and len(pts) == 4 and len(lengths) == 4 and min(lengths) > 0:
+                out[z] = {"points": pts, "lengths": lengths}
+        return out
+
+    def _run3_apply_zone_calibrations(self, rows_all, c):
+        """Samples inside a zone that has its own calibration use that zone's homography (own scale and
+        perspective), placed in the common metric frame; all other samples keep the base calibration."""
+        info = {}
+        for z, cal in (c.get("zone_calibrations") or {}).items():
+            base_corners = self._run3_to_metric(cal["points"], c)
+            tr = zone_metric_transform(cal["points"], cal["lengths"], base_corners)
+            info[f"Zone {z}"] = {"alignment_rms_m": round(tr["rms"], 3), "length_m": tr["length_m"], "width_m": tr["width_m"]}
+            for src, dst in (("_point", "_m"), ("_center", "_mc")):
+                idx = [i for i, r in enumerate(rows_all) if r.get("_zone_num") == z and r.get(src) is not None]
+                if idx:
+                    mapped = zone_metric_points(tr, [rows_all[i][src] for i in idx])
+                    for j, i in enumerate(idx):
+                        rows_all[i][dst] = (float(mapped[j, 0]), float(mapped[j, 1]))
+        self._run3_zone_cal_info = info
+
+    def _run3_attach_metric(self, tracks, c):
+        """Transform every observed point ONCE (batch) instead of per use."""
+        rows_all = [r for rows in tracks.values() for r in rows]
+        for src, dst in (("_point", "_m"), ("_center", "_mc")):
+            idx = [i for i, r in enumerate(rows_all) if r.get(src) is not None]
+            if not idx:
+                continue
+            mapped = self._run3_to_metric([rows_all[i][src] for i in idx], c)
+            for j, i in enumerate(idx):
+                rows_all[i][dst] = (float(mapped[j, 0]), float(mapped[j, 1]))
+        self._run3_zone_cal_info = {}
+        if c.get("zone_calibrations"):
+            self._run3_apply_zone_calibrations(rows_all, c)
+
+    def _run3_smooth_tracks(self, tracks, c):
+        """Make every vehicle's pixel positions steadier (smooth_positions over `traj_smooth_window_s` seconds): the reference point and the box centre; the metric
+        positions are made from them afterwards, so that every indicator and the X-Y pictures use the same calmer path (a box that flickers from frame to frame
+        no longer makes the trajectory sway). Zone labels stay as they were recorded. Returns the number of vehicles smoothed."""
+        method, window = c.get("traj_smooth_method", "none"), float(c.get("traj_smooth_window_s") or 0.0)
+        if method == "none" or window <= 0:
+            return 0
+        done = 0
+        for rows in tracks.values():
+            if len(rows) < 3:
+                continue
+            for key in ("_point", "_center"):
+                idx = [i for i, r in enumerate(rows) if r.get(key) is not None and r.get("_timestamp") is not None]
+                if len(idx) < 3:
+                    continue
+                sm = smooth_positions([rows[i]["_timestamp"] for i in idx], [rows[i][key] for i in idx], window, method)
+                for j, i in enumerate(idx):
+                    rows[i][key] = (float(sm[j, 0]), float(sm[j, 1]))
+            done += 1
+        return done
+
+    @staticmethod
+    def _run3_stats(values):
+        a = np.asarray([v for v in values if v is not None], dtype=float)
+        if a.size == 0:
+            return {"N": 0, "Mean": None, "SD": None, "Median": None, "Min": None, "Max": None, "P50": None, "P85": None}
+        return {
+            "N": int(a.size),
+            "Mean": float(np.mean(a)),
+            "SD": float(np.std(a, ddof=1)) if a.size > 1 else None,
+            "Median": float(np.median(a)),
+            "Min": float(np.min(a)),
+            "Max": float(np.max(a)),
+            "P50": float(np.percentile(a, 50)),
+            "P85": float(np.percentile(a, 85)),
+        }
+
+    @staticmethod
+    def _fmt(v, nd=6):
+        return "" if v is None else f"{v:.{nd}f}"
+
+    # ---------------- Risk levels ----------------
+    # The limits come from the settings (defaults: the seminar slides, CROW Road Safety Manual 2009; TTC: Intersection Safety Assessment Using
+    # Video-Based Traffic Conflict Analysis, Thailand 2021; PET: Safety assessment of pedestrian-vehicle interaction 2024). Each indicator exports
+    # its index level, the speed level and the overall level (the less severe of the two - the colour map of the slide). The speed scale is the same
+    # for every vehicle type.
+
+    @staticmethod
+    def _risk_row(index_level, speed_level):
+        return index_level, speed_level, combine_risk(index_level, speed_level)
+
+    # ========================================================
+    # SPEED (the speed of every vehicle at every frame inside the selected zones)
+    # ========================================================
+
+    def _run3_speed(self, tracks, c, movement_by_id):
+        """Speed rows: one per vehicle x frame inside a selected zone. The speed comes from `frame_speeds_kmh` (rolling-median smoothed positions,
+        +-speed_frame_window_s/2 around the frame) and is worked out separately for every stay in a zone, so a window never mixes two zones (each
+        zone can have its own scale: zone calibration). Speeds above `speed_max_kmh` are flagged (Speed_Above_Max), not removed."""
+        window = c.get("speed_frame_window_s", 0.5)
+        k = c["speed_smoothing_samples"]
+        vmax = c.get("speed_max_kmh", 0)
+        zones = set(c["speed_zones"])
+        results = []
+        for tid, rows in tracks.items():
+            if not rows:
+                continue
+            cls = rows[0].get("class_name", "")
+            if str(cls).lower() == "person":
+                continue
+            movement = movement_by_id.get(str(tid), "")
+            run = []
+            for r in list(rows) + [None]:                                   # None = flush the last stay
+                z = None if r is None else r.get("_zone_num")
+                if run and (r is None or z != run[0].get("_zone_num") or r.get("_m") is None):
+                    if run[0].get("_zone_num") in zones and len(run) >= 2:
+                        speeds = frame_speeds_kmh([x["_timestamp"] for x in run], [x["_m"] for x in run], window, k)
+                        for x, v in zip(run, speeds):
+                            if v is None:
+                                continue
+                            results.append({"Frame": str(x.get("frame", "")), "Time_s": f"{x['_timestamp']:.6f}", "Vehicle_ID": tid, "Vehicle_Class": cls,
+                                            "Zone": f"Zone {x['_zone_num']}", "Movement": movement, "Speed_kmh": f"{v:.2f}",
+                                            "QC_Flag": "Speed_Above_Max" if is_speed_outlier(v, vmax) else ""})
+                    run = []
+                if r is not None and r.get("_m") is not None and z is not None:
+                    run.append(r)
+        return results
+
+    # ========================================================
+    # REFERENCE LINE MAPPING
+    # ========================================================
+
+    def copy_run3_mapping_template(self):
+        text = self.run3_reference_text.get("1.0", "end-1c") if hasattr(self, "run3_reference_text") else self.run3_reference_mapping_text
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            self.root.update()
+            self.status_var.set("Reference Line Mapping template copied to clipboard")
+        except Exception as e:
+            self.status_var.set(f"Copy failed: {e}")
+
+    def _run3_parse_reference_mapping(self, text=None):
+        if text is None:
+            text = self.run3_reference_text.get("1.0", "end-1c") if hasattr(self, "run3_reference_text") else self.run3_reference_mapping_text
+        mapping = {}
+        for raw in str(text).splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = [p.strip() for p in line.split("|")]
+            if len(parts) != 3:
+                raise ValueError(f"Invalid Reference Line Mapping row: {raw}")
+            site, movement, lname = parts
+            if movement not in RUN3_ALL_MOVEMENTS:
+                raise ValueError(f"Invalid movement in Reference Line Mapping: {movement}")
+            if lname not in LINE_NAMES and not re.fullmatch(r"Edge [1-7]-[1-7]", lname):
+                raise ValueError(f"Invalid line name in Reference Line Mapping: {lname} (Line 1-6, or Edge 1-3 = the edge Zone 1 and Zone 3 share)")
+            mapping[(site, movement)] = lname
+        return mapping
+
+    # ========================================================
+    # GAP ACCEPTANCE (two stages: Access / Exit - design of v26(5.14.11) PASS)
+    # ========================================================
+
+    @staticmethod
+    def _run3_step_speed_kmh(prev, cur):
+        if prev.get("_m") is None or cur.get("_m") is None:
+            return None
+        dt = cur["_timestamp"] - prev["_timestamp"]
+        if dt <= 0:
+            return None
+        return math.hypot(cur["_m"][0] - prev["_m"][0], cur["_m"][1] - prev["_m"][1]) / dt * 3.6
+
+    def _run3_speed_at(self, rows, t):
+        """Speed (km/h) from the observed step around time t (no interpolation), or None."""
+        valid = [r for r in rows if r.get("_m") is not None and r.get("_timestamp") is not None]
+        if len(valid) < 2:
+            return None
+        import bisect
+        ts = [r["_timestamp"] for r in valid]
+        i = bisect.bisect_left(ts, t)
+        if i >= len(valid):
+            i = len(valid) - 1
+        if i == 0:
+            return self._run3_step_speed_kmh(valid[0], valid[1])
+        return self._run3_step_speed_kmh(valid[i - 1], valid[i])
+
+    def _run3_named_line(self, name, tol=6.0):
+        """The 2 points of a reference line: a drawn Line ("Line 3") or a zone edge ("Edge 1-3" = the edge Zone 1 and Zone 3 share); [] when unusable."""
+        if not name:
+            return []
+        m = re.fullmatch(r"Edge ([1-7])-([1-7])", str(name))
+        if m:
+            zones = getattr(self, "zones", {}) or {}
+            edge = shared_edge(zones.get(f"Zone {m.group(1)}", []), zones.get(f"Zone {m.group(2)}", []), tol)
+            return [] if edge is None else [edge[0], edge[1]]
+        return self.lines.get(name, [])
+
+    def _run3_reference_names(self, cm, mapping, site, c=None, explicit=None):
+        """The names tried, in order, for the reference line of Movement `cm`. `reference_line_source`:
+        "zone_edge" = Headway's own entry -> the shared zone edge -> the mapping (the edge wins over a Line left in the mapping);
+        "drawn" = Headway's own entry -> the mapping (never the edge);
+        "per_stream" = Headway's own entry -> the mapping row of the stream (an `Edge a-b` or a `Line N`, chosen per stream in the Line window) -> the shared edge when there is no row."""
+        c = c or {}
+        source = c.get("reference_line_source", "zone_edge")
+        names = []
+        if explicit and (site, cm) in explicit:
+            names.append(explicit[(site, cm)])
+        edge = ("Edge %d-%d" % ZONE_EDGE_DEFAULT[cm]) if cm in ZONE_EDGE_DEFAULT else None
+        row = mapping[(site, cm)] if (mapping and (site, cm) in mapping) else None
+        if source == "zone_edge":
+            order = [edge, row]
+        elif source == "per_stream":
+            order = [row, edge]
+        else:
+            order = [row]
+        names += [n for n in order if n and n not in names]
+        return names
+
+    def _run3_reference_line(self, cm, mapping, site, c=None, explicit=None):
+        """(line, label) of the reference line of Movement `cm` (see _run3_reference_names for the order). The first name that gives 2 points wins;
+        none -> ([], first name tried) and the caller falls back to the origin zone."""
+        c = c or {}
+        tol = float(c.get("zone_edge_tol_px") or 6.0)
+        names = self._run3_reference_names(cm, mapping, site, c, explicit)
+        for name in names:
+            line = self._run3_named_line(name, tol)
+            if len(line) == 2:
+                return line, name
+        return [], (names[0] if names else None)
+
+    def _run3_display_ref_lines(self, c):
+        """[(label, (x1, y1), (x2, y2))] in video pixels: the reference line of every stream that Gap Acceptance (the streams it waits for) and Headway
+        (its Movements) use, as resolved for the run (`c`). Streams that share one line (1-3-4 and 1-3-6-7 -> Zone 1|3) give one entry named after both."""
+        streams = []
+        if c.get("gap_enabled"):
+            for m in c.get("gap_movements") or []:
+                for conflict in RUN3_GAP_CONFLICT_MAP.get(m, []):
+                    if conflict not in streams:
+                        streams.append(conflict)
+        if c.get("headway_enabled"):
+            for m in c.get("headway_movements") or []:
+                if m not in streams:
+                    streams.append(m)
+        if not streams:
+            return []
+        try:
+            mapping = self._run3_parse_reference_mapping(c.get("mapping_text") or "")
+        except Exception:
+            mapping = {}
+        hw_text = (c.get("headway_mapping_text") or "").strip()
+        try:
+            explicit = self._run3_parse_reference_mapping(hw_text) if hw_text else {}
+        except Exception:
+            explicit = {}
+        site = c.get("site_id", "")
+        found = []
+        for cm in MOVEMENT_IDS:
+            if cm not in streams:
+                continue
+            line, name = self._run3_reference_line(cm, mapping, site, c, explicit if cm in (c.get("headway_movements") or []) else None)
+            if len(line) != 2:
+                continue
+            key = tuple(int(round(v)) for q in line for v in q)
+            for item in found:
+                if item[0] == key:
+                    item[2].append(cm)
+                    break
+            else:
+                found.append((key, name, [cm], line))
+        return [(f"{name} ({', '.join(ms)})", tuple(line[0]), tuple(line[1])) for _k, name, ms, line in found]
+
+    def _display_ref_lines(self):
+        """The reference lines to draw, from what is set now (pixels); [] when the settings are incomplete."""
+        try:
+            return self._run3_display_ref_lines(self._run3_snapshot_config())
+        except Exception:
+            log.debug("reference lines for the display", exc_info=True)
+            return []
+
+    def _run3_stream_events(self, tracks, movement_by_id, cm, mapping, site, c=None, explicit=None):
+        """The reference event of every vehicle of stream `cm` (a Movement): (time, id, class, reference label, qc flag).
+        = its first crossing of the Line mapped to (site, cm); with no usable Line (fewer than 2 vehicles crossing it) its first
+        observation in the stream's origin zone (GAP_REFERENCE_ZONE). Returns (events, basis) with basis "Line" / "Origin_Zone_Entry".
+        Used by Gap Acceptance (gaps) and Headway."""
+        line, lname = self._run3_reference_line(cm, mapping, site, c, explicit)
+        events = []
+        if len(line) == 2:
+            for tid, rows in tracks.items():
+                if movement_by_id.get(str(tid), "") != cm:
+                    continue
+                prev = prev_t = None
+                for r in rows:
+                    pnt, t = r.get("_point"), r.get("_timestamp")
+                    if pnt is None or t is None:
+                        continue
+                    if prev is not None:
+                        cross_t = self._run3_line_crossing_time(prev, prev_t, pnt, t, line)
+                        if cross_t is not None:
+                            events.append((float(cross_t), str(tid), r.get("class_name", ""), lname, ""))
+                            break      # a vehicle crosses its reference line ONCE (first crossing)
+                    prev, prev_t = pnt, t
+        basis = "Line"
+        if len(events) < 2:
+            events, basis = [], "Origin_Zone_Entry"
+            ref_zone = GAP_REFERENCE_ZONE.get(cm)
+            for tid, rows in tracks.items():
+                if movement_by_id.get(str(tid), "") != cm or ref_zone is None:
+                    continue
+                cand = [r for r in rows if r.get("_zone_num") == ref_zone and r.get("_timestamp") is not None]
+                if cand:
+                    first = min(cand, key=lambda r: r["_timestamp"])
+                    events.append((float(first["_timestamp"]), str(tid), first.get("class_name", ""),
+                                   f"Observed Zone {ref_zone}",
+                                   "Reference_Time_From_Origin_Zone_Entry" + ("" if not lname else "_Line_Unusable")))
+        return events, basis
+
+    def _run3_headway(self, tracks, c, mapping, movement_by_id, explicit=None):
+        """Headway.csv rows (SPEC 9.1): for every selected Movement, each vehicle is paired with the vehicle it follows (headway_pairs: the nearest earlier
+        vehicle whose path the follower is in; vehicles beside it are skipped). Reference time = the first crossing of the Line mapped to the Movement
+        (Headway's own Line / Edge entry first, then the shared zone edge or Gap Acceptance's Line per reference_line_source; else the origin zone, see _run3_reference_line).
+        Time_Headway_s = the follower's time - the lead's time; Time_Gap_s = Time_Headway_s - lead length / lead speed
+        (blank when the lead is slower than ttc_min_speed_kmh; negative = the two bodies overlap in time)."""
+        site = c["site_id"]
+        lengths = c.get("lengths") or {}
+        widths = c.get("widths") or {}
+        min_speed = c.get("ttc_min_speed_kmh", 5.0)
+        max_s = c.get("headway_max_s")
+        wanted = c.get("headway_movements")
+        wanted = list(MOVEMENT_IDS) if wanted is None else list(wanted)
+        arrays = {}
+
+        def arr(tid):
+            if tid not in arrays:
+                rows = [r for r in tracks.get(tid, []) if r.get("_m") is not None and r.get("_timestamp") is not None]
+                rows.sort(key=lambda r: r["_timestamp"])
+                arrays[tid] = (np.array([r["_timestamp"] for r in rows], dtype=float), np.array([r["_m"] for r in rows], dtype=float).reshape(-1, 2))
+            return arrays[tid]
+
+        def ref_position(tid, t):
+            ts, ps = arr(tid)
+            if len(ts) == 0:
+                return None
+            return (float(np.interp(t, ts, ps[:, 0])), float(np.interp(t, ts, ps[:, 1])))
+
+        def path_of(tid):
+            ts, ps = arr(tid)
+            return ps if len(ts) else None
+
+        def half_sum(ca, cb):
+            wa = widths.get(self._run3_canonical_class(ca)) or 1.8
+            wb = widths.get(self._run3_canonical_class(cb)) or 1.8
+            return (wa + wb) / 2.0
+
+        rows_out = []
+        for cm in MOVEMENT_IDS:
+            if cm not in wanted:
+                continue
+            events, basis = self._run3_stream_events(tracks, movement_by_id, cm, mapping, site, c, explicit)
+            for g in headway_pairs(events, ref_position, path_of, half_sum, max_s):
+                lead_speed = self._run3_speed_at(tracks.get(g["id_a"], []), g["gap_start"])
+                length = lengths.get(self._run3_canonical_class(g["class_a"]))
+                headway = g["gap_end"] - g["gap_start"]
+                time_gap = None
+                qc = [g["qc"]]
+                if lead_speed is not None and lead_speed > min_speed and length:
+                    time_gap = headway - length / (lead_speed / 3.6)
+                    if time_gap < 0:
+                        qc.append("Negative_Time_Gap")
+                elif length:
+                    qc.append("Lead_Too_Slow_For_Time_Gap")
+                rows_out.append({
+                    "Site_ID": site, "Movement": cm, "Reference_Line": g["reference"],
+                    "Lead_Vehicle_ID": g["id_a"], "Lead_Vehicle_Class": g["class_a"],
+                    "Lag_Vehicle_ID": g["id_b"], "Lag_Vehicle_Class": g["class_b"],
+                    "Lead_Time_s": f"{g['gap_start']:.3f}", "Lag_Time_s": f"{g['gap_end']:.3f}",
+                    "Time_Headway_s": f"{headway:.3f}",
+                    "Lead_Speed_kmh": self._fmt(lead_speed, 3), "Lead_Length_m": "" if not length else f"{length:.2f}",
+                    "Time_Gap_s": self._fmt(time_gap, 3), "Lateral_To_Lead_Path_m": self._fmt(g["lateral_m"], 3),
+                    "QC_Flag": ";".join(dict.fromkeys(x for x in qc if x)),
+                })
+        return rows_out
+
+    def _run3_gap(self, tracks, c, mapping, movement_by_id):
+        """Binary Gap Acceptance decisions (accepted / rejected gaps) of waiting drivers.
+
+        Subjects: movements 1-3-4, 1-3-6-7, 5-6-3-1 (GAP_PATHS: wait zone -> conflict
+        ("middle") zones -> target zone). Conflicting streams of each stage: GAP_STAGE_CONFLICTS
+        (several streams may apply at once). A stream's reference time per vehicle = its first
+        crossing of the mapped Line, or (no usable Line) its first observation in the stream's
+        origin zone. Gap = time between consecutive vehicles of one stream.
+
+        Staged decisions (SPEC 6.1): every middle zone is one decision stage = "enter this zone now?".
+          Stage 1 starts when the driver is first seen in the wait zone (1/5); stage k > 1 starts
+          when it entered the previous middle zone. Stage k ends when it enters middle zone k.
+          Gaps that close before that entry = Rejected; the gap still open at the entry = Accepted
+          (the smallest remaining gap controls when several streams apply). An accepted stage is
+          never reversed. A driver that never stops simply gets one accepted row per stage.
+        Waiting_Time_s = stage end - stage start (raw, no queue correction); Was_Stopped = the driver
+        was slower than the threshold for at least the minimum duration inside that stage;
+        Stopped_In_Conflict_Zone (last stage only) = it stopped inside the last middle zone (a flag,
+        it does not change the decision). Available_Gap_s = time left until the gap closes."""
+        selected = c["gap_movements"]
+        site = c["site_id"]
+        thr = c["waiting_threshold"]
+        hold_min = c["hold_min_duration_s"]
+        diag = {"subjects": 0, "subjects_without_conflict_zone_entry": 0, "stage_events": 0,
+                "stopped_stages": 0, "stopped_in_conflict_zone": 0, "streams": {}}
+
+        # ---- 1) reference events and gap intervals of every stream that is needed ----
+        streams = sorted({cm for mv in selected for cm in RUN3_GAP_CONFLICT_MAP.get(mv, [])})
+        intervals = {}
+        for cm in streams:
+            events, basis = self._run3_stream_events(tracks, movement_by_id, cm, mapping, site, c)
+            intervals[cm] = build_gap_intervals(events)
+            diag["streams"][cm] = {"basis": basis, "vehicles": len({e[1] for e in events}), "gaps": len(intervals[cm])}
+
+        # ---- 2) every subject ----
+        rows_out = []
+        eps = 1e-12
+
+        def pick(cands):
+            return min(cands, key=lambda o: (o["gap"], o["conflict_movement"], o["id_a"], o["id_b"])) if cands else None
+
+        for tid, raw_rows in tracks.items():
+            tid = str(tid)
+            movement = movement_by_id.get(tid, "")
+            if movement not in selected or movement not in GAP_PATHS:
+                continue
+            path = GAP_PATHS[movement]
+            wait_zones, middle_zones = set(path["wait"]), set(path["middle"])
+            rows = sorted((r for r in raw_rows if r.get("_timestamp") is not None), key=lambda r: r["_timestamp"])
+            decision_rows = [r for r in rows if r.get("_zone_num") in wait_zones | middle_zones]
+            if not decision_rows:
+                continue
+            diag["subjects"] += 1
+            wait_rows = [r for r in decision_rows if r.get("_zone_num") in wait_zones]
+            wait_start = float((wait_rows[0] if wait_rows else decision_rows[0])["_timestamp"])   # no wait row: track starts inside
+            # entry time of every middle zone, in order
+            entries = []
+            t_from = wait_start
+            for mz in path["middle"]:
+                cand = [r for r in rows if r["_timestamp"] >= t_from and r.get("_zone_num") == mz]
+                if not cand:
+                    break
+                t_from = float(cand[0]["_timestamp"])
+                entries.append((mz, t_from))
+            if not entries:
+                diag["subjects_without_conflict_zone_entry"] += 1
+                continue
+            stage_conf = GAP_STAGE_CONFLICTS.get(movement, {})
+
+            stage_rows = []
+            start = wait_start
+            for no, (mz, et) in enumerate(entries, 1):
+                staging = (wait_zones if no == 1 else {entries[no - 2][0]}) | {mz}
+                window = [r for r in rows if r.get("_zone_num") in staging and start <= r["_timestamp"] <= et + eps]
+                samples = [(float(r["_timestamp"]), r["_m"][0], r["_m"][1], True) for r in window if r.get("_m") is not None]
+                stopped = int(bool(samples) and find_hold(samples, thr, hold_min)["stop_start"] is not None)
+                diag["stopped_stages"] += stopped
+                cur = []
+                for cm in stage_conf.get(mz, []):
+                    for gap in intervals.get(cm, []):
+                        gs, ge = gap["gap_start"], gap["gap_end"]
+                        if ge <= start or gs > et:
+                            continue
+                        overlap = [r for r in window if max(gs, start) <= r["_timestamp"] < min(ge, et + eps)]
+                        if not overlap:
+                            continue
+                        contains = gs <= et < ge
+                        eval_t = et if contains else float(overlap[0]["_timestamp"])
+                        avail = ge - eval_t
+                        if avail <= 0:
+                            continue
+                        cur.append({**gap, "conflict_movement": cm, "stage_no": no, "stage_zone": mz, "gap": avail,
+                                    "opportunity_time": eval_t, "start": start, "anchor": et, "was_stopped": stopped,
+                                    "decision_zone": int(mz if contains else (overlap[0].get("_zone_num") or 0)),
+                                    "contains_anchor": contains})
+                controlling = pick([o for o in cur if o["contains_anchor"]])
+                for o in cur:
+                    if o is controlling:
+                        o["accepted"], o["basis"] = 1, "Zone_Entry_Gap_Open"
+                    elif o["gap_end"] <= et:
+                        o["accepted"], o["basis"] = 0, "Gap_Closed_Before_Zone_Entry"
+                    else:
+                        o["accepted"], o["basis"] = None, "Simultaneous_Alternative_Omitted"
+                cur = [o for o in cur if o["accepted"] is not None]
+                diag["stage_events"] += int(bool(cur))
+                stage_rows.extend(cur)
+                start = et
+
+            # did the driver stop inside the LAST middle zone? (flag only)
+            last_zone, last_et = entries[-1]
+            tail = [(float(r["_timestamp"]), r["_m"][0], r["_m"][1], r.get("_zone_num") == last_zone)
+                    for r in rows if r["_timestamp"] >= last_et and r.get("_m") is not None]
+            in_zone_stop = int(bool(tail) and find_hold(tail, thr, hold_min)["stop_start"] is not None)
+            diag["stopped_in_conflict_zone"] += in_zone_stop
+
+            # -- rows --
+            subject_class = rows[0].get("class_name", "") if rows else ""
+            ordered = sorted(stage_rows, key=lambda o: (o["stage_no"], o["opportunity_time"], -int(o["accepted"]),
+                                                        o["conflict_movement"], o["id_a"], o["id_b"]))
+            seen = set()
+            number = 0
+            for o in ordered:
+                key = (o["stage_no"], o["conflict_movement"], o["id_a"], o["id_b"], round(o["gap_start"], 6), round(o["gap_end"], 6))
+                if key in seen:
+                    continue
+                seen.add(key)
+                number += 1
+                qc = [o.get("qc", ""), o.get("basis", "")]
+                sp_subject = self._run3_speed_at(rows, o["opportunity_time"])
+                sp_a = self._run3_speed_at(tracks.get(o["id_a"], []), o["gap_start"])
+                sp_b = self._run3_speed_at(tracks.get(o["id_b"], []), o["gap_end"])
+                last = o["stage_no"] == len(entries)
+                rows_out.append({
+                    "Site_ID": site, "Decision_Event_ID": f"{tid}_S{o['stage_no']}_{o['anchor']:.3f}", "Opportunity_No": number,
+                    "Subject_ID": tid, "Subject_Class": subject_class, "Subject_Movement": movement,
+                    "Decision_Stage": f"Enter_Zone_{o['stage_zone']}", "Stage_No": o["stage_no"],
+                    "Decision_Zone": o["decision_zone"],
+                    "Gap_Evaluation_Time": f"{o['opportunity_time']:.3f}",
+                    "Waiting_Time_s": f"{max(0.0, o['opportunity_time'] - o['start']):.3f}",
+                    "Was_Stopped": o["was_stopped"],
+                    "Stopped_In_Conflict_Zone": in_zone_stop if last else 0,
+                    "Conflicting_Movement": o["conflict_movement"],
+                    "Conflicting_ID_A": o["id_a"], "Conflicting_Class_A": o["class_a"],
+                    "Conflicting_ID_B": o["id_b"], "Conflicting_Class_B": o["class_b"],
+                    "Reference_Line": o["reference"],
+                    "Gap_Start_Time": f"{o['gap_start']:.3f}", "Gap_End_Time": f"{o['gap_end']:.3f}",
+                    "Available_Gap_s": f"{o['gap']:.3f}",
+                    "Subject_Speed_kmh": self._fmt(sp_subject, 3), "Conflict_Speed_A_kmh": self._fmt(sp_a, 3),
+                    "Conflict_Speed_B_kmh": self._fmt(sp_b, 3),
+                    "Gap_Role": "Accepted" if o["accepted"] == 1 else "Rejected", "Gap_Acceptance": int(o["accepted"]),
+                    "Decision_Time": f"{o['opportunity_time']:.3f}",
+                    "QC_Flag": ";".join(dict.fromkeys(x for x in qc if x)),
+                })
+        self._run3_gap_diag = diag
+        return rows_out
+
+    @staticmethod
+    def _run3_raff(accepted, rejected):
+        if not accepted or not rejected:
+            return None
+        candidates = sorted(set([float(v) for v in accepted + rejected if v is not None and v > 0]))
+        if not candidates:
+            return None
+        acc = np.asarray(accepted, dtype=float); rej = np.asarray(rejected, dtype=float)
+        best = None
+        for g in candidates:
+            diff = abs(np.mean(acc >= g) - np.mean(rej <= g))
+            if best is None or diff < best[0]:
+                best = (diff, g)
+        return float(best[1]) if best else None
+
+    @staticmethod
+    def _run3_mle_driver_intervals(intervals):
+        if len(intervals) < 1:
+            return None
+        try:
+            from scipy.optimize import minimize
+            from scipy.special import ndtr
+        except Exception:
+            return None
+        lowers = np.array([max(1e-6, r) for r, a in intervals], dtype=float)
+        uppers = np.array([max(r + 1e-6, a) for r, a in intervals], dtype=float)
+        logs_l = np.log(lowers); logs_u = np.log(uppers)
+        mu0 = float(np.median((logs_l + logs_u) / 2.0))
+        sigma0 = float(max(0.25, np.std((logs_l + logs_u) / 2.0)))
+        def nll(x):
+            mu, log_sigma = x
+            sigma = math.exp(log_sigma)
+            probs = ndtr((logs_u - mu) / sigma) - ndtr((logs_l - mu) / sigma)
+            return float(-np.sum(np.log(np.clip(probs, 1e-15, None))))
+        res = minimize(nll, x0=np.array([mu0, math.log(sigma0)]), method="Nelder-Mead")
+        if not res.success:
+            return None
+        mu, log_sigma = res.x
+        return {"mu": float(mu), "sigma": float(math.exp(log_sigma)),
+                "critical_gap_median": float(math.exp(mu)), "negative_log_likelihood": float(res.fun)}
+
+    # ========================================================
+    # LATERAL CLEARANCE
+    # ========================================================
+
+    def _run3_lateral_clearance(self, tracks, c, sequence_by_id):
+        """Lateral Clearance (SPEC v28 section 5).
+
+        Pairs (A, B) of ANY two vehicle classes moving in the SAME DIRECTION (their
+        zone sequences share a transition touching the zone) and standing in the
+        SAME zone at (nearly) the same time. If a pair contains a motorcycle it is
+        A; otherwise A is the earlier ID, so each pair is reported once. Axes come
+        from A's heading; a sample is only measured when the two boxes overlap
+        along the direction of travel. Neighbours are found through a time index."""
+        import bisect
+        zones = c["lc_zones"]
+        moto_pairs_only = c["lc_motorcycle_pairs_only"]
+        along_limit = c.get("lc_along_limit_m") or None          # None = (L_A + L_B) / 2
+        max_lateral = c.get("lc_max_lateral_m") or None          # None = no sideways limit
+        widths = {k: v for k, v in c["widths"].items() if v is not None}
+        lengths = {k: v for k, v in c["lengths"].items() if v is not None}
+        tol = self._run3_time_tolerance(tracks)
+        order = {tid: i for i, tid in enumerate(tracks)}
+        perspective = c["perspective"] is not None
+        diag = {"a_samples": 0, "a_no_heading": 0, "pairs_same_direction": 0, "pairs_other_direction": 0,
+                "time_matched": 0, "no_box_overlap": 0, "too_far_sideways": 0, "rows": 0, "missing_dimension_class": set(),
+                "motorcycle_pairs_only": moto_pairs_only,
+                "along_limit_m": along_limit if along_limit else "auto (L_A+L_B)/2", "max_lateral_m": max_lateral}
+
+        # zone -> tid -> (timestamps, rows) ; zone -> sorted list of (start, end, tid)
+        obs = defaultdict(dict); spans = defaultdict(list)
+        classes = {}
+        for tid, rows in tracks.items():
+            if not rows:
+                continue
+            cls = self._run3_canonical_class(rows[0].get("class_name", ""))
+            classes[tid] = cls
+            per_zone = defaultdict(list)
+            for r in rows:
+                if r.get("_mc") is not None and r.get("_zone_num") in zones:
+                    per_zone[r["_zone_num"]].append(r)
+            for z, lst in per_zone.items():
+                obs[z][tid] = ([r["_timestamp"] for r in lst], lst)
+                spans[z].append((lst[0]["_timestamp"], lst[-1]["_timestamp"], tid))
+        for z in spans:
+            spans[z].sort()
+        span_starts = {z: [s_[0] for s_ in spans[z]] for z in spans}
+
+        def has_dims(cls):
+            return cls in widths and cls in lengths
+
+        out = []
+        for tid_a, rows_a in tracks.items():
+            cls_a = classes.get(tid_a)
+            if not cls_a or cls_a.lower() == "person":
+                continue
+            if not has_dims(cls_a):
+                diag["missing_dimension_class"].add(cls_a)
+                continue
+            seq_a = sequence_by_id.get(str(tid_a), [])
+            valid = [r for r in rows_a if r.get("_m") is not None]
+            if len(valid) < 2:
+                continue
+            heads = track_headings([r["_timestamp"] for r in valid], [r["_m"] for r in valid],
+                                   c["lc_heading_window_s"], 0.5)
+            for r, h in zip(valid, heads):
+                r["_h"] = h
+            a_obs = [r for r in rows_a if r.get("_mc") is not None and r.get("_zone_num") in zones and "_h" in r]
+            if not a_obs:
+                continue
+            neighbours = {}
+            for z in {r["_zone_num"] for r in a_obs}:
+                a_ts = obs[z][tid_a][0]
+                hi = bisect.bisect_right(span_starts[z], a_ts[-1] + tol)
+                cands = []
+                for (st, en, tid_b) in spans[z][:hi]:
+                    if en < a_ts[0] - tol or tid_b == tid_a:
+                        continue
+                    cls_b = classes.get(tid_b)
+                    if not cls_b or cls_b.lower() == "person":
+                        continue
+                    if not has_dims(cls_b):
+                        diag["missing_dimension_class"].add(cls_b)
+                        continue
+                    a_moto, b_moto = cls_a == "Motorcycle", cls_b == "Motorcycle"
+                    if moto_pairs_only and not (a_moto or b_moto):
+                        continue
+                    # which vehicle of the pair is A?
+                    if a_moto != b_moto:
+                        if not a_moto:
+                            continue                      # the motorcycle is A
+                    elif order[tid_b] < order[tid_a]:
+                        continue                          # same kind: A = earlier ID
+                    if not same_direction_in_zone(seq_a, sequence_by_id.get(str(tid_b), []), z):
+                        diag["pairs_other_direction"] += 1
+                        continue
+                    diag["pairs_same_direction"] += 1
+                    cands.append(tid_b)
+                neighbours[z] = sorted(cands, key=lambda t: order[t])
+            pair_rows = defaultdict(list)
+            for r_a in a_obs:
+                diag["a_samples"] += 1
+                if r_a["_h"] is None:
+                    diag["a_no_heading"] += 1
+                    continue
+                z = r_a["_zone_num"]; ta = r_a["_timestamp"]
+                for tid_b in neighbours.get(z, []):
+                    ts_b, rows_b = obs[z][tid_b]
+                    k = bisect.bisect_left(ts_b, ta)
+                    best = None
+                    for j in (k - 1, k):
+                        if 0 <= j < len(ts_b):
+                            d = abs(ts_b[j] - ta)
+                            if best is None or d < best[0]:
+                                best = (d, j)
+                    if best is None or best[0] > tol:
+                        continue
+                    r_b = rows_b[best[1]]
+                    diag["time_matched"] += 1
+                    cls_b = classes[tid_b]
+                    res = lateral_clearance(r_a["_mc"], r_a["_h"], r_b["_mc"],
+                                            lengths[cls_a], lengths[cls_b], widths[cls_a], widths[cls_b],
+                                            along_limit, max_lateral)
+                    if not res["Overlap"]:
+                        diag["no_box_overlap"] += 1
+                        continue
+                    if res["Too_Far"]:
+                        diag["too_far_sideways"] += 1
+                        continue
+                    pair_rows[tid_b].append({
+                        "Site_ID": c["site_id"], "Pair_ID": f"{tid_a}_{tid_b}",
+                        "Timestamp": f"{ta:.6f}", "Zone": f"Zone {z}",
+                        "Vehicle_A_ID": tid_a, "Vehicle_A_Class": cls_a,
+                        "Vehicle_B_ID": tid_b, "Vehicle_B_Class": cls_b,
+                        "Zone_Sequence_A": "-".join(str(x) for x in seq_a),
+                        "Zone_Sequence_B": "-".join(str(x) for x in sequence_by_id.get(str(tid_b), [])),
+                        "Along_m": f"{res['Along_m']:.4f}", "LS_Meter": f"{res['Lateral_m']:.6f}",
+                        "Signed_Lateral_m": f"{res['Signed_Lateral_m']:.6f}",
+                        "Width_A_m": f"{widths[cls_a]:.6f}", "Width_B_m": f"{widths[cls_b]:.6f}",
+                        "Length_A_m": f"{lengths[cls_a]:.6f}", "Length_B_m": f"{lengths[cls_b]:.6f}",
+                        "Lateral_Clearance_m": f"{res['Clearance_m']:.6f}",
+                        "QC_Flag": ("Negative_Lateral_Clearance" if res["Clearance_m"] < 0 else "") + (";Perspective_Homography" if perspective else ""),
+                    })
+            for tid_b in sorted(pair_rows, key=lambda t: order[t]):
+                out.extend(pair_rows[tid_b])
+        diag["rows"] = len(out)
+        diag["missing_dimension_class"] = sorted(diag["missing_dimension_class"])
+        diag["time_tolerance_s"] = round(tol, 6)
+        return out, diag
+
+    @staticmethod
+    def _run3_lc_pair_summary(rows):
+        """One row per (A, B, zone): number of samples, minimum / mean clearance."""
+        groups = defaultdict(list)
+        for r in rows:
+            groups[(r["Pair_ID"], r["Zone"])].append(r)
+        out = []
+        for (pair, zone), lst in groups.items():
+            ys = [float(r["Lateral_Clearance_m"]) for r in lst]
+            ts = [float(r["Timestamp"]) for r in lst]
+            first = lst[0]
+            out.append({
+                "Site_ID": first["Site_ID"], "Pair_ID": pair, "Zone": zone,
+                "Vehicle_A_ID": first["Vehicle_A_ID"], "Vehicle_A_Class": first["Vehicle_A_Class"],
+                "Vehicle_B_ID": first["Vehicle_B_ID"], "Vehicle_B_Class": first["Vehicle_B_Class"],
+                "Zone_Sequence_A": first["Zone_Sequence_A"], "Zone_Sequence_B": first["Zone_Sequence_B"],
+                "Start_Time": f"{min(ts):.6f}", "End_Time": f"{max(ts):.6f}", "Samples": len(ys),
+                "Lateral_Clearance_Min_m": f"{min(ys):.6f}", "Lateral_Clearance_Mean_m": f"{sum(ys) / len(ys):.6f}",
+                "QC_Flag": "Negative_Lateral_Clearance" if min(ys) < 0 else "",
+            })
+        return out
+
+    # ========================================================
+    # PET (Zones 3 and/or 6)
+    # ========================================================
+
+    @staticmethod
+    def _run3_segment_intersection(a0, a1, b0, b1):
+        x1, y1 = a0; x2, y2 = a1; x3, y3 = b0; x4, y4 = b1
+        den = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+        if abs(den) < 1e-9:
+            return None
+        t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / den
+        u = -((x1 - x2) * (y1 - y3) - (y1 - y2) * (x1 - x3)) / den
+        if 0 <= t <= 1 and 0 <= u <= 1:
+            return t, u, (x1 + t * (x2 - x1), y1 + t * (y2 - y1))
+        return None
+
+    @staticmethod
+    def _run3_best_intersection(A, B):
+        cr = path_crossing(A, B)
+        return None if cr is None else (cr["score"], cr["ia"], cr["ib"], cr["ip"])
+
+    @staticmethod
+    def _run3_mean_speed_kmh(P, t):
+        """Mean speed (km/h) over the samples of a vehicle in the zone: path length / time. None when it cannot be told."""
+        if len(t) < 2 or t[-1] <= t[0]:
+            return None
+        return float(np.hypot(np.diff(P[:, 0]), np.diff(P[:, 1])).sum() / (t[-1] - t[0]) * 3.6)
+
+    def _run3_pet(self, tracks, c, movement_by_id, movement_source_by_id, sequence_by_id=None):
+        """PET per conflict zone. Timestamps come only from observed frames.
+
+        V27 changes: (1) distances use metric coordinates in BOTH calibration
+        modes (V26 compared pixel distances with the metre interaction radius
+        when perspective was off); (2) Zone 7 supported; (3) pairs whose zone
+        time windows are further apart than PET max are skipped (PET can
+        never be smaller than that gap, so no valid event is lost);
+        (4) segment intersection is vectorised.
+        """
+        pet_max = c["pet_max_s"]; threshold = c["pet_threshold"]; min_speed = c.get("pet_min_speed_kmh")
+        self._run3_pet_shapes = {}
+        events = []
+        ids = list(tracks)
+        diag = {"zone_tracks": {}, "pairs_with_both_in_zone": 0, "pairs_skipped_time_window": 0,
+                "no_crossing": 0, "no_movement_both": 0, "interaction_candidates": 0,
+                "excluded_by_type": 0, "excluded_rear_end": 0, "excluded_lane_change": 0, "excluded_crossing": 0, "above_pet_max": 0, "slow_vehicle": 0, "interpolated_gap": 0,
+                "tracks_with_movement": sum(1 for t in ids if movement_by_id.get(t))}
+        out = []
+        for zone in sorted(c["pet_zones"]):
+            zrows = {}
+            for tid in ids:
+                lst = [r for r in tracks[tid] if r.get("_zone_num") == zone and r.get("_m") is not None]
+                if lst:
+                    zrows[tid] = (lst, np.array([r["_m"] for r in lst], dtype=float),
+                                  np.array([r["_timestamp"] for r in lst], dtype=float))
+            diag["zone_tracks"][f"Zone {zone}"] = len(zrows)
+            zids = [t for t in ids if t in zrows]
+            for i, a_id in enumerate(zids):
+                a_rows, A, At = zrows[a_id]
+                for b_id in zids[i + 1:]:
+                    b_rows, B, Bt = zrows[b_id]
+                    diag["pairs_with_both_in_zone"] += 1
+                    if pet_max is not None:
+                        window_gap = max(At[0], Bt[0]) - min(At[-1], Bt[-1])
+                        if window_gap > pet_max:
+                            diag["pairs_skipped_time_window"] += 1
+                            continue
+                    ma = movement_by_id.get(a_id, ""); mb = movement_by_id.get(b_id, "")
+                    if not ma and not mb:
+                        diag["no_movement_both"] += 1
+                        continue
+                    # A PET pair needs a real crossing point of the two trajectories (any Movement pair, same Movement included); there is no
+                    # "closest approach" substitute and no radius: the conflict point is the crossing itself. t_A / t_B = the time each vehicle is AT that
+                    # point (linear between its two samples); PET = the later minus the earlier (the point-only form of "the second one arrives after the
+                    # first one has left"; the vehicle size is not subtracted). Two vehicles at the point at the same time give PET 0.
+                    cr = path_crossing(A, B) if boxes_overlap(A, B) else None      # paths whose bounding boxes do not touch cannot cross (PKT 1.33.0)
+                    if cr is None:
+                        diag["no_crossing"] += 1
+                        continue
+                    ip = cr["ip"]
+                    diag["interaction_candidates"] += 1
+                    t_a, t_b = path_pass_time(At, cr["seg_a"]), path_pass_time(Bt, cr["seg_b"])
+                    ia_, ib_ = cr["seg_a"][0], cr["seg_b"][0]
+                    # Conflict type as TTC does it: the angle between the two velocity vectors where the vehicles pass the crossing (same limits as
+                    # TTC: < 30 Rear-end, 30 - 85 Lane change, > 85 Crossing; a vehicle that stands still there = Unclassified)
+                    theta = conflict_angle_deg(path_velocity_at(A, At, t_a, PET_SPEED_WINDOW_S, cr["seg_a"]), path_velocity_at(B, Bt, t_b, PET_SPEED_WINDOW_S, cr["seg_b"]),
+                                               c.get("ttc_min_speed_kmh", 5.0) / 3.6)
+                    ctype = ttc_conflict_type(theta, c.get("ttc_angle_rear_end_deg", TTC_ANGLE_REAR_END_DEG), c.get("ttc_angle_crossing_deg", TTC_ANGLE_CROSSING_DEG))
+                    if not pet_type_included(ctype, c):
+                        diag["excluded_by_type"] += 1
+                        diag["excluded_" + ctype.lower().replace("-", "_").replace(" ", "_")] += 1      # excluded_rear_end / excluded_lane_change / excluded_crossing
+                        continue
+                    gap_flag = max(At[ia_ + 1] - At[ia_], Bt[ib_ + 1] - Bt[ib_]) > PET_GAP_FLAG_S
+                    if gap_flag:
+                        diag["interpolated_gap"] += 1
+                    # PET at the crossing point: t_A / t_B = the time each vehicle is AT the crossing of the two paths (linear between its two samples);
+                    # PET = the later minus the earlier (the vehicle size is not subtracted). Two vehicles at the point at the same time give PET 0.
+                    t1, t2 = (t_a, t_b) if t_a <= t_b else (t_b, t_a)
+                    span_start, span_end = t1, t2
+                    pet = t2 - t1
+                    # Speed_A/B = the speed each vehicle had while passing the crossing point: its samples within +-PET_SPEED_WINDOW_S/2 of the time it
+                    # was there (None = fewer than 2 samples: blank in the CSV). It also feeds the optional minimum-speed filter (blank = no limit).
+                    ma_ = np.abs(At - t_a) <= PET_SPEED_WINDOW_S / 2.0
+                    mb_ = np.abs(Bt - t_b) <= PET_SPEED_WINDOW_S / 2.0
+                    sp_a, sp_b = self._run3_mean_speed_kmh(A[ma_], At[ma_]), self._run3_mean_speed_kmh(B[mb_], Bt[mb_])
+                    if min_speed is not None and ((sp_a is not None and sp_a < min_speed) or (sp_b is not None and sp_b < min_speed)):
+                        diag["slow_vehicle"] += 1
+                        continue
+                    if pet_max is not None and pet > pet_max:
+                        diag["above_pet_max"] += 1
+                        continue
+                    out.append({
+                        "Site_ID": c["site_id"],
+                        "Interaction_ID": f"{a_id}_{b_id}_Z{zone}_{span_start:.6f}",
+                        "Vehicle_ID_A": a_id, "Vehicle_Class_A": a_rows[0].get("class_name", ""), "Movement_A": ma,
+                        "Vehicle_ID_B": b_id, "Vehicle_Class_B": b_rows[0].get("class_name", ""), "Movement_B": mb,
+                        "Conflict_Type": ctype, "Theta_deg": "" if theta is None else f"{theta:.2f}", "Conflict_Zone": f"Zone {zone}",
+                        "Interaction_Start": f"{span_start:.6f}", "Interaction_End": f"{span_end:.6f}",
+                        "Cross_X_m": f"{ip[0]:.4f}", "Cross_Y_m": f"{ip[1]:.4f}",
+                        "T1_Exit_Time": f"{t1:.6f}", "T2_Entry_Time": f"{t2:.6f}", "PET_s": f"{pet:.6f}",
+                        "Speed_A_kmh": self._fmt(sp_a, 3), "Speed_B_kmh": self._fmt(sp_b, 3),
+                        "PET_Level": risk_level_low_is_risky(pet, c["risk_limits"]["pet_s"]),
+                        "Speed_Level": (risk_level_high_is_risky(max(v for v in (sp_a, sp_b) if v is not None), c["risk_limits"]["speed_kmh"])
+                                        if (sp_a is not None or sp_b is not None) else ""),
+                        "PET_Risk_Level": combine_risk(risk_level_low_is_risky(pet, c["risk_limits"]["pet_s"]),
+                                                       (risk_level_high_is_risky(max(v for v in (sp_a, sp_b) if v is not None), c["risk_limits"]["speed_kmh"])
+                                                        if (sp_a is not None or sp_b is not None) else "")),
+                        "QC_Flag": ";".join(x for x in [
+                            "Threshold_At_or_Below" if pet <= threshold else "",
+                            "Interpolated_Across_Gap" if gap_flag else "",
+                            "Movement_A_Not_Observed" if not ma else "",
+                            "Movement_B_Not_Observed" if not mb else "",
+                            f"MovementSourceA={movement_source_by_id.get(a_id, '')}" if ma else "",
+                            f"MovementSourceB={movement_source_by_id.get(b_id, '')}" if mb else "",
+                        ] if x),
+                    })
+                    events.append({"a": a_id, "b": b_id, "t1": t1, "t2": t2, "pet": pet, "ip": ip})
+        # per picture frame: the crossing marks to draw - only once the result exists: from the moment the second vehicle reaches the crossing (t2)
+        # for PET_SHOW_TAIL_S, then the mark disappears (before PKT 1.33.2 it was on from 1 s before the first vehicle, which cluttered the picture)
+        shapes, cache = defaultdict(list), {}
+
+        def frames_of(tid):
+            if tid not in cache:
+                lst = []
+                for r in tracks[tid]:
+                    try:
+                        fr = int(float(r.get("frame", "")))
+                    except Exception:
+                        fr = int(round(r["_timestamp"] * 1000))
+                    lst.append((r["_timestamp"], fr, r.get("_point")))
+                cache[tid] = lst
+            return cache[tid]
+        for ev in events:
+            lo, hi = ev["t2"] - PET_SHOW_LEAD_S, ev["t2"] + PET_SHOW_TAIL_S
+            seen = {}
+            for tid in (ev["a"], ev["b"]):
+                for t_, fr, px in frames_of(tid):
+                    if lo <= t_ <= hi and px is not None and fr not in seen:
+                        seen[fr] = px
+            for fr, px in seen.items():
+                shapes[fr].append({"a": ev["a"], "b": ev["b"], "pet": ev["pet"], "cross": ev["ip"], "px": px})
+        self._run3_pet_shapes = dict(shapes)
+        return out, diag
+
+    # ========================================================
+    # TTC (rear-end and side conflicts)
+    # ========================================================
+
+    def _run3_ttc(self, tracks, c, movement_by_id):
+        """TTC (SPEC v28 section 7) for vehicles standing in the selected zones (default Zones 3 and 6) at the same frame.
+
+        Every pair of vehicles seen in the same frame, closer than `ttc_pair_radius_m`, both moving at least `ttc_min_speed_kmh` (a parked vehicle
+        whose box flickers has a false velocity: that frame is skipped). Velocities come from a short centred window of observed samples (no
+        interpolation). Each vehicle is ONE POINT (its reference point) moving straight with that velocity: TTC = -(r.v)/(v.v) with r = P_B - P_A,
+        v = V_B - V_A, r.v < 0 (vector_ttc); the pair counts when the points come within (W_A + W_B)/2 + `ttc_miss_margin_m` at that moment (ttc_miss_limit).
+        One row per event (pair; counted frames more than 1 s apart start a new event) = the counted frame with the smallest TTC; `ttc_max_record_s`
+        (blank = none) drops larger values. The conflict type comes from the angle between the two velocity vectors at that frame (< 30 deg Rear-end,
+        30 - 85 Lane change, > 85 Crossing).
+        Returns (event rows, diagnostics, frame rows: every pair frame with a TTC, for TTC_Frames.csv, shapes: per frame what the pictures draw
+        {"hot": ids in a counted frame, "pairs": [(a, b, ttc)], "marks": [the expected collision point of every counted pair]})."""
+        zones = c["ttc_zones"]
+        win = max(1e-3, c["ttc_velocity_window_s"]) / 2.0
+        vmin = c["ttc_min_speed_kmh"] / 3.6
+        rel_min = c["ttc_min_rel_speed_ms"]
+        radius = c["ttc_pair_radius_m"]
+        ttc_max = c["ttc_max_record_s"]                       # None = record everything
+        ttc_min = c.get("ttc_min_record_s")                   # None = every value counts; a frame below this is not counted
+        miss_margin = c.get("ttc_miss_margin_m", 0.5)
+        decision = c.get("ttc_decision", "by_type")
+        rear_margin = c.get("ttc_rear_margin_m", 1.0)
+        cross_time = c.get("ttc_cross_time_s", 1.0)
+        rear_gap_mode = bool(c.get("ttc_rear_clear_gap", False))
+        widths, lengths = c["widths"], c["lengths"]
+        a_rear, a_cross = c["ttc_angle_rear_end_deg"], c["ttc_angle_crossing_deg"]
+        # The zones only FILTER the analysis, they do not decide what is tracked: every vehicle is used in every frame (its velocity comes from the whole
+        # track) and a pair counts when its expected collision point lies inside a selected zone. Without zone polygons (a run from files only) the old rule
+        # applies: both vehicles are inside the selected zones in that frame.
+        geom = {}
+        for zname, poly in self._zone_polygons():
+            mz = re.search(r"(\d+)", str(zname))
+            if mz and int(mz.group(1)) in zones:
+                geom[int(mz.group(1))] = np.asarray(self._run3_to_metric(np.asarray(poly, dtype=float), c), dtype=np.float32).reshape(-1, 1, 2)
+        geom = geom or None
+
+        def zone_of_point(pt):
+            for zn, poly_ in (geom or {}).items():
+                if cv2.pointPolygonTest(poly_, (float(pt[0]), float(pt[1])), False) >= 0:
+                    return zn
+            return None
+
+        visits_of = {}                                        # tid -> flicker-cleaned zone visits (the Zone Sequence with its times)
+        diag = {"zone_geometry": bool(geom), "events_type_excluded": 0, "frames_zone_not_on_path": 0, "frames_collision_point_outside_zone": 0, "frames_with_pairs": 0, "pairs_evaluated": 0, "pairs_outside_radius": 0, "pairs_slow_vehicle": 0, "pairs_slow_relative": 0,
+                "frames_boxes_never_touch": 0, "frames_already_overlapping": 0, "frames_above_ttc_max": 0, "frames_below_ttc_min": 0, "candidates": 0}
+
+        def size_of(cls):
+            return (lengths.get(cls) or 4.5, widths.get(cls) or 1.8)
+
+        per_frame = defaultdict(list)
+        for tid, rows in tracks.items():
+            if not rows:
+                continue
+            cls = self._run3_canonical_class(rows[0].get("class_name", ""))
+            if str(cls).lower() == "person":
+                continue
+            valid = [r for r in rows if r.get("_m") is not None]
+            if len(valid) < 2:
+                continue
+            t = np.array([r["_timestamp"] for r in valid]); m = np.array([r["_m"] for r in valid])
+            visits_of[tid] = zone_visits_from_samples([(r["_timestamp"], r.get("_zone_num")) for r in valid])
+            lo = np.searchsorted(t, t - win, side="left")
+            hi = np.searchsorted(t, t + win, side="right") - 1
+            for k, r in enumerate(valid):
+                if geom is None and r.get("_zone_num") not in zones:
+                    continue
+                a, b = lo[k], hi[k]
+                if b <= a or t[b] <= t[a]:
+                    continue
+                v = (m[b] - m[a]) / (t[b] - t[a])
+                try:
+                    fr = int(float(r.get("frame", "")))
+                except Exception:
+                    fr = int(round(r["_timestamp"] * 1000))
+                per_frame[fr].append({"tid": tid, "cls": cls, "t": r["_timestamp"],
+                                      "p": (float(m[k][0]), float(m[k][1])), "px": r.get("_point"),
+                                      "v": (float(v[0]), float(v[1])), "zone": r.get("_zone_num")})
+
+        cand = defaultdict(list)
+        frame_rows = []
+        shapes = {}
+        for fr, items in per_frame.items():
+            shapes[fr] = {"hot": set(), "pairs": [], "marks": []}
+            n = len(items)
+            if n < 2:
+                continue
+            diag["frames_with_pairs"] += 1
+            # the pairs closer than the screening radius, found with numpy first (same pairs, same order as the plain double loop; PKT 1.33.0)
+            near, n_far = pairs_within_radius([it["p"] for it in items], radius)
+            diag["pairs_evaluated"] += n * (n - 1) // 2
+            diag["pairs_outside_radius"] += n_far
+            for i, j in near:
+                A, B = items[i], items[j]
+                if str(B["tid"]) < str(A["tid"]):
+                    A, B = B, A                                   # A = the smaller ID (stable, one row per pair)
+                dist = math.hypot(B["p"][0] - A["p"][0], B["p"][1] - A["p"][1])
+                if dist > radius:
+                    diag["pairs_outside_radius"] += 1
+                    continue
+                sp_a, sp_b = math.hypot(*A["v"]), math.hypot(*B["v"])
+                if sp_a < vmin or sp_b < vmin:
+                    diag["pairs_slow_vehicle"] += 1
+                    continue
+                theta = conflict_angle_deg(A["v"], B["v"], vmin)
+                entry = {"t": A["t"], "fr": fr, "a": A, "b": B, "theta": theta, "dist": dist, "sp_a": sp_a, "sp_b": sp_b}
+                vr = vector_ttc(A["p"], A["v"], B["p"], B["v"], rel_min)
+                if vr is None:
+                    diag["pairs_slow_relative"] += 1             # separating (r . v >= 0) or a relative speed that is too small
+                    continue
+                res = dict(vr, status="collision", DTC=vr["TTC"] * vr["rel_speed"])
+                entry["res"] = res
+                # the expected collision point: where the two straight paths (along each velocity) cross ahead of both; none when they are parallel
+                pa2 = (A["p"][0] + A["v"][0] * vr["TTC"], A["p"][1] + A["v"][1] * vr["TTC"])
+                pb2 = (B["p"][0] + B["v"][0] * vr["TTC"], B["p"][1] + B["v"][1] * vr["TTC"])
+                cross = ray_intersection(A["p"], A["v"], B["p"], B["v"])
+                entry["cp"] = {"cross": cross, "gap": math.hypot(pb2[0] - pa2[0], pb2[1] - pa2[1])}
+                entry["dt_cross"] = None if cross is None else abs(cross["t_a"] - cross["t_b"])
+                # the TTC written: the point-to-point one, or for a rear-end pair (when asked) the TTC of the clear gap between the bumpers
+                ttc_val = vr["TTC"]
+                if rear_gap_mode and decision == "by_type" and theta is not None and theta < a_rear:
+                    ttc_val = rear_clear_gap_ttc(res["DTC"], vr["rel_speed"], lengths.get(A["cls"]) or 4.5, lengths.get(B["cls"]) or 4.5)
+                entry["ttc_point"] = vr["TTC"]
+                why = ttc_pair_decision(decision, theta, vr["miss"], widths.get(A["cls"]) or 1.8, widths.get(B["cls"]) or 1.8, cross, a_rear, miss_margin, rear_margin, cross_time)
+                if why is not None:
+                    diag["frames_not_on_collision_course"] = diag.get("frames_not_on_collision_course", 0) + 1
+                    diag["frames_boxes_never_touch"] += 1       # (an older name for the same count: the pair is not on a collision course)
+                    entry.update({"ttc": ttc_val, "status": why})
+                elif ttc_max is not None and ttc_val > ttc_max:
+                    diag["frames_above_ttc_max"] += 1
+                    entry.update({"ttc": ttc_val, "status": "Above_TTC_Max"})
+                elif ttc_min is not None and ttc_val < ttc_min:
+                    diag["frames_below_ttc_min"] += 1
+                    entry.update({"ttc": ttc_val, "status": "Below_TTC_Min"})
+                else:
+                    diag["candidates"] += 1
+                    entry.update({"ttc": ttc_val, "status": "Counted"})
+                if entry["status"] == "Counted" and geom is not None:
+                    # where the pair is expected to meet: the crossing of the two straight paths; for paths that do not cross (following in one lane)
+                    # the middle between the two vehicles when the TTC has run out
+                    cr0 = entry["cp"]["cross"]
+                    tt = entry["ttc_point"]
+                    pt0 = cr0["x"] if cr0 else ((A["p"][0] + A["v"][0] * tt + B["p"][0] + B["v"][0] * tt) / 2.0, (A["p"][1] + A["v"][1] * tt + B["p"][1] + B["v"][1] * tt) / 2.0)
+                    entry["zone_hit"] = zone_of_point(pt0)
+                    if entry["zone_hit"] is None:
+                        entry["status"] = "Outside_Zone"
+                        diag["frames_collision_point_outside_zone"] += 1
+                        diag["candidates"] -= 1
+                    else:
+                        # both vehicles must be in that zone now or enter it later (Zone Sequence); a vehicle that was never seen in any zone has no
+                        # sequence to test: the rule is skipped for it and the event is flagged
+                        va, vb = visits_of.get(A["tid"], []), visits_of.get(B["tid"], [])
+                        entry["seq_incomplete"] = (not va) or (not vb)
+                        if (va and not zone_on_path(va, entry["zone_hit"], A["t"], 0.1)) or (vb and not zone_on_path(vb, entry["zone_hit"], A["t"], 0.1)):
+                            entry["status"] = "Zone_Not_On_Path"
+                            diag["frames_zone_not_on_path"] += 1
+                            diag["candidates"] -= 1
+                if entry["status"] == "Counted":
+                    cand[(A["tid"], B["tid"])].append(entry)
+                    shapes[fr]["hot"].update((A["tid"], B["tid"]))
+                    shapes[fr]["pairs"].append((A["tid"], B["tid"], entry["ttc"]))
+                    cr = entry["cp"]["cross"]
+                    shapes[fr]["marks"].append({"a": A["tid"], "b": B["tid"], "ttc": entry["ttc"], "pa": A["p"], "pb": B["p"], "cross": None if cr is None else cr["x"],
+                                                "label": cr["x"] if cr else ((A["p"][0] + B["p"][0]) / 2.0, (A["p"][1] + B["p"][1]) / 2.0), "px": A["px"]})
+                frame_rows.append(entry)
+
+        out = []
+        removed = []                  # (frame, id A, id B) of the frames of events whose type is switched off
+        event_gap = 1.0
+        for (id_a, id_b), lst in cand.items():
+            lst.sort(key=lambda x: x["t"])
+            events = [[lst[0]]]
+            for item in lst[1:]:
+                if item["t"] - events[-1][-1]["t"] > event_gap:
+                    events.append([item])
+                else:
+                    events[-1].append(item)
+            for ev in events:
+                best = min(ev, key=lambda x: x["ttc"])
+                a_, b_, res = best["a"], best["b"], best["res"]
+                sp_a, sp_b = best["sp_a"], best["sp_b"]
+                theta = best["theta"]
+                ev_type = ttc_conflict_type(theta, a_rear, a_cross)
+                if not ttc_type_included(ev_type, c):
+                    # a type that is switched off: no event row, no mark in the videos; its frames stay in TTC_Frames.csv with this status
+                    diag["events_type_excluded"] += 1
+                    for e_ in ev:
+                        e_["status"] = "Type_Excluded"
+                        removed.append((e_["fr"], a_["tid"], b_["tid"]))
+                    continue
+                event_id = f"TTC_{a_['tid']}_{b_['tid']}_{ev[0]['t']:.6f}"
+                for e_ in ev:
+                    e_["event_id"] = event_id
+                best["is_min"] = True
+                lv_ttc = risk_level_low_is_risky(best["ttc"], c["risk_limits"]["ttc_s"])
+                lv_spd = risk_level_high_is_risky(max(sp_a, sp_b) * 3.6, c["risk_limits"]["speed_kmh"])
+                # the crossing point of the minimum frame; at the closest moment one vehicle is often already past the crossing, then the counted frame
+                # of this event with the smallest TTC that still has a crossing ahead of both is used (its time is written)
+                with_x = [e_ for e_ in ev if e_["cp"]["cross"] is not None]
+                cb = best if best["cp"]["cross"] is not None else (min(with_x, key=lambda x: x["ttc"]) if with_x else None)
+                cx_ = cb["cp"]["cross"] if cb else None
+                out.append({
+                    "Site_ID": c["site_id"],
+                    "Event_ID": event_id,
+                    "TTC_Type": ev_type,
+                    "Vehicle_A_ID": a_["tid"], "Vehicle_A_Class": a_["cls"], "Movement_A": movement_by_id.get(str(a_["tid"]), ""),
+                    "Vehicle_B_ID": b_["tid"], "Vehicle_B_Class": b_["cls"], "Movement_B": movement_by_id.get(str(b_["tid"]), ""),
+                    "Zone": f"Zone {best['zone_hit'] if best.get('zone_hit') is not None else a_['zone']}", "Event_Start": f"{ev[0]['t']:.6f}", "Event_End": f"{ev[-1]['t']:.6f}",
+                    "Event_Frames": len(ev), "TTCmin_Time": f"{best['t']:.6f}", "TTCmin_Frame": best["fr"],
+                    "Theta_deg": "" if theta is None else f"{theta:.2f}",
+                    "Rel_X_m": f"{res['r'][0]:.4f}", "Rel_Y_m": f"{res['r'][1]:.4f}",
+                    "RelV_X_mps": f"{res['v'][0]:.4f}", "RelV_Y_mps": f"{res['v'][1]:.4f}", "Rel_Speed_kmh": f"{res['rel_speed'] * 3.6:.4f}",
+                    "DTC_m": f"{res['DTC']:.4f}",
+                    "Collide_X_m": "" if cx_ is None else f"{cx_['x'][0]:.4f}", "Collide_Y_m": "" if cx_ is None else f"{cx_['x'][1]:.4f}",
+                    "Collide_Frame_Time_s": "" if cb is None else f"{cb['t']:.6f}",
+                    "Dist_A_to_Collide_m": "" if cx_ is None else f"{cx_['d_a']:.4f}", "Dist_B_to_Collide_m": "" if cx_ is None else f"{cx_['d_b']:.4f}",
+                    "Arrival_A_s": "" if cx_ is None else f"{cx_['t_a']:.4f}", "Arrival_B_s": "" if cx_ is None else f"{cx_['t_b']:.4f}",
+                    "Miss_Distance_m": f"{best['cp']['gap']:.4f}",
+                    "Time_Diff_At_Cross_s": "" if best.get("dt_cross") is None else f"{best['dt_cross']:.4f}",
+                    "TTC_Point_s": f"{best['ttc_point']:.6f}",
+                    "Speed_A_kmh": f"{sp_a * 3.6:.6f}", "Speed_B_kmh": f"{sp_b * 3.6:.6f}",
+                    "TTC_s": f"{best['ttc']:.6f}",
+                    "TTC_Level": lv_ttc, "Speed_Level": lv_spd, "TTC_Risk_Level": combine_risk(lv_ttc, lv_spd),
+                    "QC_Flag": ";".join(x for x in [
+                        "Single_Frame_Event" if len(ev) == 1 else "",
+                        "No_Heading" if theta is None else "",
+                        "Zone_Sequence_Incomplete" if any(e_.get("seq_incomplete") for e_ in ev) else "",
+                        self._run3_qc_calibration(c),
+                    ] if x),
+                })
+        for fr_, ta_, tb_ in removed:
+            if fr_ in shapes:
+                sh_ = shapes[fr_]
+                sh_["pairs"] = [q for q in sh_["pairs"] if not (q[0] == ta_ and q[1] == tb_)]
+                sh_["marks"] = [q for q in sh_["marks"] if not (q["a"] == ta_ and q["b"] == tb_)]
+                sh_["hot"] = {t_ for q in sh_["pairs"] for t_ in q[:2]}
+        out.sort(key=lambda r: float(r["TTCmin_Time"]))
+        frames_out = []
+        for e_ in sorted(frame_rows, key=lambda x: (str(x["a"]["tid"]), str(x["b"]["tid"]), x["t"])):
+            a_, b_, res = e_["a"], e_["b"], e_["res"]
+            frames_out.append({
+                "Site_ID": c["site_id"], "Vehicle_A_ID": a_["tid"], "Vehicle_B_ID": b_["tid"], "Frame": e_["fr"], "Time_s": f"{e_['t']:.6f}",
+                "Zone_A": "" if a_["zone"] is None else f"Zone {a_['zone']}", "Zone_B": "" if b_["zone"] is None else f"Zone {b_['zone']}", "Distance_m": f"{e_['dist']:.4f}",
+                "TTC_s": "" if e_["ttc"] is None else f"{e_['ttc']:.6f}", "DTC_m": "" if e_["ttc"] is None else f"{res['DTC']:.4f}",
+                "Collide_X_m": "" if (e_["ttc"] is None or e_["cp"]["cross"] is None) else f"{e_['cp']['cross']['x'][0]:.4f}",
+                "Collide_Y_m": "" if (e_["ttc"] is None or e_["cp"]["cross"] is None) else f"{e_['cp']['cross']['x'][1]:.4f}",
+                "Miss_Distance_m": "" if e_["ttc"] is None else f"{e_['cp']['gap']:.4f}",
+                "Time_Diff_At_Cross_s": "" if e_.get("dt_cross") is None else f"{e_['dt_cross']:.4f}",
+                "TTC_Point_s": "" if e_.get("ttc_point") is None else f"{e_['ttc_point']:.6f}",
+                "Theta_deg": "" if e_["theta"] is None else f"{e_['theta']:.2f}", "Rel_Speed_kmh": f"{res['rel_speed'] * 3.6:.4f}",
+                "Speed_A_kmh": f"{e_['sp_a'] * 3.6:.4f}", "Speed_B_kmh": f"{e_['sp_b'] * 3.6:.4f}",
+                "Status": e_["status"], "Event_ID": e_.get("event_id", ""), "Is_Event_Min": "1" if e_.get("is_min") else "",
+            })
+        return out, diag, frames_out, shapes
+
+    # ========================================================
+    # LDP (Lane / Lateral Deviation Position)
+    # ========================================================
+
+    def _run3_ldp(self, tracks, c, movement_by_id, status_by_id):
+        """LDP (SPEC v28 section 4): main-road vehicles only (2-3-4 -> W_entry,
+        5-6-7 -> W_opp), zones selected in `ldp_zones`, metric trajectory points."""
+        widths = {"entry": c["w_entry_m"], "opposite": c["w_opp_m"]}
+        mode = self._run3_calibration_mode(c)
+        k = c["ldp_smoothing_samples"]
+        out = []
+        for tid, rows in tracks.items():
+            if not rows:
+                continue
+            movement = movement_by_id.get(str(tid), "")
+            if not movement or not str(status_by_id.get(str(tid), "")).startswith("Exact"):
+                continue
+            info = MOVEMENT_PATTERNS[movement]
+            if not info["main_road"]:
+                continue
+            cls = self._run3_canonical_class(rows[0].get("class_name", ""))
+            if cls.lower() == "person":
+                continue
+            W = widths[info["side"]]
+            if not W:
+                raise ValueError(f"LDP needs the lane widths of the {info['side']} side (Road width inputs).")
+            for zone in info["sequence"]:
+                if zone not in c["ldp_zones"]:
+                    continue
+                zr = [r for r in rows if r.get("_zone_num") == zone and r.get("_m") is not None]
+                res = ldp_for_zone([r["_m"] for r in zr], W, k)
+                if res is None:
+                    continue
+                ldp = res["LDP_percent"]
+                dt = zr[-1]["_timestamp"] - zr[0]["_timestamp"]
+                dist = self._run3_segment_distance_sum([r["_m"] for r in zr])
+                speed = dist / dt * 3.6 if dt > 0 else None
+                out.append({
+                    "Site_ID": c["site_id"], "Vehicle_ID": tid, "Vehicle_Class": cls,
+                    "Movement": movement, "Zone": f"Zone {zone}", "Side": info["side"],
+                    "Start_Time": f"{zr[0]['_timestamp']:.6f}", "End_Time": f"{zr[-1]['_timestamp']:.6f}",
+                    "Samples": res["Samples"],
+                    "P_in_x_m": f"{res['P_in'][0]:.4f}", "P_in_y_m": f"{res['P_in'][1]:.4f}",
+                    "P_out_x_m": f"{res['P_out'][0]:.4f}", "P_out_y_m": f"{res['P_out'][1]:.4f}",
+                    "Chord_Length_m": f"{res['Chord_Length_m']:.4f}",
+                    "Delta_Y_m": f"{res['Delta_Y_m']:.6f}", "Lane_Width_W_m": f"{W:.3f}",
+                    "LDP_percent": f"{ldp:.3f}",
+                    "LDP_Level": risk_level_high_is_risky(ldp, c["risk_limits"]["ldp_pct"]),
+                    "Mean_Speed_kmh": self._fmt(speed, 3),
+                    "Speed_Level": risk_level_high_is_risky(speed, c["risk_limits"]["ldp_speed_kmh"]) if speed is not None else "",
+                    "LDP_Risk_Level": (combine_risk(risk_level_high_is_risky(ldp, c["risk_limits"]["ldp_pct"]),
+                                                    risk_level_high_is_risky(speed, c["risk_limits"]["ldp_speed_kmh"])) if speed is not None else ""),
+                    "Calibration_Mode": mode,
+                    "QC_Flag": ";".join(x for x in [
+                        "Short_Chord_Reference_Line_Unreliable" if res["Short_Chord"] else "",
+                        "LDP_Above_100_Check_Lane_Width_or_Tracking" if ldp > 100 else "",
+                        self._run3_qc_calibration(c),
+                    ] if x),
+                })
+        return out
+
+    # ========================================================
+    # RUN 3 — ORCHESTRATION
+    # ========================================================
+
+    def run3_processing(self, settings, output_dir, run_name):
+        c = getattr(self, "_run3_cfg", None) or self._run3_snapshot_config()
+        t_start = time.time()
+        timings = {}
+
+        def status(text):
+            self.post_ui(lambda t=text: self.status_var.set(t))
+
+        status("Run 3 — loading Run 2 results...")
+        detection_rows, id_rows, zone_rows, det_path, id_path, zone_path = self._run3_load_inputs(output_dir, run_name)
+        tracks, summaries = self._run3_build_tracks(detection_rows, id_rows)
+        duplicate_report = self._run3_remove_duplicate_tracks(tracks)
+        self._run3_smooth_tracks(tracks, c)          # the pixel positions first: the metres (also of zones with their own calibration) are then made from the steadier path
+        self._run3_attach_metric(tracks, c)
+        outputs = {}
+        mapping = {}; mapping_parse_error = ""
+        try:
+            mapping = self._run3_parse_reference_mapping(c["mapping_text"])
+        except Exception as exc:
+            mapping_parse_error = str(exc)
+        movement_by_id, movement_source_by_id, sequence_by_id = self._run3_build_movement_index(tracks, summaries, mapping, c["site_id"])
+        tracks_by_zone = defaultdict(int)
+        for rows in tracks.values():
+            for z in {r.get("_zone_num") for r in rows}:
+                if z in ZONE_IDS:
+                    tracks_by_zone[str(z)] += 1
+        summary = {
+            "program_version": "PK Studio V28",
+            "site_id": c["site_id"],
+            "risk_level_limits": {k: list(v) for k, v in c["risk_limits"].items()},
+            "inputs": {"detection": det_path, "id_zone_summary": id_path, "zone_summary": zone_path},
+            "calibration": {"mode": self._run3_calibration_mode(c), "align": ({"kind": c["align"]["kind"], "pairs": c["align"]["n_pairs"], "m_per_drone_px": c["align"]["scale"]} if c.get("align") else None), "ppm": c["ppm"],
+                            "perspective_enabled": c["perspective_enabled"],
+                            "perspective_configured": c["perspective"] is not None,
+                            "road_direction_angle_deg": c["axis_deg"],
+                            "zone_calibrations": dict(getattr(self, "_run3_zone_cal_info", {}) or {})},
+            "source_counts": {
+                "detection_records": len(detection_rows), "track_ids": len(tracks),
+                "id_zone_summary_rows": len(id_rows), "tracks_by_zone": dict(tracks_by_zone),
+                "movement_counts": {m: sum(1 for t in tracks if movement_by_id.get(str(t), "") == m) for m in RUN3_ALL_MOVEMENTS},
+                "movement_status": {st: sum(1 for t in tracks if movement_source_by_id.get(str(t), "") == st)
+                                    for st in ("Exact", "Exact_AfterDedupe", "Partial", "Partial_AfterDedupe",
+                                               "Ambiguous", "Unclassified", "Insufficient")},
+                "selected_zones": {k: sorted(c[k + "_zones"]) for k in ("speed", "lc", "pet", "ttc", "ldp")},
+            },
+            "diagnostics": {},
+            "indicators": {},
+        }
+        untracked = getattr(self, "_run3_untracked_rows", 0)
+        summary["diagnostics"]["untracked_detections"] = {
+            "rows_with_track_id_minus_1": untracked,
+            "share_of_detection_records": round(untracked / len(detection_rows), 6) if detection_rows else 0.0,
+            "note": "detections the tracker gave no ID; they are not used by any indicator",
+        }
+        summary["diagnostics"]["duplicate_tracks"] = {
+            "rule": (f"boxes IoU >= {DUPLICATE_TRACK_IOU} in >= {DUPLICATE_TRACK_MIN_FRAMES} frames (or, for a track shorter than that, in "
+                     f"{int(DUPLICATE_SHORT_SHARE * 100)}% of its frames) = one vehicle under two IDs; the shorter track's overlapping frames are removed"),
+            "tracks_affected": len(duplicate_report),
+            "frames_removed": sum(r["Frames_Removed"] for r in duplicate_report),
+        }
+        if getattr(self, "_run3_warnings", None):
+            summary["diagnostics"]["preflight_warnings"] = list(self._run3_warnings)
+        if mapping_parse_error:
+            summary["diagnostics"]["reference_mapping"] = f"Invalid Reference Line Mapping: {mapping_parse_error}"
+        indicator_rows = []
+        row_counts = {}
+
+        def write_csv(filename, fields, rows):
+            if filename in (c.get("csv_off") or ()):
+                return None                                       # switched off in the list of result files: nothing is written
+            fields, rows = apply_csv_renames(filename, fields, rows)
+            csv_file, actual = self._run3_open_csv_safe(os.path.join(output_dir, filename))
+            with csv_file as f:
+                w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+                w.writeheader()
+                w.writerows([{k: excel_safe_value(v) for k, v in r.items()} for r in rows])
+            return actual
+
+        def indicator(name, domain, unit, group, values, note=""):
+            s = self._run3_stats(values)
+            indicator_rows.append({
+                "Site_ID": c["site_id"], "Indicator": name, "Domain": domain, "Unit": unit,
+                "Group": group, "N": s["N"], "Mean": self._fmt(s["Mean"], 4), "SD": self._fmt(s["SD"], 4),
+                "Median": self._fmt(s["Median"], 4), "Min": self._fmt(s["Min"], 4), "Max": self._fmt(s["Max"], 4),
+                "P85": self._fmt(s["P85"], 4), "Note": note,
+            })
+            return s
+
+        def run_step(key, filename, func):
+            if not c.get(key + "_enabled"):
+                return
+            t0 = time.time()
+            try:
+                func()
+            except Exception as e:
+                # The failure goes to its own <name>_ERROR.csv: the real output name is not reused, so a failed indicator can never be mistaken for an empty result
+                error_name = os.path.splitext(filename)[0] + "_ERROR.csv"
+                outputs[key + "_error"] = write_csv(error_name, ["Error"], [{"Error": str(e)}])
+                summary["diagnostics"][key] = f"ERROR: {e} (see {error_name}; any {filename} in this folder is from an earlier run)"
+            timings[key] = round(time.time() - t0, 3)
+
+        # ---------------- Lateral Clearance (distance) ----------------
+        def do_lc():
+            status("Run 3 — Lateral Clearance...")
+            rows, lc_diag = self._run3_lateral_clearance(tracks, c, sequence_by_id)
+            fields = ["Site_ID","Pair_ID","Timestamp","Zone","Vehicle_A_ID","Vehicle_A_Class","Vehicle_B_ID","Vehicle_B_Class","Zone_Sequence_A","Zone_Sequence_B","Along_m","LS_Meter","Signed_Lateral_m","Width_A_m","Width_B_m","Length_A_m","Length_B_m","Lateral_Clearance_m","QC_Flag"]
+            row_counts["lc"] = len(rows)
+            pairs = self._run3_lc_pair_summary(rows)
+            mode_ = self._run3_calibration_mode(c)
+            for r in rows + pairs:
+                r["Movement_A"] = movement_by_id.get(str(r["Vehicle_A_ID"]), "")
+                r["Movement_B"] = movement_by_id.get(str(r["Vehicle_B_ID"]), "")
+                r["Calibration_Mode"] = mode_
+            fields = fields[:fields.index("Zone_Sequence_B") + 1] + ["Movement_A", "Movement_B"] + fields[fields.index("Zone_Sequence_B") + 1:-1] + ["Calibration_Mode", "QC_Flag"]
+            if c.get("write_detail_files"):
+                outputs["lateral_clearance"] = write_csv("Lateral_Clearance.csv", fields, rows)      # every sample: the checking file (Pairs = the summary)
+            pair_fields = ["Site_ID","Pair_ID","Zone","Vehicle_A_ID","Vehicle_A_Class","Vehicle_B_ID","Vehicle_B_Class","Zone_Sequence_A","Zone_Sequence_B","Movement_A","Movement_B","Start_Time","End_Time","Samples","Lateral_Clearance_Min_m","Lateral_Clearance_Mean_m","Calibration_Mode","QC_Flag"]
+            outputs["lateral_clearance_pairs"] = write_csv("Lateral_Clearance_Pairs.csv", pair_fields, pairs)
+            s_ = indicator("Lateral Clearance (all measured samples)", "Distance", "m", "All samples",
+                           [float(r["Lateral_Clearance_m"]) for r in rows])
+            indicator("Lateral Clearance (minimum per pair and zone)", "Distance", "m", "Pair minimum",
+                      [float(r["Lateral_Clearance_Min_m"]) for r in pairs])
+            neg_rows = sum(1 for r in rows if float(r["Lateral_Clearance_m"]) < 0)
+            neg_pairs = sum(1 for r in pairs if float(r["Lateral_Clearance_Min_m"]) < 0)
+            s_["Negative_Samples"] = neg_rows
+            s_["Negative_Pairs"] = neg_pairs
+            s_["Negative_Pair_Share"] = round(neg_pairs / len(pairs), 6) if pairs else 0.0
+            indicator("Lateral Clearance (minimum per pair and zone, overlapping boxes only)", "Distance", "m", "Pair minimum < 0",
+                      [float(r["Lateral_Clearance_Min_m"]) for r in pairs if float(r["Lateral_Clearance_Min_m"]) < 0])
+            summary["indicators"]["Lateral_Clearance"] = s_
+            summary["diagnostics"]["lc"] = lc_diag
+        run_step("lc", "Lateral_Clearance.csv", do_lc)
+
+        # ---------------- LDP (distance) ----------------
+        def do_ldp():
+            status("Run 3 — LDP...")
+            rows = self._run3_ldp(tracks, c, movement_by_id, movement_source_by_id)
+            fields = ["Site_ID","Vehicle_ID","Vehicle_Class","Movement","Zone","LDP_percent","LDP_Level","Speed_Level","LDP_Risk_Level","Delta_Y_m","Mean_Speed_kmh","Start_Time","End_Time","Samples","Side","P_in_x_m","P_in_y_m","P_out_x_m","P_out_y_m","Chord_Length_m","Lane_Width_W_m","Calibration_Mode","QC_Flag"]
+            row_counts["ldp"] = len(rows)
+            outputs["ldp"] = write_csv("LDP.csv", fields, rows)
+            vals = [float(r["LDP_percent"]) for r in rows]
+            note = f"W_entry={c['w_entry_m']} m; W_opp={c['w_opp_m']} m; smoothing={c['ldp_smoothing_samples']}"
+            s_ = indicator("Lane/Lateral Deviation Position (LDP)", "Distance", "%", "All", vals, note)
+            s_["Level_Counts"] = {lv: sum(1 for r in rows if r["LDP_Level"] == lv) for lv in ("High", "Moderate", "Low", "Interaction")}
+            s_["Risk_Counts"] = {lv: sum(1 for r in rows if r["LDP_Risk_Level"] == lv) for lv in ("High", "Moderate", "Low", "Interaction")}
+            for z in sorted(c["ldp_zones"]):
+                indicator("Lane/Lateral Deviation Position (LDP)", "Distance", "%", f"Zone {z}",
+                          [float(r["LDP_percent"]) for r in rows if r["Zone"] == f"Zone {z}"])
+            summary["indicators"]["LDP"] = s_
+            summary["diagnostics"]["ldp"] = (f"rows={len(rows)}; zones={sorted(c['ldp_zones'])}; all vehicle classes; "
+                                             "main-road movements 2-3-4 / 5-6-7 only; LDP = dY / (W/2) x 100; risk level = DOH table")
+        run_step("ldp", "LDP.csv", do_ldp)
+
+        # ---------------- Gap Acceptance (time) ----------------
+        def do_gap():
+            status("Run 3 — Gap Acceptance...")
+            gap_rows = self._run3_gap(tracks, c, mapping, movement_by_id)
+            fields = ["Site_ID","Decision_Event_ID","Opportunity_No","Subject_ID","Subject_Class","Subject_Movement","Decision_Stage","Stage_No","Decision_Zone","Gap_Evaluation_Time","Waiting_Time_s","Was_Stopped","Stopped_In_Conflict_Zone","Conflicting_Movement","Conflicting_ID_A","Conflicting_Class_A","Conflicting_ID_B","Conflicting_Class_B","Reference_Line","Gap_Start_Time","Gap_End_Time","Available_Gap_s","Subject_Speed_kmh","Conflict_Speed_A_kmh","Conflict_Speed_B_kmh","Gap_Role","Gap_Acceptance","Decision_Time","QC_Flag"]
+            row_counts["gap"] = len(gap_rows)
+            outputs["gap_acceptance"] = write_csv("Gap_Acceptance.csv", fields, gap_rows)
+            groups = critical_gap_groups(gap_rows, c.get("critical_gap_by_subject_class", True), c.get("critical_gap_by_lag_class", False))
+            min_drivers = c.get("critical_gap_min_drivers")
+            critical = []
+            for gkey in sorted(groups, key=lambda k: tuple(str(x) for x in k)):
+                cls, lag_cls, movement, stage_no = gkey
+                g = groups[gkey]
+                cr = self._run3_raff(g["accepted"], g["rejected"]) if c["use_raff"] and g["intervals"] else None
+                mle = self._run3_mle_driver_intervals(g["intervals"]) if c["use_mle"] and g["intervals"] else None
+                qc = []
+                if not g["intervals"]:
+                    qc.append("No_Driver_With_Both_Rejected_And_Accepted_Gap")
+                elif (c["use_raff"] and cr is None) or (c["use_mle"] and mle is None):
+                    qc.append("Estimate_Not_Available")
+                if min_drivers and len(g["intervals"]) < min_drivers:
+                    qc.append(f"Few_Drivers_Below_{min_drivers:g}")
+                critical.append({
+                    "Site_ID": c["site_id"], "Vehicle_Class": cls, "Lag_Vehicle_Class": lag_cls, "Movement": movement, "Stage_No": stage_no,
+                    "Drivers_With_Pairs": len(g["intervals"]),
+                    "Drivers_Accepted_Only": g["accepted_only"], "Drivers_Rejected_Only": g["rejected_only"],
+                    "Raff_Critical_Gap_s": self._fmt(cr), "MLE_Critical_Gap_Median_s": self._fmt(mle["critical_gap_median"] if mle else None),
+                    "MLE_mu": self._fmt(mle["mu"] if mle else None), "MLE_sigma": self._fmt(mle["sigma"] if mle else None),
+                    "QC_Flag": ";".join(qc),
+                })
+            if critical:
+                outputs["critical_gap"] = write_csv("Critical_Gap.csv", list(critical[0].keys()), critical)
+            acc_vals = [float(r["Available_Gap_s"]) for r in gap_rows if r["Gap_Acceptance"] == 1]
+            rej_vals = [float(r["Available_Gap_s"]) for r in gap_rows if r["Gap_Acceptance"] == 0]
+            indicator("Gap Acceptance — accepted gaps", "Time", "s", "Accepted", acc_vals)
+            indicator("Gap Acceptance — rejected gaps", "Time", "s", "Rejected", rej_vals)
+            summary["indicators"]["Gap_Acceptance"] = {
+                "gap_rows": len(gap_rows),
+                "decision_events": len({r["Decision_Event_ID"] for r in gap_rows}),
+                "accepted_events": len(acc_vals), "rejected_events": len(rej_vals),
+                "critical_gap": critical, "reference_mapping_rows": len(mapping),
+            }
+            summary["diagnostics"]["gap"] = dict(getattr(self, "_run3_gap_diag", {}), rows=len(gap_rows),
+                                                 rule="staged decision per middle zone (SPEC 6.1); Line optional (origin-zone entry fallback)")
+        run_step("gap", "Gap_Acceptance.csv", do_gap)
+
+        # ---------------- Headway (extra file: followers; no risk level) ----------------
+        def do_headway():
+            status("Run 3 — Headway...")
+            hw_text = (c.get("headway_mapping_text") or "").strip()
+            hw_explicit = self._run3_parse_reference_mapping(hw_text) if hw_text else {}      # Headway's own Line / Edge per Movement wins; the rest follows reference_line_source
+            hw_rows = self._run3_headway(tracks, c, mapping, movement_by_id, hw_explicit)
+            fields = ["Site_ID", "Movement", "Reference_Line", "Lead_Vehicle_ID", "Lead_Vehicle_Class", "Lag_Vehicle_ID", "Lag_Vehicle_Class",
+                      "Lead_Time_s", "Lag_Time_s", "Time_Headway_s", "Time_Gap_s", "Lead_Speed_kmh", "Lead_Length_m", "Lateral_To_Lead_Path_m", "QC_Flag"]
+            row_counts["headway"] = len(hw_rows)
+            outputs["headway"] = write_csv("Headway.csv", fields, hw_rows)
+            summary["indicators"]["Headway"] = {"rows": len(hw_rows), "movements": sorted({r["Movement"] for r in hw_rows}),
+                                                "negative_time_gap": sum(1 for r in hw_rows if "Negative_Time_Gap" in r["QC_Flag"])}
+        run_step("headway", "Headway.csv", do_headway)
+
+        # ---------------- TTC (time) ----------------
+        def do_ttc():
+            status("Run 3 — TTC...")
+            rows, diag, ttc_frames, self._run3_ttc_shapes = self._run3_ttc(tracks, c, movement_by_id)
+            fields = ["Site_ID","Event_ID","TTC_Type","Vehicle_A_ID","Vehicle_A_Class","Movement_A","Vehicle_B_ID","Vehicle_B_Class","Movement_B","Zone","TTC_s","TTC_Level","Speed_Level","TTC_Risk_Level","Event_Start","Event_End","Event_Frames","TTCmin_Time","TTCmin_Frame","Theta_deg","DTC_m","Collide_X_m","Collide_Y_m","Miss_Distance_m","Time_Diff_At_Cross_s","TTC_Point_s","Speed_A_kmh","Speed_B_kmh","Calibration_Mode","QC_Flag"]
+            detail_fields = ["Site_ID","Event_ID","Rel_X_m","Rel_Y_m","RelV_X_mps","RelV_Y_mps","Rel_Speed_kmh","Collide_Frame_Time_s","Dist_A_to_Collide_m","Dist_B_to_Collide_m","Arrival_A_s","Arrival_B_s"]
+            row_counts["ttc"] = len(rows)
+            mode_ = self._run3_calibration_mode(c)
+            for r in rows:
+                r["Calibration_Mode"] = mode_
+            outputs["ttc"] = write_csv("TTC.csv", fields, rows)
+            if c.get("write_detail_files"):
+                outputs["ttc_detail"] = write_csv("TTC_Detail.csv", detail_fields, rows)     # the relative vectors / arrival times behind each event (checking values)
+            if c.get("write_detail_files"):
+                outputs["ttc_frames"] = write_csv("TTC_Frames.csv", ["Site_ID","Vehicle_A_ID","Vehicle_B_ID","Frame","Time_s","Zone_A","Zone_B","Distance_m","TTC_s","DTC_m","Collide_X_m","Collide_Y_m","Miss_Distance_m","Time_Diff_At_Cross_s","TTC_Point_s","Theta_deg","Rel_Speed_kmh","Speed_A_kmh","Speed_B_kmh","Status","Event_ID","Is_Event_Min"], ttc_frames)
+            diag["frame_rows_written"] = len(ttc_frames) if c.get("write_detail_files") else 0
+            vals = [float(r["TTC_s"]) for r in rows]
+            s_ = indicator("Time-to-Collision (TTCmin per event)", "Time", "s", "All", vals,
+                           f"events with TTCmin <= {c['ttc_max_record_s']} s")
+            for kind in ("Rear-end", "Lane change", "Crossing", "Unclassified"):
+                indicator("Time-to-Collision (TTCmin per event)", "Time", "s", kind,
+                          [float(r["TTC_s"]) for r in rows if r["TTC_Type"] == kind])
+            s_["Level_Counts"] = {lv: sum(1 for r in rows if r["TTC_Level"] == lv) for lv in ("High", "Moderate", "Low", "Interaction")}
+            s_["Risk_Counts"] = {lv: sum(1 for r in rows if r["TTC_Risk_Level"] == lv) for lv in ("High", "Moderate", "Low", "Interaction")}
+            summary["indicators"]["TTC"] = s_
+            diag["rule"] = {"method": "one point per vehicle: vector TTC = -(r.v)/(v.v), r.v < 0",
+                            "decision": c.get("ttc_decision", "by_type"),
+                            "decision_text": {"by_type": "angle < 30 or > 150 deg (the same line): the points come within (W_A+W_B)/2 + rear margin; otherwise the paths cross ahead of both "
+                                                         "and the vehicles reach the crossing within cross_time_s of each other",
+                                              "miss": "the points come within (W_A+W_B)/2 + miss margin", "none": "every approaching pair"}.get(c.get("ttc_decision", "by_type"), ""),
+                            "min_record_s": c.get("ttc_min_record_s"), "max_record_s": c.get("ttc_max_record_s"), "cross_time_s": c.get("ttc_cross_time_s"), "rear_margin_m": c.get("ttc_rear_margin_m"), "rear_clear_gap": bool(c.get("ttc_rear_clear_gap")),
+                            "miss_margin_m": c.get("ttc_miss_margin_m"), "min_vehicle_speed_kmh": c["ttc_min_speed_kmh"],
+                            "min_rel_speed_ms": c["ttc_min_rel_speed_ms"], "pair_radius_m": c["ttc_pair_radius_m"],
+                            "angle_rear_end_deg": c["ttc_angle_rear_end_deg"], "angle_crossing_deg": c["ttc_angle_crossing_deg"]}
+            summary["diagnostics"]["ttc"] = diag
+        run_step("ttc", "TTC.csv", do_ttc)
+
+        # ---------------- PET (time) ----------------
+        def do_pet():
+            status("Run 3 — PET...")
+            rows, diag = self._run3_pet(tracks, c, movement_by_id, movement_source_by_id, sequence_by_id)
+            fields = ["Site_ID","Interaction_ID","Conflict_Type","Vehicle_ID_A","Vehicle_Class_A","Movement_A","Vehicle_ID_B","Vehicle_Class_B","Movement_B","Conflict_Zone","PET_s","PET_Level","Speed_Level","PET_Risk_Level","Interaction_Start","Interaction_End","T1_Exit_Time","T2_Entry_Time","Theta_deg","Cross_X_m","Cross_Y_m","Speed_A_kmh","Speed_B_kmh","Calibration_Mode","QC_Flag"]
+            row_counts["pet"] = len(rows)
+            mode_ = self._run3_calibration_mode(c)
+            for r in rows:
+                r["Calibration_Mode"] = mode_
+            outputs["pet"] = write_csv("PET.csv", fields, rows)
+            vals = [float(r["PET_s"]) for r in rows]
+            s = indicator("Post-Encroachment Time", "Time", "s", "All", vals)
+            s["At_or_Below_Threshold"] = sum(v <= c["pet_threshold"] for v in vals)
+            s["Level_Counts"] = {lv: sum(1 for r in rows if r["PET_Level"] == lv) for lv in ("High", "Moderate", "Low", "Interaction")}
+            s["Risk_Counts"] = {lv: sum(1 for r in rows if r["PET_Risk_Level"] == lv) for lv in ("High", "Moderate", "Low", "Interaction")}
+            for z in sorted(c["pet_zones"]):
+                indicator("Post-Encroachment Time", "Time", "s", f"Zone {z}",
+                          [float(r["PET_s"]) for r in rows if r["Conflict_Zone"] == f"Zone {z}"])
+            for ctype in ("Rear-end", "Lane change", "Crossing", "Unclassified"):
+                sub = [float(r["PET_s"]) for r in rows if r["Conflict_Type"] == ctype]
+                if sub:
+                    indicator("Post-Encroachment Time", "Time", "s", f"Conflict type {ctype}", sub)
+            s["Conflict_Type_Counts"] = {ct: sum(1 for r in rows if r["Conflict_Type"] == ct)
+                                         for ct in ("Rear-end", "Lane change", "Crossing", "Unclassified")}
+            summary["indicators"]["PET"] = s
+            summary["diagnostics"]["pet"] = diag
+        run_step("pet", "PET.csv", do_pet)
+
+        # ---------------- Speed (every frame) ----------------
+        def do_speed():
+            status("Run 3 — Speed...")
+            speed_rows = self._run3_speed(tracks, c, movement_by_id)
+            row_counts["speed"] = len(speed_rows)
+            outputs["speed"] = write_csv("Speed.csv", ["Frame","Time_s","Vehicle_ID","Vehicle_Class","Zone","Movement","Speed_kmh","QC_Flag"], speed_rows)
+            n_flag = sum(1 for r in speed_rows if "Speed_Above_Max" in r["QC_Flag"])
+            summary["indicators"]["Speed"] = {"rows": len(speed_rows), "vehicles": len({r["Vehicle_ID"] for r in speed_rows}), "above_max_flagged": n_flag}
+            summary["diagnostics"]["speed"] = (f"rows={len(speed_rows)}; zones={sorted(c['speed_zones'])}; smoothing_samples={c['speed_smoothing_samples']}; "
+                                               f"frame_window_s={c.get('speed_frame_window_s', 0.5)}; max_plausible_kmh={c.get('speed_max_kmh', 0)}; flagged_above_max={n_flag}")
+        run_step("speed", "Speed.csv", do_speed)
+
+        # Topview: the metric points the indicators used, as a file and (optionally) a road-plane video
+        try:
+            topview_rows = self._run3_topview_rows(tracks, c)
+            outputs["topview_records"] = write_csv("Detection_Records_Topview.csv", self.TOPVIEW_FIELDS, topview_rows)
+            summary["diagnostics"]["topview"] = {"records": len(topview_rows), "calibration_mode": self._run3_calibration_mode(c)}
+            want_xy = bool((settings or {}).get("xy_video", c.get("topview_video")))
+            want_drone = bool((settings or {}).get("drone_video", c.get("drone_video")))
+            draw_ttc = bool(c.get("ttc_enabled") and c.get("ttc_show_boxes_video"))
+            draw_pet = bool(c.get("pet_enabled") and c.get("pet_show_point_video"))
+            video_src = (settings or {}).get("video")
+
+            tv_px = topview_px_setting((settings or {}).get("topview_max_px", ""))
+
+            def make_xy():
+                return self._run3_write_topview_video(tracks, c, output_dir, video_src, max_px=tv_px, display=settings)
+
+            def make_drone():
+                return self._run3_write_topview_video(tracks, c, output_dir, video_src, max_px=tv_px, display=settings, drone=True)
+
+            def make_overlay():
+                result_video = os.path.join(output_dir, "Tracking_Result.mp4")
+                src_fps = None
+                cap_ = cv2.VideoCapture(str(video_src)) if video_src and os.path.isfile(str(video_src)) else None
+                if cap_ is not None:
+                    try:
+                        src_fps = cap_.get(cv2.CAP_PROP_FPS)
+                    finally:
+                        cap_.release()
+                return self._run3_overlay_ttc_boxes(tracks, c, result_video, self._run3_record_first_frame(settings, video_src),
+                                                    src_size=self._run3_video_size(video_src), draw_ttc=draw_ttc, draw_pet=draw_pet,
+                                                    frame_ratio=output_fps_ratio((settings or {}).get("video_fps", "0"), src_fps))
+
+            # the three videos are independent (each reads the same finished results and writes its own file), and the video libraries release the
+            # interpreter lock while they decode / encode, so they are made at the same time (about the time of the slowest one instead of the sum)
+            jobs = {}
+            if want_xy and topview_rows:
+                jobs["xy"] = make_xy
+            if want_drone and topview_rows:
+                jobs["drone"] = make_drone
+            if draw_ttc or draw_pet:
+                jobs["overlay"] = make_overlay
+            if jobs:
+                self._run3_drone_picture((c or {}).get("align_drone"))                  # fill the picture cache once, before the threads read it
+                status("Run 3 — drawing the videos (" + ", ".join(sorted(jobs)) + ")...")
+            results, errors = {}, {}
+
+            def run_job(name):
+                try:
+                    results[name] = jobs[name]()
+                except Exception as exc:
+                    log.exception("Video output failed: %s", name)
+                    errors[name] = str(exc)
+
+            threads = [threading.Thread(target=run_job, args=(name,), daemon=True) for name in jobs]
+            for th in threads:
+                th.start()
+            for th in threads:
+                th.join()
+            if "xy" in results and results["xy"]:
+                outputs["topview_video"] = results["xy"]
+                summary["diagnostics"]["topview"]["video"] = results["xy"]
+            if "drone" in jobs:
+                if results.get("drone"):
+                    outputs["topview_drone_video"] = results["drone"]
+                    summary["diagnostics"]["topview"]["drone_video"] = results["drone"]
+                elif "drone" not in errors:
+                    summary["diagnostics"]["topview"]["drone_video"] = "not made: needs the Align result (video -> drone picture) with its picture file"
+                    log.warning("X-Y on drone video not made: the Align result or its picture is missing")
+            if "overlay" in jobs:
+                if results.get("overlay"):
+                    outputs["tracking_result_with_ttc_boxes"] = results["overlay"]
+                    summary["diagnostics"]["ttc_boxes_video"] = getattr(self, "_run3_overlay_note", "")
+                else:
+                    summary["diagnostics"]["ttc_boxes_video"] = (getattr(self, "_run3_overlay_note", "")
+                                                                 or "not drawn (no Tracking_Result.mp4 in the output folder, or no TTC rectangles)")
+            if errors:
+                summary["diagnostics"]["topview_error"] = "; ".join(f"{k}: {v}" for k, v in sorted(errors.items()))
+            plot = self._run3_write_xy_plot(tracks, c, output_dir, (settings or {}).get("video"), display=settings)
+            if plot:
+                outputs["topview_plot"] = plot
+                summary["diagnostics"]["topview"]["plot"] = plot
+        except Exception as exc:
+            log.exception("Topview output failed")
+            summary["diagnostics"]["topview_error"] = str(exc)
+
+        if duplicate_report:
+            outputs["duplicate_tracks"] = write_csv(
+                "Duplicate_Tracks.csv",
+                ["Duplicate_ID", "Kept_ID", "Vehicle_Class", "Frames_Removed", "First_Frame", "Last_Frame", "Remaining_Rows_Of_Duplicate_ID"],
+                duplicate_report)
+
+        if indicator_rows:
+            outputs["indicator_summary"] = write_csv(
+                "Indicator_Summary.csv",
+                ["Site_ID","Indicator","Domain","Unit","Group","N","Mean","SD","Median","Min","Max","P85","Note"],
+                indicator_rows)
+
+        # Why is an enabled indicator empty? (plain-language reasons, also shown when the run ends)
+        empty = []
+        mstat = summary["source_counts"]["movement_status"]
+        mcount = summary["source_counts"]["movement_counts"]
+        seen = (f"Movement ที่จับได้: ครบ {mstat['Exact'] + mstat['Exact_AfterDedupe']}, "
+                f"บางส่วน {mstat['Partial'] + mstat['Partial_AfterDedupe']}, "
+                f"ไม่ตรงแบบใด {mstat['Unclassified']}, เห็นไม่ครบ {mstat['Insufficient']} จาก {len(tracks)} คัน")
+        layout_hint = " — ตรวจว่าไฟล์ Zone/วิดีโอเป็นชุดเดียวกับผังทางแยก (Movement ใหม่ 1-3-4, 2-3-1, 1-3-6-7, 5-6-3-1, 2-3-4, 5-6-7)"
+        if c["ldp_enabled"] and row_counts.get("ldp") == 0:
+            main = mcount.get("2-3-4", 0) + mcount.get("5-6-7", 0)
+            empty.append(f"LDP ไม่มีข้อมูล: LDP คิดเฉพาะรถที่วิ่งครบ 2-3-4 หรือ 5-6-7 ตรง ๆ พบ {main} คัน. {seen}{layout_hint}")
+        if c["gap_enabled"] and row_counts.get("gap") == 0:
+            subjects = sum(mcount.get(mv, 0) for mv in c["gap_movements"])
+            if subjects == 0:
+                empty.append(f"Gap Acceptance ไม่มีข้อมูล: ไม่พบรถที่รอ (Movement {', '.join(c['gap_movements'])}) เลย. {seen}{layout_hint}")
+            else:
+                st_info = getattr(self, "_run3_gap_diag", {}).get("streams", {})
+                streams_txt = ", ".join(f"{cm} = {v['vehicles']} คัน" for cm, v in sorted(st_info.items())) or "-"
+                empty.append(f"Gap Acceptance ไม่มีข้อมูล: พบรถที่รอ {subjects} คัน แต่ไม่มีคันไหนเข้าโซนกลาง (3/6) ขณะที่มีช่องว่างจากกระแสที่ขัดแย้ง — "
+                             f"ช่องว่างต้องมีรถกระแสที่ขัดแย้งอย่างน้อย 2 คันในคลิป (คันหน้าและคันหลัง). รถกระแสที่ขัดแย้งที่พบ: {streams_txt}. ตรวจ Line หรือโซนต้นทางของกระแสเหล่านั้น")
+        for key, label in (("lc", "Lateral Clearance"), ("ttc", "TTC"), ("pet", "PET"), ("speed", "Speed")):
+            if c[key + "_enabled"] and row_counts.get(key) == 0:
+                empty.append(f"{label} ไม่มีข้อมูล (ไม่มีรถ/คู่รถที่เข้าเงื่อนไขในโซนที่เลือก)")
+        summary["diagnostics"]["empty_outputs"] = empty
+        for line in empty:
+            print("Run 3 —", line)
+
+        summary["architecture"] = {
+            "indicators": "LDP, Lateral Clearance, Gap Acceptance, TTC, PET, Speed (every frame)",
+            "domains": {"Distance": ["LDP", "Lateral Clearance"], "Time": ["Gap Acceptance", "TTC", "PET"], "Speed": ["Speed"]},
+            "movement_resolver": "Full flicker-cleaned zone sequence of each track matched to 6 patterns (1-3-4, 2-3-1, 1-3-6-7, 5-6-3-1, 2-3-4, 5-6-7); ambiguous fragments stay unclassified",
+            "metric_coordinates": "Computed once per sample (batch); perspective or PPM + road angle",
+            "risk_levels": "Exported per dimension; combination rule not defined in sources",
+        }
+        summary["timings_s"] = dict(timings, total=round(time.time() - t_start, 3))
+        summary["outputs"] = {k: v for k, v in outputs.items() if v}
+        summary_path = os.path.join(output_dir, "Summary.json")
+        with open(summary_path, "w", encoding="utf-8") as f:
+            json.dump(self._json_safe(summary), f, indent=4, ensure_ascii=False)
+        outputs["summary"] = summary_path
+        self.run3_last_outputs = outputs
+        self.run3_last_summary = summary
+        done = [k for k in ("lc", "ldp", "gap", "ttc", "pet", "speed") if c.get(k + "_enabled")]
+        msg = f"Run 3 completed in {summary['timings_s']['total']:.1f} s | " + ", ".join(done)
+        self.post_ui(lambda m=msg: self.run3_result_text.set(m))
+        return outputs
+
+    def finish_integrated_ui(self, stopped, output_video, output_csv, output_settings, output_summary, output_id_zone_summary=None, output_zone_summary=None):
+        if getattr(self, "_batch_mode", False):
+            return          # the batch worker reports once at the end
+        self.running = False
+        self._rt = None
+        self.start_button.config(state="normal")
+        self.pause_button.config(state="disabled", text="Ⅱ PAUSE")
+        self.stop_button.config(state="disabled")
+        if stopped:
+            self.status_var.set("Run 1 + 2 + 3 stopped — Run 3 analyzed available data")
+        if self.run3_was_requested:
+            self.status_var.set("Run 1 + 2 + 3 completed" if not stopped else "Run 1 + 2 + 3 stopped — Run 3 analyzed available data")
+            message = ("Run 1 + 2 + 3 completed\n\n" if not stopped else "Run 1 + 2 + 3 stopped\nRun 3 was analyzed using the available Run 2 data.\n\n")
+        else:
+            self.status_var.set("Run 1 + 2 completed" if not stopped else "Run 1 + 2 stopped")
+            message = ("Run 1 + 2 completed\n\n" if not stopped else "Run 1 + 2 stopped\n\n")
+        self.progress_var.set("100%")
+        if self.save_video_var.get():
+            message += f"Run 1/2 Video:\n{output_video}\n\n"
+        if self.save_csv_var.get():
+            message += f"Run 2 Detection Records:\n{output_csv}\n\n"
+        message += f"Run 2 ID Zone Summary:\n{output_id_zone_summary}\n\nRun 2 Zone Summary:\n{output_zone_summary}\n\n"
+        empty_reasons = (self.run3_last_summary or {}).get("diagnostics", {}).get("empty_outputs", [])
+        if empty_reasons:
+            message += "ตัวชี้วัดที่ไม่มีข้อมูล (ไฟล์ CSV มีแต่หัวแถว) และสาเหตุ:\n"
+            message += "\n".join("• " + r for r in empty_reasons) + "\n\n"
+        if self.run3_last_outputs:
+            message += "Run 3 Outputs:\n"
+            for key, value in self.run3_last_outputs.items():
+                if value:
+                    message += f"{key}: {value}\n"
+            message += "\n"
+        message += f"Run 1/2 Summary:\n{output_summary}\n\nSettings:\n{output_settings}"
+        messagebox.showinfo("PK Studio V17 Complete", message)
+
+    # ========================================================
+    # FORMAT TIME
+    # ========================================================
+
+    def format_time(self, seconds):
+
+        seconds = int(
+            max(0, seconds)
+        )
+
+        hours = seconds // 3600
+
+        minutes = (
+            seconds % 3600
+        ) // 60
+
+        secs = (
+            seconds % 60
+        )
+
+        if hours > 0:
+
+            return (
+                f"{hours:02d}:"
+                f"{minutes:02d}:"
+                f"{secs:02d}"
+            )
+
+        return (
+            f"{minutes:02d}:"
+            f"{secs:02d}"
+        )
+
+    # ========================================================
+    # FINISH UI
+    # ========================================================
+
+    def finish_ui(
+        self,
+        stopped,
+        output_video,
+        output_csv,
+        output_settings,
+        output_summary,
+        output_track_stats,
+        output_id_switch,
+        output_detection_loss,
+        output_processing_log,
+        output_id_zone_summary=None,
+        output_zone_summary=None
+    ):
+
+        self.running = False
+
+        self.start_button.config(
+            state="normal"
+        )
+
+        self.pause_button.config(
+            state="disabled",
+            text="Ⅱ PAUSE"
+        )
+
+        self.stop_button.config(
+            state="disabled"
+        )
+
+        if stopped:
+
+            self.status_var.set(
+                "Run 1 stopped"
+            )
+
+            messagebox.showinfo(
+                "Run 1",
+                "Run 1 was stopped"
+            )
+
+            return
+
+        self.status_var.set(
+            "Run 1 completed"
+        )
+
+        self.progress_var.set(
+            "100%"
+        )
+
+        message = (
+            "Run 1 completed\n\n"
+        )
+
+        if self.save_video_var.get():
+
+            message += (
+                "Video:\n"
+                f"{output_video}\n\n"
+            )
+
+        if self.save_csv_var.get():
+
+            message += (
+                "Detection Records CSV:\n"
+                f"{output_csv}\n\n"
+            )
+
+        message += (
+            "ID Zone Summary CSV:\n"
+            f"{output_id_zone_summary}\n\n"
+            "Zone Summary CSV:\n"
+            f"{output_zone_summary}\n\n"
+            "Research Summary JSON:\n"
+            f"{output_summary}\n\n"
+            "Settings:\n"
+            f"{output_settings}"
+        )
+
+        messagebox.showinfo(
+            "Run 1 Complete",
+            message
+        )
+
+    # ========================================================
+    # ERROR
+    # ========================================================
+
+    def show_error(self, error):
+
+        if getattr(self, "_batch_mode", False):
+            log.error("Clip failed inside a batch: %s", error)
+            return          # reported in the batch summary
+        self.running = False
+
+        self.start_button.config(
+            state="normal"
+        )
+
+        self.pause_button.config(
+            state="disabled"
+        )
+
+        self.stop_button.config(
+            state="disabled"
+        )
+
+        self.status_var.set(
+            "Error occurred"
+        )
+
+        self.progress_var.set(
+            "ERROR"
+        )
+
+        messagebox.showerror(
+            "PK Studio V17 Error",
+            error
+        )
+
+    # ========================================================
+    # CLOSE
+    # ========================================================
+
+    def on_close(self):
+
+        if self.running:
+
+            answer = messagebox.askyesno(
+                "Exit",
+                "PK Studio V17 is currently processing\n\n"
+                "Stop the run and close the program?"
+            )
+
+            if not answer:
+                return
+
+            self.stop_event.set()
+            self.pause_event.set()
+
+            self.root.after(
+                500,
+                self.root.destroy
+            )
+
+        else:
+
+            self.root.destroy()
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+def main():
+
+    root = tk.Tk()
+
+    app = Run1App(
+        root
+    )
+
+    root.mainloop()
+
+
+# ============================================================
+# START
+# ============================================================
+
+if __name__ == "__main__":
+
+    main()
