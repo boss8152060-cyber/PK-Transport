@@ -9,7 +9,7 @@
 - **สถานะปัจจุบัน:** เวอร์ชัน 1.3.9 — จัดการ Class ใหม่ (แก้ชื่อ/รวม/ลบหลายอัน/นำเข้าจากโมเดล+จับคู่), แก้บั๊ก core/UI job แล้ว, Auto-Label/Batch ทำงานได้โดยไม่มีโมเดล (reference boxes), มี 21 test, push ขึ้น GitHub แล้ว, เอกสารครบ
 - **ขั้นถัดไป:** ให้ผู้ใช้ลองเปิดแอปกับภาพจริง 20–30 ภาพ (ทั้ง Auto-Label เดี่ยวและ Batch โหมด No) แล้วรายงานว่ากรอบเกิน/ขาดแบบไหน → ปรับ threshold/วิธี; จากนั้นเริ่มเฟส 1 ข้อ 1.1
 - **commit ถัดไปควรเป็น:** `PK Studio 1.3.10: ...` (ดูรูปแบบใน `CLAUDE.md`)
-- **Remote:** `origin` = https://github.com/boss8152060-cyber/PKA-Project.git (branch `main`)
+- **Remote:** `origin` = https://github.com/boss8152060-cyber/PKT-Data.git (เดิม PKA-Project) (branch `main`)
 - **Backup:** `PSU Transport Project 2026\Backups\` (ต้นฉบับ `PK_Program_backup_2026-09-30.zip`)
 
 ## เฟส 0 — เตรียมงาน

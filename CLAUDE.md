@@ -6,12 +6,12 @@
 
 ## โครงสร้างที่สำคัญ
 
-- **git repository อยู่ที่นี่:** `F:\motorcycle group project\PSU Transport Project 2026\PK Program\PK Studio` (branch `main`)
+- **git repository อยู่ที่นี่:** `F:\motorcycle group project\PSU Transport Project 2026\PK-Transport\PKT-Data` (branch `main`; โมดูลหนึ่งของ **PK Transport** = PKT Data)
   ชื่อโฟลเดอร์ไม่มีเลขเวอร์ชันแล้ว — **เวอร์ชันจริงดูที่ `src/pk_studio/__init__.py` (`__version__`), `docs/CHANGELOG.md` และ git tag `v<เวอร์ชัน>`** (ต้องตรงกันเสมอ)
-- remote: `origin` = https://github.com/boss8152060-cyber/PKA-Project.git
+- remote: `origin` = https://github.com/boss8152060-cyber/PKT-Data.git
 - โค้ดอยู่ใน `src/pk_studio/` แยกเป็น `core/` (ไม่ผูกกับ Tk), `ui/tabs/` (หน้าจอ), `tools/` (ยูทิลิตี้), ทดสอบที่ `tests/`
 - **ห้ามสร้างโฟลเดอร์/ไฟล์เวอร์ชันใหม่** (`PK Studio 1.4.0/` ฯลฯ) — แก้ในโฟลเดอร์นี้แล้ว commit; ทุกเวอร์ชันเก่า (1.1.0 → 1.3.6 เดิมของผู้ใช้ + 1.3.7–1.3.9) อยู่ในประวัติ git เป็น commit ละหนึ่งเวอร์ชัน และมี tag `v<เวอร์ชัน>`
-- โฟลเดอร์เวอร์ชันเก่าเดิม (1.1.0–1.3.6 และโฟลเดอร์ทำงานเก่า `1.3.4`) สำรองไว้นอก repo ที่ `PK Program\_PK_Studio_backup_before_git\` ไม่ต้องแตะ ผู้ใช้ลบเองได้เมื่อมั่นใจ
+- โฟลเดอร์เวอร์ชันเก่าเดิม (1.1.0–1.3.6 และโฟลเดอร์ทำงานเก่า `1.3.4`) สำรองไว้นอก repo ที่ `PK-Transport\_backups\PK_Studio_backup_before_git\` ไม่ต้องแตะ ผู้ใช้ลบเองได้เมื่อมั่นใจ
 - สำรองไฟล์ (zip) อยู่ที่ `PSU Transport Project 2026\Backups\` — ไฟล์ `PK_Program_backup_2026-09-30.zip` = ต้นฉบับก่อนแก้ทุกอย่าง
 
 ## ไฟล์หลักที่ต้องอ่านก่อนเริ่มงานทุกครั้ง
@@ -92,4 +92,4 @@ PK Studio <เวอร์ชัน>: <คำอธิบายสั้น ๆ 
 - Python 3.12 (`py -3.12`), Windows; dependency ดู `requirements.txt` (opencv, pillow, numpy, pyyaml, matplotlib, ultralytics)
 - รันแอป: `run_app.bat` หรือ `python main.py`; ติดตั้งครั้งแรก: `install_and_run.bat` (เรียก `setup.ps1`)
 - 6 แท็บ: Data, Label, Curate, Analytics, Zone, Other (คีย์ลัด Ctrl+1–6)
-- โปรเจ็คคู่กัน: `PK STUDIO\Run` (repo `PKT-Project`, วิเคราะห์ตัวชี้วัด Y1–Y7 ด้วย `PKStudio.py`) — คนละ repo ห้ามปนกัน
+- โปรเจ็คคู่กัน: `PK-Transport\PKT-Analyze\Run` (repo `PKT-Analyze`, วิเคราะห์ตัวชี้วัด Y1–Y7 ด้วย `PKStudio.py`) — คนละ repo ห้ามปนกัน

@@ -11,7 +11,7 @@ git = ระบบ "บันทึกเซฟเกม" ของโค้ด
 
 ## สถานะปัจจุบันของโปรเจ็คนี้
 
-- repo อยู่ที่ `PK Program\PK Studio` (ไม่มีเลขเวอร์ชันในชื่อโฟลเดอร์แล้ว; เวอร์ชันดูที่ `git tag`, `docs/CHANGELOG.md`) — เปิด terminal ที่โฟลเดอร์นี้ก่อนใช้คำสั่ง git
+- repo อยู่ที่ `PK-Transport\PKT-Data` (ไม่มีเลขเวอร์ชันในชื่อโฟลเดอร์แล้ว; เวอร์ชันดูที่ `git tag`, `docs/CHANGELOG.md`) — เปิด terminal ที่โฟลเดอร์นี้ก่อนใช้คำสั่ง git
 - Claude จะ commit และ push ให้เองทุกครั้งที่งานเสร็จ (กติกาอยู่ใน `CLAUDE.md`) คุณไม่ต้องพิมพ์คำสั่ง git เอง
 - ข้อความ commit ใช้รูปแบบ `PK Studio <เวอร์ชัน>: <คำอธิบายสั้น>` เช่น `PK Studio 1.3.8: AutoLabel_WithoutModel_ReferenceBoxes`
 - ไฟล์สำรอง zip อยู่ที่ `PSU Transport Project 2026\Backups\` (ไม่อยู่ใน git)

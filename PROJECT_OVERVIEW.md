@@ -17,7 +17,7 @@ DATA → LABEL → CURATE → ANALYTICS → SPLIT / EXPORT → (เทรนน�
 ### โครงสร้างโฟลเดอร์
 
 ```text
-PK Studio/                     # ← git repo (PKA-Project)
+PK Studio/                     # ← git repo (PKT-Data) — โฟลเดอร์ PK-Transport\PKT-Data
 ├── main.py                    # ตัวเปิดแอป
 ├── run_app.bat / install_and_run.bat / setup.ps1
 ├── requirements.txt / requirements-dev.txt
