@@ -104,3 +104,5 @@ PKT-Analyze <x.y.z>: <คำอธิบายสั้น ๆ แบบ_CamelCa
 - **วิดีโอโดรนที่ใช้กับไฟล์ Zone นี้:** `Drone/ทางเข้าคณะทรัพย์/DJI_0426.MP4` (3840×2160, 29.97 FPS, 3,635 เฟรม ≈ 121 วินาที, 1.5 GB) — ต้องตั้ง PPM/Perspective ใหม่ให้วิดีโอนี้ (ค่าเดิม 57.8/61.97 px/m เป็นของวิดีโอ 1080p เก่า)
 - Python ต้องมี torch + CUDA: **ใช้ Python 3.12** (`C:/Users/boss8/AppData/Local/Programs/Python/Python312/python.exe`, torch 2.6.0+cu124, GTX 1650); Python 3.14 เป็น torch CPU เท่านั้น — เปิดโปรแกรมด้วย `Run_PKStudio.bat` หรือ `py -3.12 PKStudio.py` (โปรแกรมมี bootstrap สลับ Python อัตโนมัติ + กล่องถามเปิดใหม่เมื่อเลือก GPU แต่ Python ปัจจุบันไม่มี CUDA)
 - ประวัติ git: `git log --oneline` (61 commits: Run0 → Run1 → Run2 v2–v17 → Run3 → v27); tag `v27` = เวอร์ชันที่ตรวจในเอกสาร overview
+
+> หมายเหตุ (2026-10-10): ผู้ใช้อนุญาตให้เปลี่ยนชื่อ commit ย้อนหลังทั้งประวัติเป็นครั้งเดียว (รวม 62 commit ที่นำเข้าจากไฟล์เวอร์ชันเก่า) — ทำแล้ว hash เปลี่ยนทั้งหมด; กฎห้ามแก้ประวัติด้านบนยังใช้ตามปกติสำหรับงานต่อไป
