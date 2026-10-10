@@ -97,6 +97,41 @@ check("launching a missing module shows the error", app.launch("data") is None a
 app.settings = {}
 app.refresh()
 
+# the model for PKT Analyze: the card shows it, the settings dialog edits it, Analyze starts with PKT_MODEL_PATH
+from pkt import shared  # noqa: E402
+
+model_file = os.path.join(tmp, "mymodel.pt")
+with open(model_file, "wb") as f:
+    f.write(b"x")
+with open(os.path.join(tmp, "ModAnalyze", "go.py"), "w") as f:
+    f.write("import os, sys\nopen(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'env.txt'), 'w').write(os.environ.get('PKT_MODEL_PATH', 'NONE'))\nimport time; time.sleep(30)")
+app.settings = {}
+check("the settings dialog starts with an empty model", app.open_settings().model_var.get() == "")
+top = app.open_settings()
+top.model_var.set(model_file)
+app._save_settings(top.settings_vars, top)
+check("the model chosen in the settings is saved", json.load(open(settings_path, encoding="utf-8"))["shared"]["analyze_model"] == os.path.normpath(model_file))
+check("the PKT Analyze card shows the model", "mymodel.pt" in app.cards["analyze"]["note"].cget("text"), app.cards["analyze"]["note"].cget("text"))
+proc = app.launch("analyze")
+for _ in range(60):
+    if os.path.isfile(os.path.join(tmp, "ModAnalyze", "env.txt")) and open(os.path.join(tmp, "ModAnalyze", "env.txt")).read():
+        break
+    time.sleep(0.1)
+check("PKT Analyze is started with PKT_MODEL_PATH", open(os.path.join(tmp, "ModAnalyze", "env.txt")).read() == os.path.normpath(model_file))
+proc.kill()
+proc.wait()
+os.remove(os.path.join(tmp, "ModAnalyze", "env.txt"))
+proc = app.launch("data")
+check("another module does not get the variable", proc is not None)
+proc.kill()
+proc.wait()
+top = app.open_settings()
+top.model_var.set("")
+app._save_settings(top.settings_vars, top)
+check("clearing the model forgets it and the note goes away", shared.get_analyze_model(app.settings) == "" and app.cards["analyze"]["note"].cget("text") == "")
+app.settings = {}
+app.refresh()
+
 # open folder
 opened = []
 app._open_path = lambda p: opened.append(p)

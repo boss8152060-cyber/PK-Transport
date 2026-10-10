@@ -8,6 +8,7 @@ import tkinter as tk
 import webbrowser
 from tkinter import filedialog, messagebox, ttk
 
+from pkt import shared
 from pkt import train_core as TC
 from pkt.modules import python_command
 
@@ -26,6 +27,7 @@ class TrainPage:
         self.reader = None
         self.log_q = queue.Queue()
         self.env_q = queue.Queue()
+        self.model_var = tk.StringVar(value="")
         self.run_info = {}
         self.top = tk.Toplevel(self.root)
         self.top.geometry("980x760")
@@ -47,6 +49,7 @@ class TrainPage:
         self.widgets = {}
         self._build()
         self.on_family_changed(initial=True)
+        self.refresh_runs()
         self.check_environment()
         self.top.after(POLL_MS, self._poll)
 
@@ -117,9 +120,10 @@ class TrainPage:
         ttk.Button(bar, text=self.t("train_open_results"), command=self.open_results).pack(side="left", padx=(18, 6))
         ttk.Button(bar, text=self.t("train_open_scripts"), command=self.open_scripts).pack(side="left")
         ttk.Label(lf, textvariable=self.progress_var, font=("Segoe UI", 10, "bold"), foreground="#1f4e79").grid(row=3, column=0, columnspan=3, sticky="w")
+        self._build_runs(lf)
         logf = ttk.LabelFrame(lf, text=f" {self.t('train_log')} ", padding=4)
-        logf.grid(row=4, column=0, columnspan=3, sticky="nsew", pady=(4, 0))
-        lf.rowconfigure(4, weight=1)
+        logf.grid(row=5, column=0, columnspan=3, sticky="nsew", pady=(4, 0))
+        lf.rowconfigure(5, weight=1)
         self.log = tk.Text(logf, height=14, wrap="none", state="disabled", font=("Consolas", 9))
         sb = ttk.Scrollbar(logf, command=self.log.yview)
         self.log.configure(yscrollcommand=sb.set)
@@ -142,6 +146,73 @@ class TrainPage:
 
         ttk.Label(body, textvariable=self.status_var, foreground="#1f4e79").grid(row=6, column=0, columnspan=4, sticky="w", pady=(6, 0))
         self._on_where()
+
+    def _build_runs(self, parent):
+        """The trained runs found in the Runs folder, with the buttons that hand one to PKT Analyze."""
+        rf = ttk.LabelFrame(parent, text=f" {self.t('train_runs')} ", padding=6)
+        rf.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(4, 0))
+        rf.columnconfigure(0, weight=1)
+        cols = ("run", "model", "best_epoch", "map50", "map50_95", "usable")
+        names = {"run": "col_run", "model": "col_model", "best_epoch": "col_best_epoch", "map50": "col_map50", "map50_95": "col_map50_95", "usable": "col_usable"}
+        self.runs_tree = ttk.Treeview(rf, columns=cols, show="headings", height=4, selectmode="browse")
+        for c in cols:
+            self.runs_tree.heading(c, text=self.t(names[c]))
+            self.runs_tree.column(c, width=(150 if c == "model" else 90), anchor="center" if c != "model" else "w")
+        self.runs_tree.grid(row=0, column=0, sticky="ew")
+        sb = ttk.Scrollbar(rf, command=self.runs_tree.yview)
+        self.runs_tree.configure(yscrollcommand=sb.set)
+        sb.grid(row=0, column=1, sticky="ns")
+        rb = ttk.Frame(rf)
+        rb.grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        ttk.Button(rb, text=self.t("train_refresh"), command=self.refresh_runs).pack(side="left")
+        ttk.Button(rb, text=self.t("train_use_in_analyze"), command=self.use_in_analyze).pack(side="left", padx=6)
+        ttk.Button(rb, text=self.t("train_open_run"), command=self.open_run).pack(side="left")
+        ttk.Label(rb, textvariable=self.model_var).pack(side="left", padx=(16, 0))
+        self.runs = []
+
+    def refresh_runs(self):
+        """Look for trained runs again (the folder shown in the Runs field, and its sibling families)."""
+        self.runs = shared.find_runs(shared.runs_root_for(self.store_dir()))
+        self.runs_tree.delete(*self.runs_tree.get_children())
+        for i, r in enumerate(self.runs):
+            fmt = lambda v: "" if v is None else f"{v:.3f}"
+            self.runs_tree.insert("", "end", iid=str(i), values=(r["run"], r["model"] or r["family"], r["best_epoch"] if r["best_epoch"] is not None else "",
+                                                                  fmt(r["map50"]), fmt(r["map50_95"]), "✓" if r["usable_in_analyze"] else "—"))
+        self._show_current_model()
+        return self.runs
+
+    def _show_current_model(self):
+        model = shared.get_analyze_model(self.launcher.settings)
+        self.model_var.set(self.t("train_current_model", name=os.path.basename(model) if model else self.t("train_no_model")))
+
+    def _selected_run(self):
+        sel = self.runs_tree.selection()
+        if not sel:
+            messagebox.showinfo(self.t("app_title"), self.t("train_pick_run"), parent=self.top)
+            return None
+        return self.runs[int(sel[0])]
+
+    def use_in_analyze(self):
+        """Hand the best.pt of the selected run to PKT Analyze (it starts with this model from now on)."""
+        run = self._selected_run()
+        if run is None:
+            return False
+        if not run["usable_in_analyze"]:
+            messagebox.showinfo(self.t("app_title"), self.t("train_not_usable"), parent=self.top)
+            return False
+        shared.set_analyze_model(self.launcher.settings, run["weights"])
+        self.launcher._save()
+        self.launcher.refresh()
+        self._show_current_model()
+        self.status_var.set(self.t("train_model_set", path=run["weights"]))
+        return True
+
+    def open_run(self):
+        run = self._selected_run()
+        if run is None:
+            return False
+        self.launcher._open_path(run["folder"])
+        return True
 
     def _on_where(self):
         local = self.where_var.get() == "local"
@@ -359,6 +430,7 @@ class TrainPage:
         code = self.proc.returncode if self.proc else None
         self.progress_var.set("")
         self.status_var.set(self.t("train_finished", code=code))
+        self.refresh_runs()                           # a new run (or new epochs) may be in the list now
         self.start_btn.configure(state="normal")
         self.stop_btn.configure(state="disabled")
         self.kill_btn.configure(state="disabled")
@@ -397,6 +469,7 @@ class TrainPage:
         """The window language changed: build the labels again (the values the user typed stay)."""
         self._build()
         self.on_family_changed(initial=True)
+        self.refresh_runs()
         self.check_environment()
 
     def close(self):

@@ -11,7 +11,7 @@
   - `PKT-Train/` (repo root) — remote https://github.com/boss8152060-cyber/PKT-Train.git
   - `PKT-Analyze/` โฟลเดอร์แม่ (`Run/` = repo, `Input/ Output/ Other/` = ข้อมูลทดสอบนอก git) — remote https://github.com/boss8152060-cyber/PKT-Analyze.git
   - `_backups/` สำรองเก่า
-- โค้ดของแอปนี้: `main.py` (ตัวเปิด), `pkt/` (`modules.py` ตรรกะหาโมดูล/เวอร์ชัน/คำสั่งเปิด ไม่ผูก GUI, `launcher.py` หน้าต่างหลัก Tk, `train_core.py` ตรรกะ PKT Train ไม่ผูก GUI, `train_page.py` หน้าเทรน, `i18n.py` ข้อความไทย/อังกฤษ), `modules.json` (ที่อยู่ตั้งต้นของโมดูล), `tests/`
+- โค้ดของแอปนี้: `main.py` (ตัวเปิด), `pkt/` (`modules.py` ตรรกะหาโมดูล/เวอร์ชัน/คำสั่งเปิด ไม่ผูก GUI, `launcher.py` หน้าต่างหลัก Tk, `train_core.py` ตรรกะ PKT Train ไม่ผูก GUI, `shared.py` สิ่งที่ใช้ร่วมกันระหว่างโมดูล (หา run ที่เทรนแล้ว, โมเดลของ PKT Analyze, `PKT_MODEL_PATH`), `train_page.py` หน้าเทรน, `i18n.py` ข้อความไทย/อังกฤษ), `modules.json` (ที่อยู่ตั้งต้นของโมดูล), `tests/`
 - ใช้เฉพาะไลบรารีมาตรฐานของ Python (ไม่เพิ่ม dependency ภายนอกโดยไม่จำเป็น)
 - ไฟล์ของผู้ใช้ที่ไม่ขึ้น git: `pkt_settings.json` (ภาษา, โฟลเดอร์/Python ที่ผู้ใช้ตั้ง), `logs/`
 
@@ -25,7 +25,7 @@
 ## ตรวจก่อน commit ทุกครั้ง (รันจากโฟลเดอร์นี้)
 
 1. `python -m py_compile main.py pkt/*.py`
-2. `python -m unittest discover -s tests -v` (test_modules, test_i18n, test_train_core — อ่าน/แพตช์สคริปต์จริงใน `PKT-Train` ถ้ามีอยู่ข้างกัน)
+2. `python -m unittest discover -s tests -v` (test_modules, test_i18n, test_train_core — อ่าน/แพตช์สคริปต์จริงใน `PKT-Train` ถ้ามีอยู่ข้างกัน, test_shared)
 3. `py -3.12 tests/gui_launcher.py` (หน้าต่างจริงแบบซ่อน + โมดูลปลอมในโฟลเดอร์ชั่วคราว)
 4. `py -3.12 tests/gui_train.py` (หน้า PKT Train + โฟลเดอร์ PKT-Train ปลอม + สคริปต์เทรนปลอมที่รันจริงเป็น subprocess)
 

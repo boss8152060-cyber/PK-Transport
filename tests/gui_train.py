@@ -156,6 +156,42 @@ check("the next run really runs", pump(lambda: "/500" in page.progress_var.get()
 page.kill_now()
 check("Stop now ends the process", pump(lambda: proc.poll() is not None and str(page.start_btn.cget("state")) == "normal"))
 
+# trained runs list + hand a model to PKT Analyze
+from pkt import shared  # noqa: E402
+
+runs_root = os.path.join(train_dir, "Runs")
+good = os.path.join(runs_root, "YOLO26", "models_yolo26l", "run1")
+os.makedirs(os.path.join(good, "weights"))
+for name in ("best.pt", "BEST_EPOCH_2.txt"):
+    with open(os.path.join(good, "weights", name), "wb") as f:
+        f.write(b"x")
+with open(os.path.join(good, "results.csv"), "w", encoding="utf-8") as f:
+    f.write("epoch,metrics/mAP50(B),metrics/mAP50-95(B)\n1,0.3,0.2\n2,0.8,0.6\n3,0.7,0.5\n")
+v2 = os.path.join(runs_root, "RTDETRv2", "models_rtdetrv2_r50vd_m", "run1")
+os.makedirs(os.path.join(v2, "weights"))
+with open(os.path.join(v2, "weights", "best.pth"), "wb") as f:
+    f.write(b"x")
+page.store_var.set(os.path.join(runs_root, "YOLO26"))
+runs = page.refresh_runs()
+check("the runs list shows every run with best weights (siblings of the family folder too)", len(runs) == 2 and len(page.runs_tree.get_children()) == 2, str([r["run"] for r in runs]))
+yolo_i = next(i for i, r in enumerate(runs) if r["family"] == "YOLO26")
+vals = page.runs_tree.item(str(yolo_i), "values")
+check("a row shows the model, best epoch and mAP of that epoch", "yolo26l" in vals and "2" in [str(v) for v in vals] and "0.800" in vals and "0.600" in vals, str(vals))
+shown.clear()
+check("Use in PKT Analyze without a selection asks to pick a run", page.use_in_analyze() is False and len(shown) == 1)
+page.runs_tree.selection_set(str(next(i for i, r in enumerate(runs) if r["family"] == "RTDETRv2")))
+shown.clear()
+check("a .pth run is refused with an explanation", page.use_in_analyze() is False and len(shown) == 1 and ".pth" in shown[0])
+check("nothing was chosen yet", shared.get_analyze_model(app.settings) == "")
+page.runs_tree.selection_set(str(yolo_i))
+check("Use in PKT Analyze stores the best.pt", page.use_in_analyze() is True and shared.get_analyze_model(app.settings) == os.path.normpath(os.path.join(good, "weights", "best.pt")))
+check("it is saved in the settings file", json.load(open(settings_path, encoding="utf-8"))["shared"]["analyze_model"].endswith("best.pt"))
+check("the page tells which model PKT Analyze will use", "best.pt" in page.model_var.get() and "best.pt" in page.status_var.get(), page.model_var.get())
+opened_runs = []
+app._open_path = lambda pth: opened_runs.append(pth)
+check("Open run folder opens the folder of the selected run", page.open_run() is True and opened_runs == [good])
+page.store_var.set(os.path.join(runs_root, "YOLO26"))
+
 # language switch updates the open page
 title_th = page.top.title()
 app.set_language("en")

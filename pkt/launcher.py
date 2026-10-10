@@ -5,7 +5,7 @@ import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from pkt import __version__
+from pkt import __version__, shared
 from pkt.i18n import LANGS, LANG_NAMES, Translator
 from pkt.modules import (ROOT, SETTINGS_FILE, DEFAULT_MODULES_FILE, build_command, load_module_defs, load_settings,
                          read_version, resolve_module, save_settings)
@@ -134,7 +134,10 @@ class Launcher:
                 parts.append(self.t("git_missing"))
             card["detail"].config(text="\n".join(parts))
             card["folder"].config(text=info["folder"])
-            card["note"].config(text="")
+            note = ""
+            if mid == "analyze" and shared.get_analyze_model(self.settings):
+                note = self.t("analyze_model_set", name=os.path.basename(shared.get_analyze_model(self.settings)))
+            card["note"].config(text=note)
             card["open"].config(state=("normal" if (info["launchable"] and info["entry_exists"]) else "disabled"))
 
     # ---------------------------------------------------------------- actions
@@ -174,7 +177,8 @@ class Launcher:
         log_path = os.path.join(LOG_DIR, f"{mid}.log")
         try:
             log = open(log_path, "ab")
-            proc = subprocess.Popen(cmd, cwd=info["folder"], stdout=log, stderr=subprocess.STDOUT)
+            env = shared.analyze_environment(self.settings) if mid == "analyze" else None     # PKT Analyze gets the chosen model (PKT_MODEL_PATH)
+            proc = subprocess.Popen(cmd, cwd=info["folder"], env=env, stdout=log, stderr=subprocess.STDOUT)
         except OSError as exc:
             messagebox.showerror(self.t("app_title"), f"{self.t('launch_failed', name=name)}\n\n{exc}", parent=self.root)
             return None
@@ -224,12 +228,26 @@ class Launcher:
                 ttk.Label(frame, text=self.t("python_command")).grid(row=r * 3 + 2, column=0, sticky="w")
                 ttk.Entry(frame, textvariable=pv, width=70).grid(row=r * 3 + 2, column=1, padx=6, sticky="ew")
         frame.columnconfigure(1, weight=1)
+        mrow = len(self.defs) * 3
+        ttk.Label(frame, text=self.t("analyze_model"), font=("Segoe UI", 10, "bold")).grid(row=mrow, column=0, columnspan=3, sticky="w", pady=(12, 2))
+        top.model_var = tk.StringVar(value=shared.get_analyze_model(self.settings))
+        ttk.Entry(frame, textvariable=top.model_var, width=70).grid(row=mrow + 1, column=0, columnspan=2, sticky="ew", padx=(0, 6))
+        mbtns = ttk.Frame(frame)
+        mbtns.grid(row=mrow + 1, column=2)
+        ttk.Button(mbtns, text=self.t("browse"), command=lambda: self._browse_model(top.model_var, top)).pack(side="left")
+        ttk.Button(mbtns, text=self.t("clear"), command=lambda: top.model_var.set("")).pack(side="left", padx=(4, 0))
         bar = ttk.Frame(frame)
-        bar.grid(row=len(self.defs) * 3 + 1, column=0, columnspan=3, sticky="e", pady=(14, 0))
+        bar.grid(row=len(self.defs) * 3 + 3, column=0, columnspan=3, sticky="e", pady=(14, 0))
         ttk.Button(bar, text=self.t("save"), command=lambda: self._save_settings(vars_, top)).pack(side="left", padx=4)
         ttk.Button(bar, text=self.t("cancel"), command=top.destroy).pack(side="left")
         top.settings_vars = vars_
         return top
+
+    def _browse_model(self, var, parent):
+        path = filedialog.askopenfilename(parent=parent, title=self.t("choose_model_file"), filetypes=[("PyTorch model", "*.pt"), ("*", "*.*")],
+                                          initialdir=os.path.dirname(var.get()) if var.get() else self.project_root)
+        if path:
+            var.set(os.path.normpath(path))
 
     def _browse_folder(self, var, name, parent):
         path = filedialog.askdirectory(parent=parent, title=self.t("pick_folder", name=name), initialdir=var.get() or self.project_root)
@@ -251,6 +269,8 @@ class Launcher:
             if entry:
                 mods[mod_def["id"]] = entry
         self.settings["modules"] = mods
+        if getattr(top, "model_var", None) is not None:
+            shared.set_analyze_model(self.settings, top.model_var.get().strip())
         self._save()
         top.destroy()
         self.status_var.set(self.t("saved"))
