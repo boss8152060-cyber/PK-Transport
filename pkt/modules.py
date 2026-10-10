@@ -100,12 +100,14 @@ def read_version(info, mod_def):
 
 
 def python_command(override=""):
-    """The command (list) that starts a module: the user's override, else `py -3.12` on Windows when that works, else this Python."""
+    """The command (list) that starts a module: the user's override, else this Python when it is a virtual environment, else `py -3.12` on Windows when that works, else this Python."""
     override = (override or "").strip()
     if override:
         import shlex
         parts = shlex.split(override, posix=(os.name != "nt"))
         return [q[1:-1] if len(q) >= 2 and q[0] == q[-1] and q[0] in "\"'" else q for q in parts]      # (Windows split keeps the quotes)
+    if sys.prefix != getattr(sys, "base_prefix", sys.prefix):
+        return [sys.executable]                  # running inside the private environment of install.bat (.venv): the modules use it too
     if os.name == "nt":
         try:
             r = subprocess.run(["py", "-3.12", "-V"], capture_output=True, timeout=8)

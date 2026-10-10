@@ -2,7 +2,7 @@
 
 ## สถานะ
 
-- **เวอร์ชันล่าสุด:** 0.7.0 (แอปหน้าต่างเดียว ธีมเดียวกับ PKT Data สลับภาษาไทย/อังกฤษ) — ดู `CHANGELOG.md`
+- **เวอร์ชันล่าสุด:** 0.8.0 (แอปหน้าต่างเดียว ธีมเดียวกับ PKT Data สลับภาษาไทย/อังกฤษ) — ดู `CHANGELOG.md`
 - **Remote:** `origin` = https://github.com/boss8152060-cyber/PK-Transport.git (push แล้ว: main + tag v0.1.0, v0.2.0)
 
 ## งาน
@@ -24,6 +24,7 @@
 
 | วันที่ | สิ่งที่ทำ | ไฟล์ |
 |---|---|---|
+| 2026-10-10 | **0.8.0** ขั้น 4: ตัวติดตั้งคลิกเดียว (`install.bat`/`setup.ps1`) + ZIP พกพา (`make_portable.py`) + `.venv` ถูกเลือกก่อน; ทดสอบ: `setup.ps1 -DryRun`, **ติดตั้งจริงในโฟลเดอร์ชั่วคราวด้วย `-ForceCpu`** (สร้าง .venv, ติดตั้ง torch CPU + ไลบรารี, import ผ่าน, แอปเปิดทุกหน้าจาก .venv ได้ — โมดูลโหลดผ่าน git clone เพราะเครื่องนี้ล็อกอิน GitHub ไว้), แตก ZIP แล้ว `-DryRun` เจอโมดูลครบ; unit test 56 ตัว; **ยังไม่ได้ทดสอบ: ติดตั้ง CUDA จริง (cu124), ติดตั้งบนเครื่องที่ไม่มี Python, เส้นทางโหลด ZIP จาก GitHub (repo เป็น private), ทางลัดจาก setup.ps1 จริง, RT-DETRv2 ต้องมีซอร์ส `src.core` ของมันเอง (ไม่ได้ติดตั้งให้)** | `install.bat`, `setup.ps1`, `make_portable.py`, `pkt/modules.py`, `pkt/shortcut.py`, `run_pk_transport.bat`, `tests/` |
 | 2026-10-10 | **0.7.0** ขั้น 3: ฝัง PKT Analyze เป็นแท็บ (`pages/analyze.py`; `modules.json` analyze มี `page: analyze`); ทดสอบ `tests/gui_analyze.py` (โหลดของจริง ต้องมี torch) + ถ่ายภาพหน้าจอจริง; **ยังไม่ได้วิเคราะห์วิดีโอจริงจากในแท็บ, ข้อความใน PKT Analyze ยังเป็นไทยล้วน (ยังไม่มีอังกฤษ), ปุ่มรีสตาร์ทด้วย Python CUDA ของ PKStudio.py ยังไม่ได้ลอง** | `pkt/ui/pages/analyze.py`, `pkt/ui/app.py`, `pkt/ui/kit.py`, `pkt/ui/theme.py`, `modules.json`, `tests/` |
 | 2026-10-10 | **0.6.0** ขั้น 2: ฝัง PKT Data เป็นแท็บ (`pages/data.py`; `modules.json` data มี `page: data`); `show()` ซ่อนหน้าอื่นจริง; ทดสอบ `tests/gui_data.py` (โหลดของจริง 6 แท็บ สลับ ซ่อน/แสดง ภาษา) + `gui_app.py` ปรับ, ถ่ายภาพหน้าจอจริง; **ยังไม่ได้ลองใช้งานจริงทีละฟีเจอร์ (ดึงเฟรม ตีกรอบ ฯลฯ) ในแท็บ และข้อความใน PKT Data ยังไม่แปลไทย** | `pkt/ui/pages/data.py`, `pkt/ui/app.py`, `modules.json`, `tests/` |
 | 2026-10-10 | **0.5.1** PKT Train: การ์ดตั้งค่าขั้นสูง = ทุกช่อง `# @param` ของสคริปต์ (อ่านด้วย `parse_params`, เขียนกลับด้วย `patch_params` คงคอมเมนต์/รูปแบบตัวเลขเดิม); unit test 54 ตัว + gui_train ตรวจว่าค่าไปถึงสคริปต์จริง; ถ่ายภาพหน้าจอตรวจเลย์เอาต์ | `pkt/train_core.py`, `pkt/ui/pages/train.py`, `pkt/i18n.py`, `tests/` |

@@ -8,6 +8,9 @@ import sys
 def launcher_target(app_root):
     """(program, arguments) a shortcut runs: pyw (no console window) with the Python 3.12 selector when it works, else this Python."""
     main = os.path.join(app_root, "main.py")
+    venv_w = os.path.join(app_root, ".venv", "Scripts", "pythonw.exe")
+    if os.name == "nt" and os.path.isfile(venv_w):
+        return venv_w, f'"{main}"'                  # the private environment made by install.bat
     if os.name == "nt":
         pyw = shutil.which("pyw")
         if pyw:
@@ -32,9 +35,10 @@ def create_shortcut(app_root, folder=None, name="PK Transport"):
           "$dir = $env:PKT_SHORTCUT_DIR; if (-not $dir) { $dir = [Environment]::GetFolderPath('Desktop') }; "
           "$lnk = Join-Path $dir ($env:PKT_SHORTCUT_NAME + '.lnk'); "
           "$s = $ws.CreateShortcut($lnk); $s.TargetPath = $env:PKT_SHORTCUT_PROGRAM; $s.Arguments = $env:PKT_SHORTCUT_ARGS; "
-          "$s.WorkingDirectory = $env:PKT_SHORTCUT_WORKDIR; $s.Description = 'PK Transport'; $s.Save(); Write-Output $lnk")
+          "$s.WorkingDirectory = $env:PKT_SHORTCUT_WORKDIR; $s.Description = 'PK Transport'; "
+          "if ($env:PKT_SHORTCUT_ICON -and (Test-Path $env:PKT_SHORTCUT_ICON)) { $s.IconLocation = $env:PKT_SHORTCUT_ICON }; $s.Save(); Write-Output $lnk")
     env = dict(os.environ, PKT_SHORTCUT_DIR=folder or "", PKT_SHORTCUT_NAME=name, PKT_SHORTCUT_PROGRAM=program,
-               PKT_SHORTCUT_ARGS=args, PKT_SHORTCUT_WORKDIR=app_root)
+               PKT_SHORTCUT_ARGS=args, PKT_SHORTCUT_WORKDIR=app_root, PKT_SHORTCUT_ICON=os.path.join(app_root, "assets", "icon.ico"))
     try:
         r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], capture_output=True, text=True,
                            encoding="utf-8", errors="replace", timeout=30, env=env)

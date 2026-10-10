@@ -11,7 +11,7 @@
   - `PKT-Train/` (repo root) — remote https://github.com/boss8152060-cyber/PKT-Train.git
   - `PKT-Analyze/` โฟลเดอร์แม่ (`Run/` = repo, `Input/ Output/ Other/` = ข้อมูลทดสอบนอก git) — remote https://github.com/boss8152060-cyber/PKT-Analyze.git
   - `_backups/` สำรองเก่า
-- โค้ดของแอปนี้: `main.py` (ตัวเปิด), `pkt/` (`modules.py` ตรรกะหาโมดูล/เวอร์ชัน/คำสั่งเปิด ไม่ผูก GUI, `ui/` หน้าต่างเดียวของแอป (theme/bind สลับภาษาสด/kit/app + pages home, module, settings, train), `train_core.py` ตรรกะ PKT Train ไม่ผูก GUI, `shared.py` สิ่งที่ใช้ร่วมกันระหว่างโมดูล (หา run ที่เทรนแล้ว, โมเดลของ PKT Analyze, `PKT_MODEL_PATH`), `updates.py` ตรวจ/อัปเดตผ่าน git (fetch, `pull --ff-only` อย่างเดียว), `shortcut.py` ทางลัดเดสก์ท็อป, `i18n.py` ข้อความไทย/อังกฤษ), `modules.json` (ที่อยู่ตั้งต้นของโมดูล), `tests/`
+- โค้ดของแอปนี้: `main.py` (ตัวเปิด), `pkt/` (`modules.py` ตรรกะหาโมดูล/เวอร์ชัน/คำสั่งเปิด ไม่ผูก GUI, `ui/` หน้าต่างเดียวของแอป (theme/bind สลับภาษาสด/kit/app + pages home, module, settings, train), `train_core.py` ตรรกะ PKT Train ไม่ผูก GUI, `shared.py` สิ่งที่ใช้ร่วมกันระหว่างโมดูล (หา run ที่เทรนแล้ว, โมเดลของ PKT Analyze, `PKT_MODEL_PATH`), `updates.py` ตรวจ/อัปเดตผ่าน git (fetch, `pull --ff-only` อย่างเดียว), `shortcut.py` ทางลัดเดสก์ท็อป, `i18n.py` ข้อความไทย/อังกฤษ), `modules.json` (ที่อยู่ตั้งต้นของโมดูล), `install.bat` + `setup.ps1` (ตัวติดตั้งคลิกเดียว: Python 3.12, `.venv`, PyTorch GPU/CPU, ไลบรารี, ทางลัด — ไฟล์ .ps1 ต้องเป็น ASCII ล้วน), `make_portable.py` (ZIP พกพา), `tests/`
 - ใช้เฉพาะไลบรารีมาตรฐานของ Python (ไม่เพิ่ม dependency ภายนอกโดยไม่จำเป็น)
 - ไฟล์ของผู้ใช้ที่ไม่ขึ้น git: `pkt_settings.json` (ภาษา, โฟลเดอร์/Python ที่ผู้ใช้ตั้ง), `logs/`
 
@@ -32,6 +32,8 @@
 5. `py -3.12 tests/gui_data.py` (PKT Data ฝังเป็นแท็บ — โหลดโค้ดจริงจาก `PKT-Data/src` ถ้ามี)
 6. `py -3.12 tests/gui_analyze.py` (PKT Analyze ฝังเป็นหน้า — โหลดโค้ดจริง ต้องมี torch/ultralytics)
 7. `py -3.12 tests/gui_updates.py` (ตรวจ/อัปเดต/ทางลัดในหน้าต่างจริงกับ repo git ชั่วคราว)
+
+- ก่อนแจก: `py -3.12 make_portable.py`; แก้ `setup.ps1` แล้วลอง `powershell -File setup.ps1 -DryRun` และติดตั้งจริงในโฟลเดอร์ชั่วคราวด้วย `-ForceCpu -NoLaunch -NoShortcuts` (อย่าติดตั้งทับ `.venv` ของโปรเจกต์โดยไม่จำเป็น)
 
 ## กฎการใช้ git
 

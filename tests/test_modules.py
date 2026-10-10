@@ -122,6 +122,17 @@ class Command(unittest.TestCase):
         self.assertEqual(M.build_command(info), ["mypy", os.path.join(tmp, "s.py")])
 
 
+class VirtualEnv(unittest.TestCase):
+    def test_inside_a_venv_the_modules_use_it(self):
+        real_prefix = sys.prefix
+        try:
+            sys.prefix = os.path.join(real_prefix, "pretend_venv")
+            self.assertEqual(M.python_command(""), [sys.executable])
+            self.assertEqual(M.python_command("py -3.11"), ["py", "-3.11"])          # an override still wins
+        finally:
+            sys.prefix = real_prefix
+
+
 class Settings(unittest.TestCase):
     def test_round_trip_and_bad_file(self):
         tmp = tempfile.mkdtemp(prefix="pkt_set_")

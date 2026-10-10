@@ -18,6 +18,17 @@ class Target(unittest.TestCase):
         self.assertIn(os.path.join(ROOT, "main.py"), args)
 
 
+    @unittest.skipUnless(os.name == "nt", "Windows only")
+    def test_the_private_environment_is_preferred(self):
+        root = tempfile.mkdtemp(prefix="pkt_sc_venv_")
+        os.makedirs(os.path.join(root, ".venv", "Scripts"))
+        venv_w = os.path.join(root, ".venv", "Scripts", "pythonw.exe")
+        open(venv_w, "wb").close()
+        program, args = SC.launcher_target(root)
+        self.assertEqual(program, venv_w)
+        self.assertEqual(args, '"' + os.path.join(root, "main.py") + '"')
+
+
 @unittest.skipUnless(os.name == "nt", "shortcuts are made on Windows only")
 class Lnk(unittest.TestCase):
     def test_creates_a_shortcut_with_target_arguments_and_folder(self):

@@ -28,3 +28,7 @@ __pycache__/
 .vscode/
 .idea/
 Thumbs.db
+
+# portable zip output
+/dist/
+.venv/

@@ -80,7 +80,17 @@ py -3.12 main.py        (หรือดับเบิลคลิก run_pk_tr
 - **0.5.0:** แอปหน้าต่างเดียว: แถบเมนูซ้าย (Home / PKT Data / PKT Train / PKT Analyze / ตั้งค่า), ธีมขาว-ดำ-เทาแบบเดียวกับ PKT Data + โลโก้ PKT Data, สลับไทย/อังกฤษทันที, PKT Train เป็นหน้าในแอป (PKT Data / PKT Analyze ยังเปิดเป็นหน้าต่างแยกจากหน้าโมดูล — ขั้นต่อไปฝังเป็นแท็บ)
 - **0.6.0:** PKT Data ฝังเป็นแท็บในแอป (Data / Label / Curate / Analytics / Zone / Other)
 - **0.7.0:** PKT Analyze ฝังเป็นหน้าในแอป (โหลดครั้งแรกใช้เวลาไม่กี่วินาที)
+- **0.8.0:** ตัวติดตั้งคลิกเดียว `install.bat` + ZIP พกพา `make_portable.py`
 - ถัดไป: ตามความต้องการ (เช่น ส่งโฟลเดอร์ชุดข้อมูลจาก PKT Data ไป PKT Train)
+
+## ติดตั้งบนเครื่องใหม่ / Install on another PC
+
+1. สร้างไฟล์ ZIP พกพา: `py -3.12 make_portable.py` → `dist/PK-Transport-<เวอร์ชัน>-portable.zip` (แอป + PKT Data + PKT Train + PKT Analyze ไม่มีโมเดล/วิดีโอ/ประวัติ git)
+2. ส่ง ZIP ให้ปลายทาง แตกไฟล์ แล้ว **ดับเบิลคลิก `install.bat` ครั้งเดียว** (ต้องมีอินเทอร์เน็ต ไม่ต้องใช้สิทธิ์ admin): ลง Python 3.12 ถ้ายังไม่มี, สร้าง `.venv`, ลง PyTorch (รุ่น GPU ถ้ามี NVIDIA ไม่งั้นรุ่น CPU) + ไลบรารีอื่น, สร้างทางลัด **PK Transport** บน Desktop/Start Menu, แล้วเปิดแอป
+3. ครั้งต่อไปเปิดจากทางลัด (หรือ `run_pk_transport.bat`)
+- ถ้าไม่มีโฟลเดอร์โมดูล `install.bat` จะ `git clone` จาก GitHub (ต้องเข้าถึง repo ได้ — ตอนนี้ repo เป็น private จึงใช้ ZIP พกพา)
+- เครื่องที่แจกด้วย ZIP ไม่มี `.git` → ปุ่มอัปเดตในแอปใช้ไม่ได้ ให้แจก ZIP ใหม่แทน
+- สวิตช์ของ `setup.ps1`: `-DryRun` `-ForceCpu` `-NoLaunch` `-NoShortcuts`
 
 ## ทดสอบ / Tests
 
