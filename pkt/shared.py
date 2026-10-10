@@ -122,3 +122,38 @@ def set_analyze_model(settings, path):
 def get_analyze_model(settings):
     model = ((settings or {}).get("shared") or {}).get("analyze_model", "")
     return model if model and os.path.isfile(model) else ""
+
+
+def find_analysis_outputs(root, limit=30):
+    """The result folders PKT Analyze wrote under `root` (its Output folder): a folder with Run_Summary.json, newest first.
+    Each: {'name', 'folder', 'mtime', 'clip', 'ttc', 'pet'} (ttc / pet = the number of events, None when unknown)."""
+    import json
+    out = []
+    if not root or not os.path.isdir(root):
+        return out
+    root = os.path.normpath(root)
+    for dirpath, dirnames, files in os.walk(root):
+        depth = os.path.relpath(dirpath, root).count(os.sep) + (0 if dirpath == root else 1)
+        if depth >= 4:
+            dirnames[:] = []
+        if "Run_Summary.json" in files:
+            info = {"name": os.path.basename(dirpath), "folder": dirpath, "clip": "", "ttc": None, "pet": None,
+                    "mtime": os.path.getmtime(os.path.join(dirpath, "Run_Summary.json"))}
+            try:
+                with open(os.path.join(dirpath, "Run_Summary.json"), encoding="utf-8") as f:
+                    run = json.load(f)
+                info["clip"] = os.path.basename(str(run.get("video", "")).replace("\\", "/"))
+            except (OSError, ValueError):
+                pass
+            if "Summary.json" in files:
+                try:
+                    with open(os.path.join(dirpath, "Summary.json"), encoding="utf-8") as f:
+                        ind = (json.load(f).get("indicators") or {})
+                    info["ttc"] = (ind.get("TTC") or {}).get("N")
+                    info["pet"] = (ind.get("PET") or {}).get("N")
+                except (OSError, ValueError):
+                    pass
+            out.append(info)
+            dirnames[:] = []
+    out.sort(key=lambda r: r["mtime"], reverse=True)
+    return out[:limit]

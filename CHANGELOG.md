@@ -11,4 +11,6 @@
 
 | **0.4.0** | `64aa118` | PK-Transport 0.4.0: ModuleUpdateCheck_DesktopShortcut_CommitNaming | ตรวจ/อัปเดตเวอร์ชันของโมดูลและของแอปจาก GitHub (fetch + pull --ff-only พร้อมยืนยัน), ตรวจตอนเปิดแอป (ปิดได้), ทางลัดเดสก์ท็อป; รูปแบบชื่อ commit ใหม่ `<ชื่อ repo> <x.y.z>: <คำอธิบาย>` ทุก repo |
 
-เวอร์ชันถัดไป: งานต่อเรื่องเดิม = `0.4.1`; เรื่องใหม่ = `0.5.0`
+| **0.5.0** | (commit นี้) | PK-Transport 0.5.0: SingleWindowApp_MonochromeTheme_LiveLanguageSwitch | แอปหน้าต่างเดียว (`pkt/ui/`): แถบเมนูซ้าย + หน้า Home / PKT Data / PKT Train / PKT Analyze / ตั้งค่า, ธีมขาว-ดำ-เทาและโลโก้/ไอคอนของ PKT Data, สลับไทย/อังกฤษทันทีทุกหน้า, PKT Train เป็นหน้าในแอป, ปิดหน้าต่างระหว่างเทรนจะถามก่อนหยุด; แทน `launcher.py`/`train_page.py`; เพิ่ม `shared.find_analysis_outputs` |
+
+เวอร์ชันถัดไป: งานต่อเรื่องเดิม = `0.5.1`; เรื่องใหม่ = `0.6.0` (ฝัง PKT Data เป็นแท็บ)

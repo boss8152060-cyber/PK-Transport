@@ -14,9 +14,9 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
-from pkt import launcher as L  # noqa: E402
 from pkt import train_core as TC  # noqa: E402
-from pkt import train_page as TP  # noqa: E402
+from pkt.ui import app as A  # noqa: E402
+from pkt.ui.pages import train as TP  # noqa: E402
 
 failures = []
 
@@ -59,7 +59,11 @@ for fam in TC.FAMILIES.values():
         f.write(FAKE)
 defs_path = os.path.join(tmp, "modules.json")
 with open(defs_path, "w", encoding="utf-8") as f:
-    json.dump({"modules": [{"id": "train", "name": "PKT Train", "path": "PKT-Train", "entry": None, "page": "train", "version_file": None}]}, f)
+    json.dump({"modules": [
+        {"id": "data", "name": "PKT Data", "path": "NoData", "entry": None, "version_file": None},
+        {"id": "train", "name": "PKT Train", "path": "PKT-Train", "entry": None, "page": "train", "version_file": None},
+        {"id": "analyze", "name": "PKT Analyze", "path": "NoAnalyze", "entry": None, "version_file": None},
+    ]}, f)
 settings_path = os.path.join(tmp, "pkt_settings.json")
 with open(settings_path, "w", encoding="utf-8") as f:
     json.dump({"modules": {"train": {"python": f'"{sys.executable}"'}}}, f)
@@ -68,19 +72,17 @@ shown = []
 TP.messagebox.showerror = lambda t, m, **k: shown.append(m)
 TP.messagebox.showinfo = lambda t, m, **k: shown.append(m)
 TP.messagebox.askyesno = lambda *a, **k: True
-L.messagebox.showerror = lambda t, m, **k: shown.append(m)
 probes = []
 TC.probe_environment = lambda cmd, timeout=90: (probes.append(cmd), {"python": "3.12.7", "torch": "2.6.0", "cuda": True, "gpu": "Fake GPU", "vram_gb": 8.0, "ultralytics": "8.4"})[1]
 
 root = tk.Tk()
-root.withdraw()
-app = L.Launcher(root, settings_path=settings_path, defs_path=defs_path, project_root=tmp)
+app = A.PKTApp(root, settings_path=settings_path, defs_path=defs_path, project_root=tmp)
 root.update()
-check("the PKT Train card can be opened (it opens a page, not a program)", str(app.cards["train"]["open"].cget("state")) == "normal")
+check("the PKT Train card can be opened (it opens a page, not a program)", str(app.pages["home"].cards["train"]["open"].cget("state")) == "normal")
 page = app.launch("train")
 root.update()
-check("Open on the PKT Train card opens the page", isinstance(page, TP.TrainPage) and app.train_page is page)
-check("opening it again brings the same window", app.launch("train") is page)
+check("Open on the PKT Train card opens the page", isinstance(page, TP.TrainPage) and app.pages["train"] is page and app.current == "train")
+check("opening it again shows the same page", app.launch("train") is page)
 
 
 def pump(cond, seconds=15):
@@ -193,10 +195,10 @@ check("Open run folder opens the folder of the selected run", page.open_run() is
 page.store_var.set(os.path.join(runs_root, "YOLO26"))
 
 # language switch updates the open page
-title_th = page.top.title()
+start_th = str(page.start_btn.cget("text"))
 app.set_language("en")
 root.update()
-check("the page is translated when the language changes", page.top.title() != title_th and "train a detection model" in page.top.title(), page.top.title())
+check("the page is translated when the language changes", str(page.start_btn.cget("text")) != start_th and "Start" in str(page.start_btn.cget("text")), str(page.start_btn.cget("text")))
 check("typed values survive the language switch", page.num_vars["epochs"].get() == "500" and page.family_var.get() == "yolo26")
 check("technical names stay in English", "YOLO26" in page.family_var.get().upper() or page.family_var.get() == "yolo26")
 
@@ -207,11 +209,28 @@ check("a missing script is reported and nothing starts", page.start_training() i
 check("copying with a missing script is reported", page.copy_colab_code() is False)
 
 # layout: the window shows its main controls
-page.top.deiconify()
 root.update()
-check("the buttons fit inside the window", page.start_btn.winfo_rootx() + page.start_btn.winfo_width() < page.top.winfo_rootx() + page.top.winfo_width())
-page.close()
-check("closing the page lets the launcher forget it", app.train_page is None)
+check("the buttons fit inside the window", page.start_btn.winfo_rootx() + page.start_btn.winfo_width() < root.winfo_rootx() + root.winfo_width())
+
+# closing the window while training: asks, stops the run (it can be resumed), then closes
+with open(os.path.join(train_dir, TC.FAMILIES["yolo26"]["script"]), "w", encoding="utf-8") as f:
+    f.write(FAKE)
+page.where_var.set("local")
+page._on_where()
+page.store_var.set(store)
+proc = page.start_training()
+pump(lambda: "/500" in page.progress_var.get())
+asked = []
+TP.messagebox.askyesno = lambda t, m, **k: (asked.append(m), False)[1]
+app.on_close()
+check("closing during training asks first and 'no' keeps the window", len(asked) == 1 and proc.poll() is None and root.winfo_exists())
+TP.messagebox.askyesno = lambda t, m, **k: (asked.append(m), True)[1]
+app.on_close()
+check("'yes' stops the run and closes", pump(lambda: proc.poll() is not None, 20), "process still running")
+if proc.poll() is None:
+    proc.kill()
+print("FAILED: " + ", ".join(failures) if failures else "ALL OK")
+sys.exit(1 if failures else 0)
 root.destroy()
 
 print("FAILED: " + ", ".join(failures) if failures else "ALL OK")

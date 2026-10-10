@@ -112,5 +112,28 @@ class AnalyzeModel(unittest.TestCase):
         self.assertNotIn("PKT_MODEL_PATH", S.analyze_environment({}, base_env={"PKT_MODEL_PATH": "stale"}))      # no stale value from the shell
 
 
+class AnalysisOutputs(unittest.TestCase):
+    def test_finds_result_folders_newest_first(self):
+        import json
+        root = tempfile.mkdtemp(prefix="pkt_out_")
+        old = os.path.join(root, "clipA", "run1")
+        new = os.path.join(root, "clipB")
+        for folder, video in ((old, "C:/x/clipA.mp4"), (new, "clipB.mp4")):
+            os.makedirs(folder)
+            with open(os.path.join(folder, "Run_Summary.json"), "w", encoding="utf-8") as f:
+                json.dump({"video": video}, f)
+        with open(os.path.join(new, "Summary.json"), "w", encoding="utf-8") as f:
+            json.dump({"indicators": {"TTC": {"N": 4}, "PET": {"N": 2}}}, f)
+        os.utime(os.path.join(old, "Run_Summary.json"), (1000, 1000))
+        os.makedirs(os.path.join(root, "empty"))
+        found = S.find_analysis_outputs(root)
+        self.assertEqual([r["name"] for r in found], ["clipB", "run1"])
+        self.assertEqual((found[0]["clip"], found[0]["ttc"], found[0]["pet"]), ("clipB.mp4", 4, 2))
+        self.assertEqual((found[1]["clip"], found[1]["ttc"]), ("clipA.mp4", None))
+        self.assertEqual(len(S.find_analysis_outputs(root, limit=1)), 1)
+        self.assertEqual(S.find_analysis_outputs(os.path.join(root, "nope")), [])
+        self.assertEqual(S.find_analysis_outputs(""), [])
+
+
 if __name__ == "__main__":
     unittest.main()
