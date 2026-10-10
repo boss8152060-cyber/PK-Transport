@@ -348,7 +348,16 @@ def _first_video(folder):
     return os.path.join(folder, "video.mp4")
 
 
-DEFAULT_MODEL = os.path.join(_PK_STUDIO_DIR, "Input", "Model", "best.pt")
+# ---- PKT_ENV-BEGIN (tested by tests/test_env_model.py)
+def _env_model(default, environ=None):
+    """The model the program starts with: PKT_MODEL_PATH (set by PK Transport when the user chose a trained model there) when
+    that file exists, else `default`. The Model field can still be changed in the window."""
+    path = ((environ if environ is not None else os.environ).get("PKT_MODEL_PATH") or "").strip()
+    return path if path and os.path.isfile(path) else default
+# ---- PKT_ENV-END
+
+
+DEFAULT_MODEL = _env_model(os.path.join(_PK_STUDIO_DIR, "Input", "Model", "best.pt"))
 DEFAULT_VIDEO = _first_video(os.path.join(_PK_STUDIO_DIR, "Input", "Video"))
 DEFAULT_OUTPUT = os.path.join(_PK_STUDIO_DIR, "Output")
 
