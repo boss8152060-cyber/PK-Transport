@@ -14,13 +14,15 @@
       "path": "PKT-Train",
       "entry": null,
       "page": "train",
-      "version_file": null
+      "version_file": null,
+      "version_changelog": "CHANGELOG.md"
     },
     {
       "id": "analyze",
       "name": "PKT Analyze",
       "path": "PKT-Analyze",
       "fallback_paths": ["PKT-Analyze/Run"],
+      "version_changelog": "CHANGELOG.md",
       "entry": "PKStudio.py",
       "page": "analyze",
       "version_file": null

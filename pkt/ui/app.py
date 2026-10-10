@@ -314,7 +314,7 @@ class PKTApp:
         out = []
         for mod_def in self.defs:
             info = resolve_module(mod_def, self.settings, self.project_root)
-            if info["exists"]:
+            if info["exists"] and updates.own_repo(info["folder"]):          # normally the modules are part of this repo: one "app" update covers them
                 out.append((mod_def["id"], info["folder"]))
         out.append(("app", self.project_root))
         return out

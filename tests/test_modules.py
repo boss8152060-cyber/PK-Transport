@@ -122,6 +122,16 @@ class Command(unittest.TestCase):
         self.assertEqual(M.build_command(info), ["mypy", os.path.join(tmp, "s.py")])
 
 
+class ChangelogVersion(unittest.TestCase):
+    def test_version_is_the_last_row_of_the_modules_changelog(self):
+        folder = tempfile.mkdtemp(prefix="pkt_cl_")
+        with open(os.path.join(folder, "CHANGELOG.md"), "w", encoding="utf-8") as f:
+            f.write("| เวอร์ชัน | commit |\n|---|---|\n| **0.1.0** | `a` |\n| **PKT-Analyze 1.46.2** | `b` |\n| **PKT-Analyze 1.46.3** | (x) |\n\nถัดไป 9.9.9\n")
+        info = {"folder": folder, "exists": True}
+        self.assertEqual(M.read_version(info, {"version_changelog": "CHANGELOG.md"})["version"], "1.46.3")
+        self.assertEqual(M.read_version(info, {})["version"], "")                    # no source given: nothing guessed
+
+
 class VirtualEnv(unittest.TestCase):
     def test_inside_a_venv_the_modules_use_it(self):
         real_prefix = sys.prefix

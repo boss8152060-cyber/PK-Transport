@@ -16,7 +16,7 @@ sys.path.insert(0, ROOT)
 from pkt import __version__  # noqa: E402
 
 # (folder of the repo relative to ROOT, folder inside the zip)
-REPOS = [(".", "."), ("PKT-Data", "PKT-Data"), ("PKT-Train", "PKT-Train"), ("PKT-Analyze", "PKT-Analyze")]
+REPOS = [(".", ".")]                   # one repository since 1.0.0 (PKT-Data, PKT-Train and PKT-Analyze are folders of it)
 SKIP_SUFFIXES = (".pt", ".pth", ".engine", ".onnx", ".mp4", ".avi", ".mov", ".zip")      # weights and videos are never packed
 SKIP_PARTS = ("_backups", "_git_backup", "_original_colab_versions", "_ort_directml", "__pycache__", ".git", ".venv", "pkt_settings.json", "logs")
 
@@ -55,8 +55,6 @@ def build(out_path, root=ROOT, repos=REPOS, top="PK-Transport"):
                 missing.append(folder)
                 continue
             for rel in tracked_files(repo_dir):
-                if folder == "." and rel.split("/")[0] in ("PKT-Data", "PKT-Train", "PKT-Analyze"):
-                    continue
                 arc = "/".join([top] + [p for p in os.path.normpath(os.path.join(inside, rel)).split(os.sep) if p != "."])
                 z.write(os.path.join(repo_dir, rel), arc)
                 count += 1

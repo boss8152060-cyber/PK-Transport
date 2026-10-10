@@ -74,7 +74,7 @@ check("the check starts", app.check_updates() is True)
 check("a second check while one runs is ignored", app.check_updates() is False)
 check("the checks finish", pump(lambda: not app.checking and "data" in app.updates and "app" in app.updates))
 check("an up-to-date module says so", home.cards["data"]["update"].cget("text") == "✓ Up to date", home.cards["data"]["update"].cget("text"))
-check("a folder that is not a git repo says it cannot be checked", "Not a git folder" in home.cards["train"]["update"].cget("text"), home.cards["train"]["update"].cget("text"))
+check("a module folder without a repo of its own is not checked on its own (the app update covers it)", home.cards["train"]["update"].cget("text") == "" and "train" not in app.updates, home.cards["train"]["update"].cget("text"))
 check("this app's own state is shown in the header", "Up to date" in app.app_update_var.get() and str(sp.app_update_btn.cget("state")) == "disabled", app.app_update_var.get())
 
 # new commits on GitHub for the module

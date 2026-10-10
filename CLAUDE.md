@@ -6,18 +6,20 @@
 ## โครงสร้าง
 
 - **git repo นี้อยู่ที่:** `F:\motorcycle group project\PSU Transport Project 2026\PK-Transport` (branch `main`)
-- โมดูลเป็น **repo แยก** วางข้างกันใต้โฟลเดอร์นี้ (อยู่ใน `.gitignore` ของ repo นี้ ห้าม commit โค้ดโมดูลที่นี่):
-  - `PKT-Data/` (repo root) — remote https://github.com/boss8152060-cyber/PKT-Data.git
-  - `PKT-Train/` (repo root) — remote https://github.com/boss8152060-cyber/PKT-Train.git
-  - `PKT-Analyze/` (ย้ายมาอยู่ระดับนี้แล้ว — `PKStudio.py` อยู่ในโฟลเดอร์นี้ตรง ๆ ไม่มี `Run/` แล้ว; ยังรองรับโครงเก่า `PKT-Analyze/Run` ผ่าน `fallback_paths` ใน modules.json) — remote https://github.com/boss8152060-cyber/PKT-Analyze.git; ถ้าโฟลเดอร์ไม่มี `.git` ของตัวเอง แอปถือว่า "ไม่ใช่โฟลเดอร์ git" (ไม่อ่าน/ไม่ pull จาก repo รอบนอก)
-  - `_backups/` สำรองเก่า
+- **ตั้งแต่ 1.0.0 ทุกอย่างอยู่ใน repo เดียว** (https://github.com/boss8152060-cyber/PK-Transport): โมดูลเป็นโฟลเดอร์ของ repo นี้ พร้อมประวัติ git เดิมของแต่ละ repo (merge เข้ามาแบบเก็บประวัติ; tag เก่าของโมดูลเป็น `data/v1.3.9`, `train/v0.2.1`, `analyze/PKT-1.46.3` ฯลฯ):
+  - `PKT-Data/` — โค้ด PKT Data (`src/pk_studio/`), อ่านกฎของมันที่ `PKT-Data/CLAUDE.md`
+  - `PKT-Train/` — สคริปต์เทรน 3 ตัว (ห้ามแก้เกินจำเป็น: แอปแพตช์สำเนาตอนรัน)
+  - `PKT-Analyze/` — `PKStudio.py` + เอกสาร/เทสต์ของ PKT Analyze
+  - repo เดิมทั้ง 3 (PKT-Data / PKT-Train / PKT-Analyze) ยังอยู่บน GitHub เป็นที่เก็บถาวร ไม่ใช้ commit ใหม่แล้ว
+  - **กฎ commit/CHANGELOG ใน CLAUDE.md ของโมดูล (รูปแบบ `PKT-Data x.y.z` ฯลฯ) ใช้ไม่ได้แล้ว — ใช้กฎของไฟล์นี้ (`PK-Transport x.y.z`) แทน**; ส่วนกฎการแก้โค้ด/เทสต์ของโมดูลยังใช้
+  - `_backups/` สำรองเก่า (ไม่ขึ้น git)
 - โค้ดของแอปนี้: `main.py` (ตัวเปิด), `pkt/` (`modules.py` ตรรกะหาโมดูล/เวอร์ชัน/คำสั่งเปิด ไม่ผูก GUI, `ui/` หน้าต่างเดียวของแอป (theme/bind สลับภาษาสด/kit/app + pages home, module, settings, train), `train_core.py` ตรรกะ PKT Train ไม่ผูก GUI, `shared.py` สิ่งที่ใช้ร่วมกันระหว่างโมดูล (หา run ที่เทรนแล้ว, โมเดลของ PKT Analyze, `PKT_MODEL_PATH`), `updates.py` ตรวจ/อัปเดตผ่าน git (fetch, `pull --ff-only` อย่างเดียว), `shortcut.py` ทางลัดเดสก์ท็อป, `i18n.py` ข้อความไทย/อังกฤษ), `modules.json` (ที่อยู่ตั้งต้นของโมดูล), `install.bat` + `setup.ps1` (ตัวติดตั้งคลิกเดียว: Python 3.12, `.venv`, PyTorch GPU/CPU, ไลบรารี, ทางลัด — ไฟล์ .ps1 ต้องเป็น ASCII ล้วน), `make_portable.py` (ZIP พกพา), `tests/`
 - ใช้เฉพาะไลบรารีมาตรฐานของ Python (ไม่เพิ่ม dependency ภายนอกโดยไม่จำเป็น)
 - ไฟล์ของผู้ใช้ที่ไม่ขึ้น git: `pkt_settings.json` (ภาษา, โฟลเดอร์/Python ที่ผู้ใช้ตั้ง), `logs/`
 
 ## กฎของแอป
 
-- **ไม่แก้โค้ดของโมดูลจากที่นี่** — แต่ละโมดูลแก้และ commit ใน repo ของตัวเอง (ดู CLAUDE.md ของโมดูลนั้น) การเรียกโมดูลทำเป็นโปรแกรมแยก (subprocess) เท่านั้น
+- แก้โมดูลได้ใน repo นี้ (ตามกฎของโมดูลนั้นใน `PKT-*/CLAUDE.md` เรื่องโค้ด/เทสต์); PKT Data และ PKT Analyze ถูกฝังเป็นหน้าในแอป (ดู `pkt/ui/pages/data.py`, `analyze.py`) PKT Train เป็นหน้าของแอป
 - ข้อความบนหน้าจอใส่ใน `pkt/i18n.py` ทั้งไทยและอังกฤษ (key ต้องครบทั้งสองภาษา — มีเทสต์ตรวจ); **ศัพท์เฉพาะไม่แปล** (TTC, PET, LDP, Lateral Clearance, Gap Acceptance, Speed, ชื่อโมเดล YOLO26/RT-DETR/RT-DETRv2, Colab, ชื่อโมดูล) ดู `KEEP_TERMS`
 - ธีม: ขาว-ดำ-เทาโทนเข้มเหมือน PKT Data (สีอยู่ใน `pkt/ui/theme.py`), โลโก้ = ของ PKT Data (`assets/icon.ico`) — ห้ามเปลี่ยนเป็นสีฉูดฉาด; ใช้ `TextBinder` ผูกข้อความเพื่อให้สลับภาษาสด
 - เรียกตัวชี้วัดด้วยชื่อ ห้ามใช้รหัส Y1–Y7
@@ -40,7 +42,7 @@
 หลังทำงานเสร็จและตรวจแล้ว commit + push ให้เอง (remote `origin` ของ repo นี้เท่านั้น):
 
 ```
-PK-Transport <x.y.z>: <คำอธิบายสั้น ๆ_แบบ_CamelCase> [(PASS)]
+PK-Transport <x.y.z>: <คำอธิบายสั้น ๆ_แบบ_CamelCase> [(PASS)]   # repo เดียวสำหรับทุกอย่าง
 ```
 
 - **ชื่อ repo นำหน้าเลขเวอร์ชัน เหมือนกันทุก repo ของ PK Transport** (`PK-Transport` / `PKT-Analyze` / `PKT-Data` / `PKT-Train` — รูปแบบ `<ชื่อ repo> <x.y.z>: <คำอธิบาย>`); commit เก่าที่ใช้ชื่อรูปแบบเดิมไม่แก้ (ไม่แก้ประวัติ); commit เก่าที่ขึ้นต้น `PK Transport x.y.z:` ไม่แก้

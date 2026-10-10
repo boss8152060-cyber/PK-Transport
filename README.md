@@ -28,7 +28,7 @@ PK-Transport/          ← repo นี้
 ├─ main.py, pkt/, modules.json ...
 ├─ PKT-Data/           ← git clone .../PKT-Data.git
 ├─ PKT-Train/          ← git clone .../PKT-Train.git
-└─ PKT-Analyze/        ← repo ของ PKT Analyze (PKStudio.py อยู่ในโฟลเดอร์นี้ตรง ๆ; โครงเก่า PKT-Analyze/Run ก็ยังเปิดได้)
+└─ PKT-Analyze/        ← PKT Analyze (PKStudio.py)
 ```
 
 ถ้าวางที่อื่น ตั้งโฟลเดอร์ของแต่ละโมดูลได้ที่ปุ่ม **ตั้งค่า / Settings** ในแอป
@@ -81,6 +81,7 @@ py -3.12 main.py        (หรือดับเบิลคลิก run_pk_tr
 - **0.6.0:** PKT Data ฝังเป็นแท็บในแอป (Data / Label / Curate / Analytics / Zone / Other)
 - **0.7.0:** PKT Analyze ฝังเป็นหน้าในแอป (โหลดครั้งแรกใช้เวลาไม่กี่วินาที)
 - **0.8.0:** ตัวติดตั้งคลิกเดียว `install.bat` + ZIP พกพา `make_portable.py`
+- **1.0.0:** รวม repo ทั้ง 4 เป็นหนึ่งเดียว (เก็บประวัติเดิมครบ); ปุ่มอัปเดตครั้งเดียวครอบคลุมทุกโมดูล
 - ถัดไป: ตามความต้องการ (เช่น ส่งโฟลเดอร์ชุดข้อมูลจาก PKT Data ไป PKT Train)
 
 ## ติดตั้งบนเครื่องใหม่ / Install on another PC
@@ -88,8 +89,8 @@ py -3.12 main.py        (หรือดับเบิลคลิก run_pk_tr
 1. สร้างไฟล์ ZIP พกพา: `py -3.12 make_portable.py` → `dist/PK-Transport-<เวอร์ชัน>-portable.zip` (แอป + PKT Data + PKT Train + PKT Analyze ไม่มีโมเดล/วิดีโอ/ประวัติ git)
 2. ส่ง ZIP ให้ปลายทาง แตกไฟล์ แล้ว **ดับเบิลคลิก `install.bat` ครั้งเดียว** (ต้องมีอินเทอร์เน็ต ไม่ต้องใช้สิทธิ์ admin): ลง Python 3.12 ถ้ายังไม่มี, สร้าง `.venv`, ลง PyTorch (รุ่น GPU ถ้ามี NVIDIA ไม่งั้นรุ่น CPU) + ไลบรารีอื่น, สร้างทางลัด **PK Transport** บน Desktop/Start Menu, แล้วเปิดแอป
 3. ครั้งต่อไปเปิดจากทางลัด (หรือ `run_pk_transport.bat`)
-- ถ้าไม่มีโฟลเดอร์โมดูล `install.bat` จะ `git clone` จาก GitHub (ต้องเข้าถึง repo ได้ — ตอนนี้ repo เป็น private จึงใช้ ZIP พกพา)
-- เครื่องที่แจกด้วย ZIP ไม่มี `.git` → ปุ่มอัปเดตในแอปใช้ไม่ได้ ให้แจก ZIP ใหม่แทน
+- ได้โค้ดมาจาก GitHub ก็ได้: **Code → Download ZIP** (หรือ `git clone https://github.com/boss8152060-cyber/PK-Transport.git`) แล้วรัน `install.bat` — ทุกโมดูลอยู่ใน repo เดียว (repo ต้องเป็น public ถึงจะโหลดได้โดยไม่ล็อกอิน)
+- เครื่องที่ได้ ZIP ไม่มี `.git` → ปุ่มอัปเดตในแอปใช้ไม่ได้ ให้โหลด ZIP ใหม่แทน (ถ้า `git clone` ไว้ ปุ่มอัปเดตใช้ได้)
 - สวิตช์ของ `setup.ps1`: `-DryRun` `-ForceCpu` `-NoLaunch` `-NoShortcuts`
 
 ## ทดสอบ / Tests

@@ -96,6 +96,14 @@ def read_version(info, mod_def):
             pass
     top = _git(folder, "rev-parse", "--show-toplevel")
     own = bool(top) and os.path.normcase(os.path.realpath(top)) == os.path.normcase(os.path.realpath(folder))      # not the repo around it
+    cl = mod_def.get("version_changelog")
+    if cl and not out["version"]:                                   # the last version row of the module's CHANGELOG.md:  | **0.2.1** | ...
+        try:
+            rows = re.findall(r"^\|\s*\*\*(?:PKT(?:-Analyze)?\s+)?(\d+\.\d+\.\d+)\*\*", open(os.path.join(folder, cl), encoding="utf-8").read(), re.M)
+            if rows:
+                out["version"] = rows[-1]
+        except OSError:
+            pass
     commit = _git(folder, "rev-parse", "--short", "HEAD") if own else None
     if commit is not None:
         out["git"] = True

@@ -1,8 +1,7 @@
 # =========================================================================
 # PK Transport - one-time installer (called by install.bat; do not run it by hand)
 #   1. Python 3.12 (installed for the current user when missing)
-#   2. The three modules next to this file (PKT-Data, PKT-Train, PKT-Analyze): used as they are when present
-#      (e.g. from the portable zip), otherwise downloaded from GitHub
+#   2. Checks that the three programs (PKT-Data, PKT-Train, PKT-Analyze folders) are there - they are part of this repository
 #   3. A private Python environment in .venv (nothing is installed into the system Python)
 #   4. PyTorch: the CUDA build that matches the NVIDIA driver, or the CPU build when there is no NVIDIA GPU
 #   5. ultralytics, opencv-python, pillow, pyyaml, matplotlib, numpy, albumentations
@@ -24,7 +23,6 @@ param(
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $Root
-$Owner = "boss8152060-cyber"
 $VenvDir = Join-Path $Root ".venv"
 $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
 $VenvPythonW = Join-Path $VenvDir "Scripts\pythonw.exe"
@@ -75,45 +73,20 @@ if (-not $havePython) {
     }
 }
 
-# ------------------------------------------------------------------ 2. modules
-Write-Step "Step 2/6: PKT Data, PKT Train, PKT Analyze"
+# ------------------------------------------------------------------ 2. the three programs
+Write-Step "Step 2/6: PKT Data, PKT Train, PKT Analyze (part of this folder)"
 $modules = @(
-    @{ Name = "PKT Data";    Repo = "PKT-Data";    Dir = "PKT-Data";         Marker = "main.py" },
-    @{ Name = "PKT Train";   Repo = "PKT-Train";   Dir = "PKT-Train";        Marker = "README.md" },
-    @{ Name = "PKT Analyze"; Repo = "PKT-Analyze"; Dir = "PKT-Analyze";     Marker = "PKStudio.py" }
+    @{ Name = "PKT Data";    Dir = "PKT-Data";    Marker = "main.py" },
+    @{ Name = "PKT Train";   Dir = "PKT-Train";   Marker = "README.md" },
+    @{ Name = "PKT Analyze"; Dir = "PKT-Analyze"; Marker = "PKStudio.py" }
 )
-$haveGit = [bool](Get-Command git -ErrorAction SilentlyContinue)
 $missing = @()
 foreach ($m in $modules) {
-    $folder = Join-Path $Root $m.Dir
-    if (Test-Path (Join-Path $folder $m.Marker)) { Write-Host "$($m.Name): found ($($m.Dir))"; continue }
-    if ($DryRun) { Write-Host "[dry run] $($m.Name): download from GitHub into $($m.Dir)"; continue }
-    $ok = $false
-    $repoUrl = "https://github.com/$Owner/$($m.Repo)"
-    try {
-        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $folder) | Out-Null
-        if ($haveGit) {
-            $env:GIT_TERMINAL_PROMPT = "0"
-            & git clone --quiet "$repoUrl.git" $folder 2>&1 | Out-Null
-            $ok = ($LASTEXITCODE -eq 0) -and (Test-Path (Join-Path $folder $m.Marker))
-        }
-        if (-not $ok) {
-            $zip = Join-Path $env:TEMP "$($m.Repo).zip"
-            $tmp = Join-Path $env:TEMP "$($m.Repo)_unzip"
-            if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force }
-            Invoke-WebRequest -Uri "$repoUrl/archive/refs/heads/main.zip" -OutFile $zip
-            Expand-Archive -Path $zip -DestinationPath $tmp -Force
-            $inner = Get-ChildItem $tmp | Select-Object -First 1
-            if (Test-Path $folder) { Remove-Item $folder -Recurse -Force }
-            Move-Item $inner.FullName $folder
-            Remove-Item $zip, $tmp -Recurse -Force -ErrorAction SilentlyContinue
-            $ok = Test-Path (Join-Path $folder $m.Marker)
-        }
-    } catch { $ok = $false }
-    if ($ok) { Write-Host "$($m.Name): downloaded" } else { $missing += $m.Name; Write-Warn "$($m.Name) could not be downloaded (the repository may be private)." }
+    if (Test-Path (Join-Path (Join-Path $Root $m.Dir) $m.Marker)) { Write-Host "$($m.Name): found ($($m.Dir))" }
+    else { $missing += $m.Name; Write-Warn "$($m.Name) is missing ($($m.Dir))." }
 }
 if ($missing.Count -gt 0) {
-    Write-Warn "Missing: $($missing -join ', '). Copy those folders next to this file (or use the portable zip) and run install.bat again."
+    Stop-Install "This folder is incomplete (missing: $($missing -join ', ')). Download the whole repository (GitHub: Code > Download ZIP, or git clone) or use the portable zip, and run install.bat from there."
 }
 
 # ------------------------------------------------------------------ 3. environment
