@@ -52,13 +52,15 @@
 ### รูปแบบ commit message
 
 ```
-PK Studio <เวอร์ชัน>: <คำอธิบายสั้น ๆ ภาษาอังกฤษ ใช้_ขีดล่าง_คั่น> [(PASS)]
+PKT-Data <เวอร์ชัน>: <คำอธิบายสั้น ๆ ภาษาอังกฤษ ใช้_ขีดล่าง_คั่น> [(PASS)]
 ```
 
+- **ชื่อ repo นำหน้าเลขเวอร์ชัน เหมือนกันทุก repo ของ PK Transport** (`PK-Transport` / `PKT-Analyze` / `PKT-Data` / `PKT-Train` — รูปแบบ `<ชื่อ repo> <x.y.z>: <คำอธิบาย>`); commit เก่าที่ใช้ชื่อรูปแบบเดิมไม่แก้ (ไม่แก้ประวัติ); commit เก่าที่ขึ้นต้น `PK Studio x.y.z:` ไม่แก้
+
 ตัวอย่าง:
-- `PK Studio 1.3.8: AutoLabel_WithoutModel_ReferenceBoxes`
-- `PK Studio 1.3.10: BatchLabel_Backup_Undo`
-- `PK Studio 1.3.10(1): Tracking_FromPreviousFrame`
+- `PKT-Data 1.3.8: AutoLabel_WithoutModel_ReferenceBoxes`
+- `PKT-Data 1.3.10: BatchLabel_Backup_Undo`
+- `PKT-Data 1.3.10(1): Tracking_FromPreviousFrame`
 
 กฎ:
 - **เวอร์ชัน** = เลขใน `__version__` หลังแก้ ต้องตรงกับหัวข้อล่าสุดใน `docs/CHANGELOG.md` เสมอ
@@ -67,7 +69,7 @@ PK Studio <เวอร์ชัน>: <คำอธิบายสั้น ๆ 
   - เปลี่ยนใหญ่ (โครงสร้างแท็บ/รูปแบบข้อมูล) → ขึ้น minor (1.4.0) และแจ้งผู้ใช้
 - **คำอธิบาย** = อังกฤษ สั้น ไม่มีช่องว่าง บอกว่าแก้/เพิ่มอะไร
 - ต่อท้าย **` (PASS)`** เฉพาะเมื่อผู้ใช้ยืนยันแล้วว่าลองรันจริงผ่าน (Claude ห้ามใส่เอง)
-- commit ที่ไม่ใช่โค้ด ใช้ `Docs: <คำอธิบาย>` หรือ `Chore: <คำอธิบาย>` (ไม่ขึ้นเวอร์ชัน)
+- commit ที่ไม่ใช่โค้ด (เอกสาร/จัดระเบียบ) ก็ขึ้นต้นด้วยเลขเวอร์ชันปัจจุบันต่อท้าย `(n)` เช่น `PKT-Data 1.3.9(1): Docs_CommitMessageFormat` (ไม่ต้องแก้ `__version__`; คำอธิบายขึ้นต้น `Docs_` หรือ `Chore_`)
 - บรรทัดสุดท้ายของ message ใส่ trailer `Co-Authored-By: ...` ตามที่ระบบกำหนด
 - ประวัติถูกสร้างใหม่เมื่อ 2026-09-30 (นำเข้าเวอร์ชันเก่า 10 เวอร์ชัน + งานแก้ของ Claude เป็น 1.3.7 และ 1.3.8) — ห้ามแก้ประวัติส่วนนี้ (ต้อง force-push)
 
