@@ -112,6 +112,50 @@ class RunSetup(unittest.TestCase):
         self.assertEqual(TC.default_store_dir(tmp, "rtdetrv2"), os.path.join(tmp, "Runs", "RTDETRv2"))
 
 
+class Params(unittest.TestCase):
+    TEXT = ('cache = "disk"     # @param ["disk", "False"]\n'
+            'lr0 = 0.0001      # @param {type:"number"}\n'
+            'aug_p_crop = 0.30 # @param {type:"number"}\n'
+            'amp = True        # @param {type:"boolean"}\n'
+            'close_mosaic = 10 # @param {type:"integer"}\n'
+            'epochs = 300      # @param {type:"integer"}\n'
+            'MODEL_SIZE = "l"  # @param ["n", "l"]\n')
+
+    def test_parse_skips_the_fields_with_their_own_controls(self):
+        specs = {p["key"]: p for p in TC.parse_params(self.TEXT)}
+        self.assertEqual(list(specs), ["cache", "lr0", "aug_p_crop", "amp", "close_mosaic"])
+        self.assertEqual((specs["cache"]["kind"], specs["cache"]["options"]), ("choice", ["disk", "False"]))
+        self.assertEqual((specs["amp"]["kind"], specs["amp"]["default"]), ("bool", True))
+        self.assertEqual((specs["lr0"]["kind"], specs["close_mosaic"]["kind"]), ("number", "int"))
+
+    def test_patch_keeps_spelling_comments_and_types(self):
+        same, _ = TC.patch_params(self.TEXT, {"aug_p_crop": "0.3", "lr0": "0.0001"})
+        self.assertEqual(same, self.TEXT)                                       # unchanged values keep the script's own text
+        new, missing = TC.patch_params(self.TEXT, {"cache": "False", "lr0": "0.0005", "amp": False, "close_mosaic": "5", "nope": 1})
+        self.assertEqual(missing, ["nope"])
+        self.assertIn('cache = "False"     # @param ["disk", "False"]', new)
+        self.assertIn("lr0 = 0.0005 ", new)
+        self.assertIn("amp = False ", new)
+        self.assertIn("close_mosaic = 5 ", new)
+
+    def test_patch_text_applies_params(self):
+        new, _ = TC.patch_text(self.TEXT, {"epochs": 5, "params": {"lr0": "0.001"}})
+        self.assertIn("epochs = 5 ", new)
+        self.assertIn("lr0 = 0.001 ", new)
+
+    def test_real_scripts_round_trip(self):
+        for family in TC.FAMILY_ORDER:
+            path = TC.script_path(REAL_DIR, family)
+            if not os.path.isfile(path):
+                continue
+            text = TC.read_text(path)
+            specs = TC.parse_params(text)
+            self.assertGreater(len(specs), 20, family)
+            new, missing = TC.patch_params(text, {p["key"]: p["default"] for p in specs})
+            self.assertEqual((new, missing), (text, []), family)               # writing the defaults back changes nothing
+            ast.parse(TC.patch_params(text, {"aug_rotation_degrees": "30"})[0])
+
+
 @unittest.skipUnless(os.path.isdir(REAL_DIR), "PKT-Train is not next to this app")
 class RealScripts(unittest.TestCase):
     def test_every_script_can_be_read_patched_and_split(self):

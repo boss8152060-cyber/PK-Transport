@@ -174,6 +174,8 @@ TEXT = {
         "train_copied": "Copied {what} ({lines} lines) — paste it into Colab",
         "train_open_colab": "Open Colab",
         "train_busy_close": "Training is running. Stop it before closing this window?",
+        "train_advanced": "Advanced settings",
+        "train_advanced_hint": "The same fields as the Colab form of the chosen script (optimizer, cache, close_mosaic, augmentation ...). They are written into the copy that is run, and into the code you copy for Colab.",
         "train_log_hint": "The log is also kept in the run folder.",
     },
     "th": {
@@ -336,6 +338,8 @@ TEXT = {
         "train_copied": "คัดลอก {what} แล้ว ({lines} บรรทัด) — ไปวางใน Colab ได้เลย",
         "train_open_colab": "เปิด Colab",
         "train_busy_close": "กำลังเทรนอยู่ หยุดก่อนปิดหน้าต่างนี้ไหม",
+        "train_advanced": "ตั้งค่าขั้นสูง",
+        "train_advanced_hint": "ช่องเดียวกับฟอร์มใน Colab ของสคริปต์ที่เลือก (optimizer, cache, close_mosaic, augmentation ...) ค่าที่ตั้งจะถูกใส่ในสำเนาที่รัน และในโค้ดที่คัดลอกไป Colab",
         "train_log_hint": "log ถูกเก็บไว้ในโฟลเดอร์ของ run ด้วย",
     },
 }

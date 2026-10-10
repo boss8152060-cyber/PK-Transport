@@ -39,6 +39,8 @@ class TrainPage(ttk.Frame):
         self.num_vars = {k: tk.StringVar(value="") for k in TC.NUMERIC_KEYS}
         self.mode_var = tk.StringVar(value="auto")
         self.source_var = tk.StringVar(value="")
+        self.param_vars = {}                      # the other "# @param" fields of the script (key -> Tk variable)
+        self.param_specs = []
         self.copy_var = tk.StringVar(value="")
         self.env_var = tk.StringVar(value="")
         self.progress_var = tk.StringVar(value="")
@@ -113,6 +115,16 @@ class TrainPage(ttk.Frame):
         mode.grid(row=3, column=0, columnspan=3, sticky="w", pady=(4, 0))
         self.widgets["mode"] = mode
         ttk.Entry(grid, textvariable=self.source_var, width=14).grid(row=3, column=3, columnspan=2, sticky="w", padx=(12, 0), pady=(4, 0))
+
+        # ---- every other Colab form field of the chosen script (optimizer, cache, augmentation ...)
+        card = Card(body)
+        card.pack(fill="x", pady=(0, 14))
+        b.label(card.inner, "train_advanced", style="CardTitle.TLabel").pack(anchor="w")
+        autowrap(b.label(card.inner, "train_advanced_hint", style="CardSubtle.TLabel", justify="left"), card.inner).pack(anchor="w", pady=(4, 0))
+        self.adv_grid = ttk.Frame(card.inner, style="Card.TFrame")
+        self.adv_grid.pack(fill="x", pady=(10, 0))
+        for col in range(3):
+            self.adv_grid.columnconfigure(col, weight=1, uniform="adv")
 
         # ---- local training
         self.local_frame = ttk.Frame(body)
@@ -294,10 +306,35 @@ class TrainPage(ttk.Frame):
                     self.num_vars[key].set(str(d[key]))
             self.mode_var.set(d.get("training_mode", "auto"))
             self.source_var.set(d.get("source_run_name", ""))
+            self._build_params(TC.parse_params(TC.read_text(path)))
+        elif not os.path.isfile(path):
+            self._build_params([])
         if not self.store_var.get() or not initial:
             self.store_var.set(TC.default_store_dir(self.train_dir, self.family_var.get()))
         self._refresh_copy_options()
         self._save_choices()
+
+    def _build_params(self, specs):
+        """One input per "# @param" field: a list for choices, a check box for True/False, a text box for numbers and text."""
+        for w in self.adv_grid.winfo_children():
+            w.destroy()
+        self.param_vars, self.param_specs = {}, specs
+        for i, spec in enumerate(specs):
+            row, col = divmod(i, 3)
+            cell = ttk.Frame(self.adv_grid, style="Card.TFrame")
+            cell.grid(row=row, column=col, sticky="ew", padx=(0 if col == 0 else 10, 0), pady=(0, 10))
+            key = spec["key"]
+            if spec["kind"] == "bool":
+                var = tk.BooleanVar(value=bool(spec["default"]))
+                ttk.Checkbutton(cell, text=key, variable=var, style="Card.TCheckbutton").pack(anchor="w", pady=(14, 0))
+            else:
+                var = tk.StringVar(value=str(spec["default"]))
+                ttk.Label(cell, text=key, style="CardMuted.TLabel").pack(anchor="w")
+                if spec["kind"] == "choice":
+                    ttk.Combobox(cell, textvariable=var, values=spec["options"], state="readonly").pack(fill="x", pady=(4, 0))
+                else:
+                    ttk.Entry(cell, textvariable=var).pack(fill="x", pady=(4, 0))
+            self.param_vars[key] = var
 
     def _refresh_copy_options(self, select="all"):
         labels = [self.t("train_copy_all"), self.t("train_copy_file")]
@@ -322,6 +359,14 @@ class TrainPage(ttk.Frame):
                     s[key] = int(float(v))
                 except ValueError:
                     pass
+        params = {}
+        for spec in self.param_specs:
+            v = self.param_vars[spec["key"]].get()
+            if spec["kind"] in ("int", "number") and not str(v).strip():
+                continue
+            params[spec["key"]] = v
+        if params:
+            s["params"] = params
         return s
 
     # ---------------------------------------------------------------- environment

@@ -40,9 +40,13 @@ imgsz = 640        # @param {type:"integer"}
 batch = 48         # @param {type:"integer"}
 workers = 24       # @param {type:"integer"}
 patience = 15      # @param {type:"integer"}
+cache = "disk"     # @param ["disk", "False"]
+lr0 = 0.0001       # @param {type:"number"}
+amp = True         # @param {type:"boolean"}
 store = os.environ.get("PKT_STORE_DIR", "")
 print("MODEL", os.environ.get("PKT_MODEL_SIZE"), MODEL_SIZE, "EPOCHS", epochs, "MODE", training_mode, flush=True)
 print("STORE", store, flush=True)
+print("PARAMS", cache, lr0, amp, flush=True)
 for ep in range(1, epochs + 1):
     print(f"        {ep}/{epochs}     2.4G     1.23", flush=True)
     time.sleep(0.15)
@@ -140,11 +144,16 @@ page.store_var.set(store)
 page.dataset_var.set(os.path.join(tmp, "data"))
 page.num_vars["epochs"].set("500")
 page.mode_var.set("new")
+check("the other Colab form fields are listed with the right input types", list(page.param_vars) == ["cache", "lr0", "amp"] and isinstance(page.param_vars["amp"], tk.BooleanVar), str(list(page.param_vars)))
+page.param_vars["cache"].set("False")
+page.param_vars["lr0"].set("0.0005")
+page.param_vars["amp"].set(False)
 proc = page.start_training()
 check("training starts a process and disables Start", proc is not None and str(page.start_btn.cget("state")) == "disabled" and str(page.stop_btn.cget("state")) == "normal")
 check("a second start is refused", page.start_training() is None and any("already" in m or "อยู่แล้ว" in m for m in shown))
 check("the log shows the output of the run with the patched settings", pump(lambda: "EPOCHS 500 MODE new" in page.log.get("1.0", "end")), page.log.get("1.0", "end")[:300])
 log_text = page.log.get("1.0", "end")
+check("the advanced settings reach the script", "PARAMS False 0.0005 False" in log_text, log_text[:300])
 check("the script got the model size and the folders through the environment", "MODEL x x" in log_text and f"STORE {store}" in log_text, log_text[:200])
 check("the progress line follows the epoch", pump(lambda: "epoch" in page.progress_var.get() and "/500" in page.progress_var.get()), page.progress_var.get())
 check("Stop writes STOP.flag in the runs folder", page.request_stop() is True and os.path.isfile(os.path.join(store, "STOP.flag")))

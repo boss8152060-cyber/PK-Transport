@@ -92,7 +92,65 @@ def patch_text(text, settings):
                 text = pat.sub(lambda m: f'{m.group(1)}"{settings[key]}"', text, count=1)
             else:
                 missing.append(key)
+    if settings.get("params"):
+        text, gone = patch_params(text, settings["params"])
+        missing += gone
     return text, missing
+
+
+# ---- every "# @param" line of a script (the Colab form fields) -> editable settings
+HANDLED_KEYS = {"MODEL_SIZE", "RUN_ENV", "training_mode", "source_run_name"} | set(NUMERIC_KEYS)       # these have their own controls on the page
+_PARAM_LINE = re.compile(r'^(?P<key>[A-Za-z_]\w*)(?P<eq>\s*=\s*)(?P<val>"[^"\n]*"|True|False|-?\d+(?:\.\d+)?)(?P<rest>[ \t]*#\s*@param\s*(?P<spec>.*))$', re.M)
+
+
+def parse_params(text, skip=HANDLED_KEYS):
+    """The Colab form fields of a script, in file order: [{'key', 'kind' (choice / bool / int / number / string), 'options', 'default'}]."""
+    out, seen = [], set()
+    for m in _PARAM_LINE.finditer(text):
+        key, raw, spec = m.group("key"), m.group("val"), m.group("spec").strip()
+        if key in skip or key in seen:
+            continue
+        seen.add(key)
+        options = []
+        if spec.startswith("["):
+            options = re.findall(r'"([^"]*)"', spec[:spec.find("]") + 1])
+        if raw in ("True", "False"):
+            kind, default = "bool", raw == "True"
+        elif raw.startswith('"'):
+            kind, default = ("choice" if options else "string"), raw[1:-1]
+        elif options:
+            kind, default = "choice", raw
+        elif "." in raw or "number" in spec:
+            kind, default = "number", raw
+        else:
+            kind, default = "int", raw
+        out.append({"key": key, "kind": kind, "options": options, "default": default})
+    return out
+
+
+def _format_value(raw_old, value):
+    if raw_old in ("True", "False"):
+        return "True" if value in (True, "True", "true", 1, "1") else "False"
+    if raw_old.startswith('"'):
+        return '"' + str(value).replace('"', "") + '"'
+    text = str(value).strip()
+    try:
+        number = float(text)
+    except ValueError:
+        return raw_old                                  # not a number: keep what the script has
+    if number == float(raw_old):
+        return raw_old                                  # unchanged: keep the script's own spelling (0.50 stays 0.50)
+    return str(int(number)) if re.fullmatch(r"-?\d+", raw_old) and number == int(number) else (repr(number) if "." in text or "e" in text.lower() else str(int(number)))
+
+
+def patch_params(text, values):
+    """Write {key: value} into the matching "# @param" lines (comments stay). Returns (new_text, keys that were not found)."""
+    missing = [k for k in values if not re.search(rf"^{re.escape(k)}\s*=", text, re.M)]
+    def repl(m):
+        if m.group("key") in values and values[m.group("key")] not in (None, ""):
+            return f'{m.group("key")}{m.group("eq")}{_format_value(m.group("val"), values[m.group("key")])}{m.group("rest")}'
+        return m.group(0)
+    return _PARAM_LINE.sub(repl, text), missing
 
 
 def cell_numbers(text):

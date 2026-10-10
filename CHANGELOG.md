@@ -11,6 +11,7 @@
 
 | **0.4.0** | `64aa118` | PK-Transport 0.4.0: ModuleUpdateCheck_DesktopShortcut_CommitNaming | ตรวจ/อัปเดตเวอร์ชันของโมดูลและของแอปจาก GitHub (fetch + pull --ff-only พร้อมยืนยัน), ตรวจตอนเปิดแอป (ปิดได้), ทางลัดเดสก์ท็อป; รูปแบบชื่อ commit ใหม่ `<ชื่อ repo> <x.y.z>: <คำอธิบาย>` ทุก repo |
 
-| **0.5.0** | (commit นี้) | PK-Transport 0.5.0: SingleWindowApp_MonochromeTheme_LiveLanguageSwitch | แอปหน้าต่างเดียว (`pkt/ui/`): แถบเมนูซ้าย + หน้า Home / PKT Data / PKT Train / PKT Analyze / ตั้งค่า, ธีมขาว-ดำ-เทาและโลโก้/ไอคอนของ PKT Data, สลับไทย/อังกฤษทันทีทุกหน้า, PKT Train เป็นหน้าในแอป, ปิดหน้าต่างระหว่างเทรนจะถามก่อนหยุด; แทน `launcher.py`/`train_page.py`; เพิ่ม `shared.find_analysis_outputs` |
+| **0.5.0** | `1bcb61b` | PK-Transport 0.5.0: SingleWindowApp_MonochromeTheme_LiveLanguageSwitch | แอปหน้าต่างเดียว (`pkt/ui/`): แถบเมนูซ้าย + หน้า Home / PKT Data / PKT Train / PKT Analyze / ตั้งค่า, ธีมขาว-ดำ-เทาและโลโก้/ไอคอนของ PKT Data, สลับไทย/อังกฤษทันทีทุกหน้า, PKT Train เป็นหน้าในแอป, ปิดหน้าต่างระหว่างเทรนจะถามก่อนหยุด; แทน `launcher.py`/`train_page.py`; เพิ่ม `shared.find_analysis_outputs` |
+| **0.5.1** | (commit นี้) | PK-Transport 0.5.1: TrainAdvancedSettings_AllColabFormFields | หน้า PKT Train มีการ์ด ตั้งค่าขั้นสูง: ทุกช่อง `# @param` ของสคริปต์ที่เลือก (cache, device, optimizer, lr0, close_mosaic, amp, aug_* ฯลฯ) เป็นช่องกรอก/ลิสต์/ติ๊ก เหมือนฟอร์ม Colab; ค่าลงในสำเนาที่รันและโค้ด Colab ที่คัดลอก (`train_core.parse_params/patch_params`) |
 
-เวอร์ชันถัดไป: งานต่อเรื่องเดิม = `0.5.1`; เรื่องใหม่ = `0.6.0` (ฝัง PKT Data เป็นแท็บ)
+เวอร์ชันถัดไป: งานต่อเรื่องเดิม = `0.5.2`; เรื่องใหม่ = `0.6.0` (ฝัง PKT Data เป็นแท็บ)
