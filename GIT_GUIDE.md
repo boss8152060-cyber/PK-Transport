@@ -121,7 +121,7 @@ git ในเครื่องเดียวไม่ช่วยถ้าด�
 
 ## สถานะปัจจุบันของโปรเจ็คนี้
 
-- repo อยู่ที่ `PK STUDIO\Run` (ไม่ใช่โฟลเดอร์บนสุด) — เปิด terminal ที่โฟลเดอร์นั้นก่อนใช้คำสั่ง git
+- repo อยู่ที่ `PK-Transport\PKT-Analyze\Run` (remote PKT-Analyze) (ไม่ใช่โฟลเดอร์บนสุด) — เปิด terminal ที่โฟลเดอร์นั้นก่อนใช้คำสั่ง git
 - โค้ดมีไฟล์เดียว `PKStudio.py`; ดูเวอร์ชันเก่าด้วย `git log --oneline` และ `git show <รหัส>:PKStudio.py`
 - Claude จะ commit และ push ให้เองทุกครั้งที่งานเสร็จ (กติกาอยู่ใน `CLAUDE.md`) คุณไม่ต้องพิมพ์คำสั่ง git เอง
 - ถ้าอยากรันเวอร์ชันเก่า: `git switch --detach <รหัส>` แล้วรัน `PKStudio.py` เสร็จแล้ว `git switch main` (ก่อนสลับ ต้องไม่มีงานที่ยังไม่ commit)

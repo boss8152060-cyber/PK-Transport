@@ -19,11 +19,11 @@
 | `Dataset/` | Dataset สำหรับเทรน YOLO (zip ขนาด 15 GB และ 32 GB), `data.yaml`, 8 คลาส: Bus, Car, Motorcycle, Person, Pickup, Side car, Truck, Van |
 | `Picture/` | ภาพ ~105,000 ไฟล์ (สำหรับทำ dataset) |
 | `Video/`, `Drone/` | วิดีโอต้นฉบับ ~744 ไฟล์ และวิดีโอโดรนตามจุดต่าง ๆ (ทางเข้าคณะ ที่จอดรถ ฯลฯ) |
-| `PK STUDIO/Input/` | `Model/best.pt` (โมเดล YOLO ที่เทรนแล้ว), `Video/`, `Zone/` (ไฟล์ Zone 1–7 เป็น .json/.py) |
-| `PK STUDIO/Run/` | **git repo**: `PKStudio.py` (โค้ดปัจจุบัน) + เอกสาร (CLAUDE.md, plan.md, ...); ประวัติเวอร์ชัน Run0 → Run3 อยู่ใน git |
-| `PK STUDIO/_Run_backup_before_git/` | ไฟล์เวอร์ชันเก่าเดิมทั้งหมด (สำรอง ก่อนย้ายเข้า git) |
-| `PK STUDIO/Output/` | ผลลัพธ์ของแต่ละ Run |
-| `PK STUDIO/Other/Merge Image.py` | สคริปต์รวมรูปภาพ |
+| `PKT-Analyze/Input/` | `Model/best.pt` (โมเดล YOLO ที่เทรนแล้ว), `Video/`, `Zone/` (ไฟล์ Zone 1–7 เป็น .json/.py) |
+| `PKT-Analyze/Run/` | **git repo**: `PKStudio.py` (โค้ดปัจจุบัน) + เอกสาร (CLAUDE.md, plan.md, ...); ประวัติเวอร์ชัน Run0 → Run3 อยู่ใน git |
+| `PKT-Analyze/_Run_backup_before_git/` | ไฟล์เวอร์ชันเก่าเดิมทั้งหมด (สำรอง ก่อนย้ายเข้า git) |
+| `PKT-Analyze/Output/` | ผลลัพธ์ของแต่ละ Run |
+| `PKT-Analyze/Other/Merge Image.py` | สคริปต์รวมรูปภาพ |
 
 ### วิวัฒนาการของโปรแกรม (PK Studio)
 

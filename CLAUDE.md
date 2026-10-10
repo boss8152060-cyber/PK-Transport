@@ -5,10 +5,10 @@
 
 ## โครงสร้างที่สำคัญ
 
-- **git repository อยู่ที่นี่:** `F:\motorcycle group project\PSU Transport Project 2026\PK STUDIO\Run` (branch `main`)
+- **git repository อยู่ที่นี่:** `F:\motorcycle group project\PSU Transport Project 2026\PK-Transport\PKT-Analyze\Run` (branch `main`, remote `origin` = https://github.com/boss8152060-cyber/PKT-Analyze.git; โมดูลหนึ่งของ **PK Transport**: PKT-Analyze / PKT-Data / PKT-Train อยู่ใน `PK-Transport\`)
 - **โค้ดโปรแกรมมีไฟล์เดียว: `PKStudio.py`** — ทุกเวอร์ชันเก่าอยู่ในประวัติ git (commit ละหนึ่งเวอร์ชัน ตั้งแต่ Run0 ถึง Run3 v27) **ห้ามสร้างไฟล์ `_v28.py` ใหม่** ให้แก้ `PKStudio.py` แล้ว commit
-- ไฟล์เวอร์ชันเก่าเดิมสำรองไว้นอก repo ที่ `PK STUDIO\_Run_backup_before_git\` (Run0–Run3) ไม่ต้องแตะ ผู้ใช้ลบเองได้เมื่อมั่นใจ
-- โฟลเดอร์ข้างเคียงนอก repo: `PK STUDIO\Input\` (Model, Video, Zone), `PK STUDIO\Output\`, `PK STUDIO\Other\`; ระดับบน: `Dataset\`, `Picture\`, `Video\`, `Drone\`
+- ไฟล์เวอร์ชันเก่าเดิมสำรองไว้นอก repo ที่ `PKT-Analyze\_Run_backup_before_git\` (Run0–Run3) ไม่ต้องแตะ ผู้ใช้ลบเองได้เมื่อมั่นใจ
+- โฟลเดอร์ข้างเคียงนอก repo: `PKT-Analyze\Input\` (Model, Video, Zone), `PKT-Analyze\Output\`, `PKT-Analyze\Other\` (โฟลเดอร์แม่ของ `Run`); ระดับบนของโครงการ (`PSU Transport Project 2026\`): `Dataset\`, `Picture\`, `Video\`, `Drone\`
 
 ## ไฟล์หลักที่ต้องอ่านก่อนเริ่มงานทุกครั้ง
 
@@ -44,7 +44,7 @@
 ## กฎการแก้โค้ด
 
 - ก่อนแก้ ให้บอกผู้ใช้ว่าจะแก้อะไร; หลังแก้ ให้บอกวิธีตรวจสอบ (เช่น รันกับวิดีโอสั้นแล้วดู CSV ไหน)
-- ตรวจก่อน commit ทุกครั้ง (รันจากโฟลเดอร์ `PK STUDIO/Run`):
+- ตรวจก่อน commit ทุกครั้ง (รันจากโฟลเดอร์ `PKT-Analyze/Run`):
   1. `python -m py_compile PKStudio.py`
   2. `python -m unittest discover -s tests -v` — unit test ของส่วน CORE (ระหว่าง `# ==== CORE-BEGIN` … `CORE-END` ใน `PKStudio.py`; ฟังก์ชันคำนวณที่ไม่พึ่ง GUI ให้ใส่ในส่วนนี้เพื่อทดสอบได้)
   3. `python tests/e2e_run3.py` — รัน Run 3 จริงบนฉากสังเคราะห์ที่รู้คำตอบ (เพิ่มการตรวจของตัวชี้วัดใหม่ทุกตัวในไฟล์นี้)
@@ -97,8 +97,8 @@ PKT <x.y.z>: <คำอธิบายสั้น ๆ แบบ_CamelCase_ห�
 
 ## ข้อมูลอ้างอิงสั้น ๆ
 
-- Site ID = 8, วิดีโอ ~60 FPS, โมเดล `PK STUDIO/Input/Model/best.pt` (8 คลาส)
-- **Zone ไฟล์ปัจจุบัน:** `PK STUDIO/Input/Zone/DJI_0426_zones.json` (Zone 1–7 ตรงกับภาพโดรน; ผู้ใช้อัปโหลด 2026-10-01; ยังไม่มี Line — ให้วาดด้วยปุ่ม "วาด Line…") ส่วน `20260907_073251A__zones.*` เป็นชุดเก่ามุมกล้องอื่น
+- Site ID = 8, วิดีโอ ~60 FPS, โมเดล `PKT-Analyze/Input/Model/best.pt` (8 คลาส)
+- **Zone ไฟล์ปัจจุบัน:** `PKT-Analyze/Input/Zone/DJI_0426_zones.json` (Zone 1–7 ตรงกับภาพโดรน; ผู้ใช้อัปโหลด 2026-10-01; ยังไม่มี Line — ให้วาดด้วยปุ่ม "วาด Line…") ส่วน `20260907_073251A__zones.*` เป็นชุดเก่ามุมกล้องอื่น
 - **วิดีโอโดรนที่ใช้กับไฟล์ Zone นี้:** `Drone/ทางเข้าคณะทรัพย์/DJI_0426.MP4` (3840×2160, 29.97 FPS, 3,635 เฟรม ≈ 121 วินาที, 1.5 GB) — ต้องตั้ง PPM/Perspective ใหม่ให้วิดีโอนี้ (ค่าเดิม 57.8/61.97 px/m เป็นของวิดีโอ 1080p เก่า)
 - Python ต้องมี torch + CUDA: **ใช้ Python 3.12** (`C:/Users/boss8/AppData/Local/Programs/Python/Python312/python.exe`, torch 2.6.0+cu124, GTX 1650); Python 3.14 เป็น torch CPU เท่านั้น — เปิดโปรแกรมด้วย `Run_PKStudio.bat` หรือ `py -3.12 PKStudio.py` (โปรแกรมมี bootstrap สลับ Python อัตโนมัติ + กล่องถามเปิดใหม่เมื่อเลือก GPU แต่ Python ปัจจุบันไม่มี CUDA)
 - ประวัติ git: `git log --oneline` (61 commits: Run0 → Run1 → Run2 v2–v17 → Run3 → v27); tag `v27` = เวอร์ชันที่ตรวจในเอกสาร overview

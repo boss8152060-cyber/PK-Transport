@@ -334,7 +334,7 @@ class _NullCSVWriter:
         pass
 
 
-# Default paths are relative to this file: <PK STUDIO>\Run\PKStudio.py -> <PK STUDIO>\Input, \Output
+# Default paths are relative to this file: <PKT-Analyze>\Run\PKStudio.py -> <PKT-Analyze>\Input, \Output
 _PK_STUDIO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
