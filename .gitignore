@@ -1,0 +1,30 @@
+# โมดูลเป็น repo แยก (วางข้างกันในโฟลเดอร์นี้) — ไม่ commit ที่นี่
+/PKT-Data/
+/PKT-Train/
+/PKT-Analyze/
+/_backups/
+
+# ไฟล์ของผู้ใช้/รันไทม์
+pkt_settings.json
+logs/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# ข้อมูลหนัก/ข้อมูลส่วนบุคคล
+*.pt
+*.pth
+*.mp4
+*.avi
+*.mov
+*.zip
+*.jpg
+*.jpeg
+*.png
+
+# Editor / OS
+.vscode/
+.idea/
+Thumbs.db

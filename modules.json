@@ -1,0 +1,25 @@
+{
+  "modules": [
+    {
+      "id": "data",
+      "name": "PKT Data",
+      "path": "PKT-Data",
+      "entry": "main.py",
+      "version_file": "src/pk_studio/__init__.py"
+    },
+    {
+      "id": "train",
+      "name": "PKT Train",
+      "path": "PKT-Train",
+      "entry": null,
+      "version_file": null
+    },
+    {
+      "id": "analyze",
+      "name": "PKT Analyze",
+      "path": "PKT-Analyze/Run",
+      "entry": "PKStudio.py",
+      "version_file": null
+    }
+  ]
+}
