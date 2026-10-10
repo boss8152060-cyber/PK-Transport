@@ -14,7 +14,10 @@ RUN 9.5 เพิ่ม ROBOFLOW-STYLE DYNAMIC AUGMENTATION:
     transforms ที่ปรับ bounding boxes ตาม spatial transforms ที่รองรับแทน
 
 =============================================================================
-สคริปต์นี้ใช้บน GOOGLE COLAB เท่านั้น (ต้องการ GPU)
+สคริปต์นี้รันได้ 2 ที่ (ต้องการ GPU): GOOGLE COLAB (คัดลอกทีละ cell เหมือนเดิม) และ
+ในเครื่อง Windows/Linux (รันทั้งไฟล์: python "<ชื่อไฟล์นี้>")  — ตรวจเองอัตโนมัติ (RUN_ENV)
+    ในเครื่อง: ใช้ชุดข้อมูลแบบโฟลเดอร์โดยตรง (หรือแตก zip), เก็บ run ไว้ในโฟลเดอร์ Runs ข้างไฟล์นี้
+    เลือกรุ่นโมเดลที่ MODEL_SIZE ใน Cell 2: n / s / m / l / x  (yolo26n.pt ... yolo26x.pt)
 
 วิธีใช้:
     1. เปิด https://colab.research.google.com -> New Notebook
@@ -40,25 +43,83 @@ RUN 9.5 เพิ่ม ROBOFLOW-STYLE DYNAMIC AUGMENTATION:
 =============================================================================
 """
 
-# %% [Cell 1] ติดตั้ง/อัปเดตไลบรารี
-!pip install -U ultralytics albumentations -q
-
-
-# %% [Cell 2] เชื่อมต่อ Google Drive + ตั้ง path
+# %% [Cell 1] ติดตั้ง/อัปเดตไลบรารี + ตรวจว่ารันที่ไหน
 import os
-from google.colab import drive
+import sys
+import subprocess
 
-drive.mount('/content/drive')
+RUN_ENV = "auto"  # @param ["auto", "colab", "local"]
+try:
+    import google.colab  # noqa: F401
+    _colab_available = True
+except ImportError:
+    _colab_available = False
+IN_COLAB = (RUN_ENV == "colab") or (RUN_ENV == "auto" and _colab_available)
 
-# --- กำหนดน้ำหนักตั้งต้นที่นี่ (มีผลกับชื่อโฟลเดอร์ models บน Drive ด้านล่างด้วย) ---
-PRETRAINED_WEIGHTS = 'yolo26l.pt'
-MODEL_NAME_TAG = os.path.splitext(PRETRAINED_WEIGHTS)[0]  # เช่น 'yolo26m'
+# ในเครื่อง Windows ตัวโหลดข้อมูลแบบหลายโปรเซส (spawn) นำไฟล์นี้กลับไปอ่านใหม่ในแต่ละ worker
+# ส่วนที่มีผลข้างเคียง (แตก zip, เริ่มเทรน, ...) ต้องรันเฉพาะโปรเซสหลัก -> IS_MAIN
+IS_MAIN = (__name__ == "__main__")
+if not IS_MAIN:
+    import builtins
+    builtins.print = lambda *args, **kwargs: None      # ตัวโหลดข้อมูล (worker) นำไฟล์นี้ไปอ่านใหม่ — ไม่ต้องพิมพ์ซ้ำ
+HAS_ALARM = hasattr(__import__("signal"), "SIGALRM")   # Windows ไม่มี SIGALRM (ใช้ timeout ต่อรูปใน Cell 9 ไม่ได้)
 
-# --- Google Drive: ใช้เก็บ zip ต้นทาง + ผลลัพธ์สุดท้าย ---
-DRIVE_PROJECT_DIR = '/content/drive/MyDrive/PK Studio/PK Object Detection: Vehicles/YOLO26'
+if not IN_COLAB:
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")   # คอนโซล Windows พิมพ์ภาษาไทยได้
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+if IS_MAIN:
+    if IN_COLAB:
+        subprocess.run([sys.executable, "-m", "pip", "install", "-U", "ultralytics", "albumentations", "-q"], check=False)
+    else:
+        # ในเครื่อง: ไม่อัปเกรด ultralytics/torch ของคุณเอง ติดตั้งเฉพาะที่ขาด
+        try:
+            import albumentations  # noqa: F401
+        except ImportError:
+            print("ไม่พบ albumentations -> ติดตั้ง ...")
+            subprocess.run([sys.executable, "-m", "pip", "install", "albumentations", "-q"], check=False)
+
+
+# %% [Cell 2] เชื่อมต่อ Google Drive (Colab) หรือโฟลเดอร์ในเครื่อง + ตั้ง path
+import os
+from pathlib import Path
+
+# --- เลือกรุ่นโมเดล: n / s / m / l / x  (yolo26n.pt ... yolo26x.pt) ---
+MODEL_SIZE = "l"  # @param ["n", "s", "m", "l", "x"]
+MODEL_SIZE = os.environ.get("PKT_MODEL_SIZE", MODEL_SIZE)
+PRETRAINED_WEIGHTS = f'yolo26{MODEL_SIZE}.pt'
+MODEL_NAME_TAG = os.path.splitext(PRETRAINED_WEIGHTS)[0]  # โฟลเดอร์ models ตั้งชื่อตามรุ่นอัตโนมัติ
+
+if IN_COLAB:
+    from google.colab import drive
+    drive.mount('/content/drive')
+
+    # --- Google Drive: ใช้เก็บ zip ต้นทาง + ผลลัพธ์สุดท้าย ---
+    DRIVE_PROJECT_DIR = '/content/drive/MyDrive/PK Studio/PK Object Detection: Vehicles/YOLO26'
+    DRIVE_ZIP_PATH = '/content/drive/MyDrive/PSU Transport Project 2026.zip'
+    LOCAL_DATASET_SOURCE = ''     # Colab: ใช้ zip เสมอ
+    # --- ดิสก์เครื่อง Colab: ใช้ทำงานจริงทั้งหมด ---
+    LOCAL_DIR = '/content/local_workspace'
+else:
+    # ============ รันในเครื่อง (ปรับ path ตรงนี้ หรือกำหนดตัวแปรแวดล้อม PKT_*) ============
+    _here = Path(os.path.abspath(__file__)).parent if '__file__' in globals() else Path.cwd()
+    # ชุดข้อมูลแบบโฟลเดอร์ปกติ (มี data.yaml + train/valid/test) ใช้ตรง ๆ ไม่ต้องคัดลอก/แตก zip
+    # ถ้าโฟลเดอร์นี้ไม่มี จะไปใช้ zip ด้านล่างแทน (แตกไว้ใน _workspace)
+    LOCAL_DATASET_SOURCE = os.environ.get(
+        "PKT_DATASET_DIR", r"F:\motorcycle group project\PSU Transport Project 2026\Dataset\PSU Transport Project 2026")
+    DRIVE_ZIP_PATH = os.environ.get(
+        "PKT_DATASET_ZIP", r"F:\motorcycle group project\PSU Transport Project 2026\Dataset\PSU Transport Project 2026.zip")
+    # ที่เก็บ run ถาวร (บทบาทเดียวกับ Google Drive ตอนอยู่บน Colab) — ถ้าอยากให้ซิงก์กับ Colab ใช้โฟลเดอร์ Google Drive for Desktop เช่น
+    #   r"G:\My Drive\PK Studio\PK Object Detection  Vehicles\YOLO26"
+    DRIVE_PROJECT_DIR = os.environ.get("PKT_STORE_DIR", str(_here / "Runs" / "YOLO26"))
+    LOCAL_DIR = os.environ.get("PKT_WORKSPACE_DIR", str(_here / "_workspace" / "YOLO26"))
+
 DRIVE_MODELS_DIR = f'{DRIVE_PROJECT_DIR}/models_{MODEL_NAME_TAG}'
 
-# ย้ายโฟลเดอร์ models เดิม (ก่อนมีชื่อต่อท้ายตามโมเดล) มาไว้ที่ path ใหม่อัตโนมัติ
+# ย้ายโฟลเดอร์ models เดิม (ก่อนมีชื่อต่อท้ายตามโมเดล) มาไว้ที่ path ใหม่
 # เพื่อให้ run เก่า (เช่น run9) ยังถูก resume/continue_from_run เจอเหมือนเดิม
 _old_models_dir = f'{DRIVE_PROJECT_DIR}/models'
 if os.path.isdir(_old_models_dir) and not os.path.isdir(DRIVE_MODELS_DIR):
@@ -67,20 +128,23 @@ if os.path.isdir(_old_models_dir) and not os.path.isdir(DRIVE_MODELS_DIR):
 
 os.makedirs(DRIVE_MODELS_DIR, exist_ok=True)
 
-# --- ดิสก์เครื่อง Colab: ใช้ทำงานจริงทั้งหมด ---
-LOCAL_DIR = '/content/local_workspace'
 LOCAL_DATASET_DIR = f'{LOCAL_DIR}/dataset'
 LOCAL_MODELS_DIR = f'{LOCAL_DIR}/models'
 os.makedirs(LOCAL_DATASET_DIR, exist_ok=True)
 os.makedirs(LOCAL_MODELS_DIR, exist_ok=True)
 
-print(f"ไฟล์ถาวร (Drive): {DRIVE_PROJECT_DIR}")
-print(f"โฟลเดอร์ models (ตามโมเดล {MODEL_NAME_TAG}): {DRIVE_MODELS_DIR}")
-print(f"พื้นที่ทำงาน (Local VM): {LOCAL_DIR}")
+print(f"รันที่: {'Google Colab' if IN_COLAB else 'ในเครื่อง'}  |  รุ่นโมเดล: {PRETRAINED_WEIGHTS}")
+print(f"ไฟล์ถาวร ({'Drive' if IN_COLAB else 'โฟลเดอร์ Runs'}): {DRIVE_PROJECT_DIR}")
+print(f"โฟลเดอร์ models ({MODEL_NAME_TAG}): {DRIVE_MODELS_DIR}")
+print(f"พื้นที่ทำงาน: {LOCAL_DIR}")
 
 
 # %% [Cell 3] ตรวจสอบ GPU
-!nvidia-smi
+if IS_MAIN:
+    try:
+        subprocess.run(["nvidia-smi"], check=False)
+    except FileNotFoundError:
+        print("(ไม่พบคำสั่ง nvidia-smi)")
 
 import torch
 
@@ -98,52 +162,61 @@ import shutil
 import zipfile
 from pathlib import Path
 
-drive_zip_path = '/content/drive/MyDrive/PSU Transport Project 2026.zip'
-local_zip_path = f'{LOCAL_DIR}/dataset.zip'
-fingerprint_path = f'{LOCAL_DATASET_DIR}/.zip_fingerprint.json'
+if IS_MAIN:
+    drive_zip_path = DRIVE_ZIP_PATH
+    local_zip_path = f'{LOCAL_DIR}/dataset.zip'
+    fingerprint_path = f'{LOCAL_DATASET_DIR}/.zip_fingerprint.json'
 
-if not os.path.exists(drive_zip_path):
-    print(f"ยังไม่พบไฟล์ที่: {drive_zip_path}")
-    print("ตรวจสอบ path/ชื่อไฟล์จริงด้วย !ls -la")
-else:
-    zip_stat = os.stat(drive_zip_path)
-    current_fingerprint = {'size': zip_stat.st_size, 'mtime': zip_stat.st_mtime}
-    saved_fingerprint = None
-
-    if os.path.exists(fingerprint_path):
-        with open(fingerprint_path, encoding='utf-8') as f:
-            saved_fingerprint = json.load(f)
-
-    if saved_fingerprint == current_fingerprint:
-        print("ไฟล์ zip เหมือนเดิมทุกประการ -> ใช้ dataset ที่แตกไว้แล้วบนเครื่อง")
+    if not IN_COLAB and LOCAL_DATASET_SOURCE and os.path.isdir(LOCAL_DATASET_SOURCE):
+        LOCAL_DATASET_DIR = LOCAL_DATASET_SOURCE      # ชุดข้อมูลแบบโฟลเดอร์ ใช้ตรง ๆ ไม่ต้องคัดลอก/แตก zip
+        print(f"ใช้ชุดข้อมูลแบบโฟลเดอร์ในเครื่องโดยตรง: {LOCAL_DATASET_DIR}")
+    elif not os.path.exists(drive_zip_path):
+        print(f"ยังไม่พบไฟล์ที่: {drive_zip_path}")
+        print("ตรวจสอบ path/ชื่อไฟล์จริงด้วย !ls -la")
     else:
-        print("คัดลอกไฟล์ zip จาก Drive มาดิสก์เครื่อง...")
-        shutil.copy2(drive_zip_path, local_zip_path)
+        zip_stat = os.stat(drive_zip_path)
+        current_fingerprint = {'size': zip_stat.st_size, 'mtime': zip_stat.st_mtime}
+        saved_fingerprint = None
 
-        if os.path.exists(LOCAL_DATASET_DIR):
-            shutil.rmtree(LOCAL_DATASET_DIR)
-        os.makedirs(LOCAL_DATASET_DIR, exist_ok=True)
+        if os.path.exists(fingerprint_path):
+            with open(fingerprint_path, encoding='utf-8') as f:
+                saved_fingerprint = json.load(f)
 
-        with zipfile.ZipFile(local_zip_path, 'r') as z:
-            z.extractall(LOCAL_DATASET_DIR)
+        if saved_fingerprint == current_fingerprint:
+            print("ไฟล์ zip เหมือนเดิมทุกประการ -> ใช้ dataset ที่แตกไว้แล้วบนเครื่อง")
+        else:
+            print("คัดลอกไฟล์ zip จาก Drive มาดิสก์เครื่อง...")
+            shutil.copy2(drive_zip_path, local_zip_path)
 
-        with open(fingerprint_path, 'w', encoding='utf-8') as f:
-            json.dump(current_fingerprint, f)
+            if os.path.exists(LOCAL_DATASET_DIR):
+                shutil.rmtree(LOCAL_DATASET_DIR)
+            os.makedirs(LOCAL_DATASET_DIR, exist_ok=True)
 
-        print("แตกไฟล์ dataset บนดิสก์เครื่องเรียบร้อย")
+            with zipfile.ZipFile(local_zip_path, 'r') as z:
+                z.extractall(LOCAL_DATASET_DIR)
+
+            with open(fingerprint_path, 'w', encoding='utf-8') as f:
+                json.dump(current_fingerprint, f)
+
+            print("แตกไฟล์ dataset บนดิสก์เครื่องเรียบร้อย")
 
 
 # %% [Cell 5] ตรวจสอบโครงสร้างโฟลเดอร์ + หา data.yaml
-print("โครงสร้างโฟลเดอร์ที่พบ:")
-!find "{LOCAL_DATASET_DIR}" -maxdepth 2
+if IS_MAIN:
+    print("โครงสร้างโฟลเดอร์ที่พบ:")
+    for _root, _dirs, _files in os.walk(LOCAL_DATASET_DIR):
+        _depth = os.path.relpath(_root, LOCAL_DATASET_DIR).count(os.sep) + (0 if _root == LOCAL_DATASET_DIR else 1)
+        if _depth >= 2:
+            _dirs[:] = []
+        print(f"  {_root}  ({len(_files)} ไฟล์)")
 
-yaml_candidates = list(Path(LOCAL_DATASET_DIR).rglob('data.yaml'))
-if not yaml_candidates:
-    raise FileNotFoundError(f"ไม่พบ data.yaml ใน {LOCAL_DATASET_DIR}")
+    yaml_candidates = list(Path(LOCAL_DATASET_DIR).rglob('data.yaml'))
+    if not yaml_candidates:
+        raise FileNotFoundError(f"ไม่พบ data.yaml ใน {LOCAL_DATASET_DIR}")
 
-DATA_YAML = str(yaml_candidates[0])
-print(f"\n--- ใช้ data.yaml จาก: {DATA_YAML} ---")
-print(open(DATA_YAML, encoding='utf-8').read())
+    DATA_YAML = str(yaml_candidates[0])
+    print(f"\n--- ใช้ data.yaml จาก: {DATA_YAML} ---")
+    print(open(DATA_YAML, encoding='utf-8').read())
 
 
 # %% [Cell 6] เทรนโมเดล YOLO26
@@ -185,6 +258,12 @@ workers = 24       # @param {type:"integer"}
 cache = "disk"     # @param ["disk", "False"]
 device = 0         # @param {type:"integer"}
 cache = False if cache == "False" else cache
+if not IN_COLAB:
+    workers = min(workers, os.cpu_count() or 1)         # ในเครื่องมีแกน CPU น้อยกว่า Colab/เครื่องใหญ่
+    if cache == "disk":
+        cache = False                                   # "disk" เขียนไฟล์ .npy ลงโฟลเดอร์ชุดข้อมูลของคุณเอง -> ไม่ใช้ในเครื่อง
+    if not torch.cuda.is_available():
+        device = "cpu"
 patience = 15      # @param {type:"integer"}
 close_mosaic = 10  # @param {type:"integer"}
 
@@ -268,8 +347,11 @@ def build_roboflow_style_augmentations():
         ))
 
     if aug_exposure_percent > 0:
+        # ชื่ออาร์กิวเมนต์ต่างกันตามเวอร์ชัน albumentations (ใหม่: gamma_range, เก่า: gamma_limit)
+        import inspect
+        _gamma_key = "gamma_range" if "gamma_range" in inspect.signature(A.RandomGamma.__init__).parameters else "gamma_limit"
         transforms.append(A.RandomGamma(
-            gamma_range=(100 - aug_exposure_percent, 100 + aug_exposure_percent), p=aug_p_color,
+            **{_gamma_key: (100 - aug_exposure_percent, 100 + aug_exposure_percent)}, p=aug_p_color,
         ))
 
     if aug_grayscale_percent > 0:
@@ -691,160 +773,177 @@ def resume_stuck_run(resumable_drive_run):
         BaseTrainer.check_resume = original_check_resume
 
 
-# ============================================================================
-# SELECT TRAINING MODE
-# ============================================================================
-if training_mode == "continue_from_run":
-    source_best_pt = DRIVE_MODELS_PATH / source_run_name / 'weights' / 'best.pt'
-    if not source_best_pt.exists():
-        raise FileNotFoundError(
-            f"ไม่พบ {source_best_pt}\nเช็คว่า source_run_name = '{source_run_name}' ถูกต้องไหม"
-        )
+if IS_MAIN:
+    # ============================================================================
+    # SELECT TRAINING MODE
+    # ============================================================================
+    if training_mode == "continue_from_run":
+        source_best_pt = DRIVE_MODELS_PATH / source_run_name / 'weights' / 'best.pt'
+        if not source_best_pt.exists():
+            raise FileNotFoundError(
+                f"ไม่พบ {source_best_pt}\nเช็คว่า source_run_name = '{source_run_name}' ถูกต้องไหม"
+            )
 
-    print(f"โหมด: ต่อยอดจาก run ({source_run_name})")
-    start_fresh_run(pretrained_weights=str(source_best_pt))
+        print(f"โหมด: ต่อยอดจาก run ({source_run_name})")
+        start_fresh_run(pretrained_weights=str(source_best_pt))
 
-elif training_mode == "new":
-    print("โหมด: บังคับเริ่ม run ใหม่เสมอ")
-    start_fresh_run(pretrained_weights=PRETRAINED_WEIGHTS)
-
-else:
-    # AUTO
-    resumable_drive_run = find_resumable_run()
-
-    if resumable_drive_run is not None:
-        print("โหมด: auto -> พบ run ค้างอยู่")
-        resume_stuck_run(resumable_drive_run)
-    else:
-        print("โหมด: auto -> ไม่พบ run ค้าง จะเริ่ม run ใหม่")
+    elif training_mode == "new":
+        print("โหมด: บังคับเริ่ม run ใหม่เสมอ")
         start_fresh_run(pretrained_weights=PRETRAINED_WEIGHTS)
 
+    else:
+        # AUTO
+        resumable_drive_run = find_resumable_run()
 
-# ============================================================================
-# TRAIN COMPLETE
-# ============================================================================
-in_progress_flag_path = DRIVE_MODELS_PATH / run_name / 'IN_PROGRESS.flag'
-if in_progress_flag_path.exists():
-    in_progress_flag_path.unlink()
+        if resumable_drive_run is not None:
+            print("โหมด: auto -> พบ run ค้างอยู่")
+            resume_stuck_run(resumable_drive_run)
+        else:
+            print("โหมด: auto -> ไม่พบ run ค้าง จะเริ่ม run ใหม่")
+            start_fresh_run(pretrained_weights=PRETRAINED_WEIGHTS)
 
-print(f"เทรน {run_name} เสร็จสมบูรณ์แล้ว (ปิดสถานะ resume)")
 
-if STOP_FLAG_PATH.exists():
-    print("\nพบว่าหยุดเพราะ STOP.flag")
-    print("อย่าลืมลบไฟล์นี้ทิ้งก่อนเริ่ม run ถัดไป!")
-    print(f"({STOP_FLAG_PATH})")
+    # ============================================================================
+    # TRAIN COMPLETE
+    # ============================================================================
+    in_progress_flag_path = DRIVE_MODELS_PATH / run_name / 'IN_PROGRESS.flag'
+    if in_progress_flag_path.exists():
+        in_progress_flag_path.unlink()
+
+    print(f"เทรน {run_name} เสร็จสมบูรณ์แล้ว (ปิดสถานะ resume)")
+
+    if STOP_FLAG_PATH.exists():
+        print("\nพบว่าหยุดเพราะ STOP.flag")
+        print("อย่าลืมลบไฟล์นี้ทิ้งก่อนเริ่ม run ถัดไป!")
+        print(f"({STOP_FLAG_PATH})")
 
 
 # %% [Cell 7] คัดลอกผลลัพธ์กลับ Google Drive
-local_run_dir = f'{LOCAL_MODELS_DIR}/{run_name}'
-drive_run_dir = f'{DRIVE_MODELS_DIR}/{run_name}'
+if IS_MAIN:
+    local_run_dir = f'{LOCAL_MODELS_DIR}/{run_name}'
+    drive_run_dir = f'{DRIVE_MODELS_DIR}/{run_name}'
 
-print("กำลังคัดลอกผลลัพธ์จาก local ไป Drive...")
-shutil.copytree(local_run_dir, drive_run_dir, dirs_exist_ok=True)
+    print("กำลังคัดลอกผลลัพธ์จาก local ไป Drive...")
+    shutil.copytree(local_run_dir, drive_run_dir, dirs_exist_ok=True)
 
-best_pt_path = f'{drive_run_dir}/weights/best.pt'
+    best_pt_path = f'{drive_run_dir}/weights/best.pt'
 
-# BEST_EPOCH_<epoch>.txt เป็นไฟล์เปล่า ชื่อไฟล์เปลี่ยนไปตาม epoch ที่ดีที่สุด
-# จึงต้องหาไฟล์ด้วย glob แทนการเดาชื่อไฟล์ตรง ๆ
-best_epoch_marker_files = sorted(Path(f'{drive_run_dir}/weights').glob('BEST_EPOCH_*.txt'))
-best_epoch_path = str(best_epoch_marker_files[-1]) if best_epoch_marker_files else "(ไม่พบไฟล์ BEST_EPOCH_<epoch>.txt)"
+    # BEST_EPOCH_<epoch>.txt เป็นไฟล์เปล่า ชื่อไฟล์เปลี่ยนไปตาม epoch ที่ดีที่สุด
+    # จึงต้องหาไฟล์ด้วย glob แทนการเดาชื่อไฟล์ตรง ๆ
+    best_epoch_marker_files = sorted(Path(f'{drive_run_dir}/weights').glob('BEST_EPOCH_*.txt'))
+    best_epoch_path = str(best_epoch_marker_files[-1]) if best_epoch_marker_files else "(ไม่พบไฟล์ BEST_EPOCH_<epoch>.txt)"
 
-print("\nโมเดลที่เทรนเสร็จอยู่ที่ Drive:")
-print(best_pt_path)
-print("\nEpoch ที่ดีที่สุด (จากชื่อไฟล์เปล่า) อยู่ที่:")
-print(best_epoch_path)
-print("\nดาวน์โหลด best.pt นี้มาใช้กับ 2_auto_label.py หรือ 3_auto_label_gui.py")
+    print("\nโมเดลที่เทรนเสร็จอยู่ที่ Drive:")
+    print(best_pt_path)
+    print("\nEpoch ที่ดีที่สุด (จากชื่อไฟล์เปล่า) อยู่ที่:")
+    print(best_epoch_path)
+    print("\nดาวน์โหลด best.pt นี้มาใช้กับ 2_auto_label.py หรือ 3_auto_label_gui.py")
 
 
 # %% [Cell 8] ดูผลการเทรน
-print("เปิดดูกราฟและผลลัพธ์ทั้งหมดได้ที่:")
-print(drive_run_dir)
-print("\nBEST_EPOCH_<epoch>.txt (ไฟล์เปล่า บอกเลข epoch ที่ดีที่สุด):")
-print(best_epoch_path)
+if IS_MAIN:
+    print("เปิดดูกราฟและผลลัพธ์ทั้งหมดได้ที่:")
+    print(drive_run_dir)
+    print("\nBEST_EPOCH_<epoch>.txt (ไฟล์เปล่า บอกเลข epoch ที่ดีที่สุด):")
+    print(best_epoch_path)
 
 
 # %% [Cell 9] ทดสอบโมเดลกับรูปตัวอย่าง
-import signal
-from IPython.display import Image as IPyImage
-from IPython.display import display
-
-test_model = YOLO(best_pt_path)
-
-valid_images_dir = Path(f'{LOCAL_DATASET_DIR}/valid/images')
-image_extensions = {'.jpg', '.jpeg', '.png', '.bmp'}
-all_valid_images = sorted(
-    p for p in valid_images_dir.iterdir() if p.suffix.lower() in image_extensions
-)
-
-local_predict_dir = Path(LOCAL_MODELS_DIR) / f'{run_name}_test_predictions'
-local_predict_dir.mkdir(parents=True, exist_ok=True)
-
-PREDICT_TIMEOUT_SECONDS = 15
-skipped_images = []
-succeeded_count = 0
-
-
-class _PredictTimeout(Exception):
-    pass
-
-
-def _timeout_handler(signum, frame):
-    raise _PredictTimeout()
-
-
-print(f"กำลังทดสอบกับ {len(all_valid_images)} รูป (timeout {PREDICT_TIMEOUT_SECONDS} วินาที/รูป)...")
-
-_old_signal_handler = signal.signal(signal.SIGALRM, _timeout_handler)
-
-for idx, img_path in enumerate(all_valid_images, start=1):
-    signal.alarm(PREDICT_TIMEOUT_SECONDS)
-
+if IS_MAIN:
+    import signal
     try:
-        test_model.predict(
-            source=str(img_path),
-            save=True,
-            conf=0.3,
-            project=str(local_predict_dir.parent),
-            name=local_predict_dir.name,
-            exist_ok=True,
-            verbose=False,
-        )
-        signal.alarm(0)
-        succeeded_count += 1
+        from IPython.display import Image as IPyImage
+        from IPython.display import display
+    except ImportError:                       # ในเครื่องที่ไม่มี IPython: แค่พิมพ์ที่อยู่ไฟล์ภาพ
+        def IPyImage(filename=None, width=None):
+            return filename
 
-    except _PredictTimeout:
-        skipped_images.append(img_path.name)
-        print(f"  [ข้าม] {img_path.name} ใช้เวลาเกิน {PREDICT_TIMEOUT_SECONDS} วินาที")
+        def display(obj):
+            print(f"  (ไฟล์ภาพ: {obj})")
 
-    except Exception as e:
-        signal.alarm(0)
-        skipped_images.append(img_path.name)
-        print(f"  [ข้าม] {img_path.name} เกิดข้อผิดพลาด: {e}")
+    test_model = YOLO(best_pt_path)
 
-    if idx % 50 == 0:
-        print(f"  ความคืบหน้า: {idx}/{len(all_valid_images)} รูป")
-
-signal.signal(signal.SIGALRM, _old_signal_handler)
-
-print(f"\nเสร็จสิ้น: ทำนายสำเร็จ {succeeded_count}/{len(all_valid_images)} รูป")
-
-if skipped_images:
-    print(
-        f"ข้ามไป {len(skipped_images)} รูป (ใช้เวลานานผิดปกติ/error): "
-        f"{skipped_images[:10]}" + (" ..." if len(skipped_images) > 10 else "")
+    valid_images_dir = Path(DATA_YAML).parent / 'valid' / 'images'
+    image_extensions = {'.jpg', '.jpeg', '.png', '.bmp'}
+    all_valid_images = sorted(
+        p for p in valid_images_dir.iterdir() if p.suffix.lower() in image_extensions
     )
 
-drive_predict_dir = f'{DRIVE_MODELS_DIR}/{run_name}_test_predictions'
-shutil.copytree(local_predict_dir, drive_predict_dir, dirs_exist_ok=True)
+    local_predict_dir = Path(LOCAL_MODELS_DIR) / f'{run_name}_test_predictions'
+    local_predict_dir.mkdir(parents=True, exist_ok=True)
 
-print("\nผลลัพธ์ถูกเซฟถาวรไว้ที่ Google Drive:")
-print(drive_predict_dir)
+    PREDICT_TIMEOUT_SECONDS = 15
+    skipped_images = []
+    succeeded_count = 0
 
-result_images = sorted(local_predict_dir.glob('*.jpg'))[:5]
 
-if not result_images:
-    print("ไม่พบรูปผลลัพธ์ ตรวจสอบว่า predict รันสำเร็จหรือไม่")
-else:
-    print(f"ตัวอย่าง {len(result_images)} รูปแรก:")
-    for img_path in result_images:
-        display(IPyImage(filename=str(img_path), width=600))
+    def _alarm(seconds):
+        if HAS_ALARM:
+            signal.alarm(seconds)
+
+
+    class _PredictTimeout(Exception):
+        pass
+
+
+    def _timeout_handler(signum, frame):
+        raise _PredictTimeout()
+
+
+    print(f"กำลังทดสอบกับ {len(all_valid_images)} รูป (timeout {PREDICT_TIMEOUT_SECONDS} วินาที/รูป)...")
+
+    _old_signal_handler = signal.signal(signal.SIGALRM, _timeout_handler) if HAS_ALARM else None
+
+    for idx, img_path in enumerate(all_valid_images, start=1):
+        _alarm(PREDICT_TIMEOUT_SECONDS)
+
+        try:
+            test_model.predict(
+                source=str(img_path),
+                save=True,
+                conf=0.3,
+                project=str(local_predict_dir.parent),
+                name=local_predict_dir.name,
+                exist_ok=True,
+                verbose=False,
+            )
+            _alarm(0)
+            succeeded_count += 1
+
+        except _PredictTimeout:
+            skipped_images.append(img_path.name)
+            print(f"  [ข้าม] {img_path.name} ใช้เวลาเกิน {PREDICT_TIMEOUT_SECONDS} วินาที")
+
+        except Exception as e:
+            _alarm(0)
+            skipped_images.append(img_path.name)
+            print(f"  [ข้าม] {img_path.name} เกิดข้อผิดพลาด: {e}")
+
+        if idx % 50 == 0:
+            print(f"  ความคืบหน้า: {idx}/{len(all_valid_images)} รูป")
+
+    if HAS_ALARM:
+        signal.signal(signal.SIGALRM, _old_signal_handler)
+
+    print(f"\nเสร็จสิ้น: ทำนายสำเร็จ {succeeded_count}/{len(all_valid_images)} รูป")
+
+    if skipped_images:
+        print(
+            f"ข้ามไป {len(skipped_images)} รูป (ใช้เวลานานผิดปกติ/error): "
+            f"{skipped_images[:10]}" + (" ..." if len(skipped_images) > 10 else "")
+        )
+
+    drive_predict_dir = f'{DRIVE_MODELS_DIR}/{run_name}_test_predictions'
+    shutil.copytree(local_predict_dir, drive_predict_dir, dirs_exist_ok=True)
+
+    print("\nผลลัพธ์ถูกเซฟถาวรไว้ที่ Google Drive:")
+    print(drive_predict_dir)
+
+    result_images = sorted(local_predict_dir.glob('*.jpg'))[:5]
+
+    if not result_images:
+        print("ไม่พบรูปผลลัพธ์ ตรวจสอบว่า predict รันสำเร็จหรือไม่")
+    else:
+        print(f"ตัวอย่าง {len(result_images)} รูปแรก:")
+        for img_path in result_images:
+            display(IPyImage(filename=str(img_path), width=600))

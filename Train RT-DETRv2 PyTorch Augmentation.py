@@ -5,7 +5,10 @@ RUN 9.5 (RT-DETRv2-M, Official PyTorch) — เวอร์ชันปรับ
 โมเดล: RT-DETRv2-M  (config ทางการ: rtdetrv2_r50vd_m_7x_coco.yml)
 Repo : https://github.com/lyuwenyu/RT-DETR  (โฟลเดอร์ rtdetrv2_pytorch)
 
-สคริปต์นี้ใช้บน GOOGLE COLAB (ต้องการ GPU) รันตามลำดับ Cell 1 -> Cell 9
+สคริปต์นี้รันได้ 2 ที่ (ต้องการ GPU): GOOGLE COLAB (รันตามลำดับ Cell 1 -> Cell 9 เหมือนเดิม)
+และในเครื่อง Windows/Linux (รันทั้งไฟล์: python "<ชื่อไฟล์นี้>") — ตรวจเองอัตโนมัติ (RUN_ENV)
+เลือกรุ่นโมเดลที่ MODEL_SIZE ใน Cell 2: s / m* / m / l / x (ตามตารางใน README ของ repo ทางการ)
+ในเครื่องต้องมี git (โคลน repo ครั้งแรก) และอินเทอร์เน็ตตอนโหลด repo + น้ำหนัก COCO-pretrained ครั้งแรก
 ทุกครั้งที่จะเทรนรอบใหม่ ให้รันตั้งแต่ Cell 1 ใหม่ทั้งหมด (เหมือนเดิม)
 
 สิ่งที่เปลี่ยนเพื่อให้เทรนเร็วขึ้น:
@@ -42,42 +45,94 @@ Dataset: รองรับทั้ง YOLO (data.yaml) และ COCO (_annota
 =============================================================================
 """
 
-# %% [Cell 1] ติดตั้ง repo ทางการ + ไลบรารี
+# %% [Cell 1] ติดตั้ง repo ทางการ + ไลบรารี + ตรวจว่ารันที่ไหน
 import os
-RTDETR_REPO_DIR = '/content/RT-DETR'
-RTDETR_DIR = f'{RTDETR_REPO_DIR}/rtdetrv2_pytorch'
+import re
+import sys
+import shutil
+import subprocess
+from pathlib import Path
+
+RUN_ENV = "auto"  # @param ["auto", "colab", "local"]
+try:
+    import google.colab  # noqa: F401
+    _colab_available = True
+except ImportError:
+    _colab_available = False
+IN_COLAB = (RUN_ENV == "colab") or (RUN_ENV == "auto" and _colab_available)
+HAS_ALARM = hasattr(__import__("signal"), "SIGALRM")   # Windows ไม่มี SIGALRM (timeout ต่อรูปใน Cell 9 ใช้ไม่ได้)
+
+if not IN_COLAB:
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")   # คอนโซล Windows พิมพ์ภาษาไทยได้
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+    _here = Path(os.path.abspath(__file__)).parent if "__file__" in globals() else Path.cwd()
+    WORK_BASE = os.environ.get("PKT_WORKSPACE_DIR", str(_here / "_workspace" / "RTDETRv2"))
+else:
+    WORK_BASE = "/content"
+os.makedirs(WORK_BASE, exist_ok=True)
+
+RTDETR_REPO_DIR = f"{WORK_BASE}/RT-DETR"
+RTDETR_DIR = f"{RTDETR_REPO_DIR}/rtdetrv2_pytorch"
 
 if not os.path.isdir(RTDETR_REPO_DIR):
-    !git clone -q https://github.com/lyuwenyu/RT-DETR.git {RTDETR_REPO_DIR}
+    if shutil.which("git") is None:
+        raise RuntimeError("ไม่พบคำสั่ง git — ติดตั้ง git ก่อน (หรือโคลน https://github.com/lyuwenyu/RT-DETR.git ไปที่ "
+                           f"{RTDETR_REPO_DIR} เอง)")
+    subprocess.run(["git", "clone", "-q", "https://github.com/lyuwenyu/RT-DETR.git", RTDETR_REPO_DIR], check=True)
 
-# ติดตั้ง requirements โดย "ไม่แตะ" torch/torchvision ของ Colab (กันเวอร์ชัน CUDA พัง)
-!grep -viE "^(torch|torchvision)([<>=~ ]|$)" {RTDETR_DIR}/requirements.txt > /content/rtdetr_req.txt
-!pip install -q -r /content/rtdetr_req.txt
-!pip install -q -U albumentations pycocotools pyyaml matplotlib
+# ติดตั้ง requirements โดย "ไม่แตะ" torch/torchvision (กันเวอร์ชัน CUDA พัง)
+_req_lines = [l for l in open(f"{RTDETR_DIR}/requirements.txt", encoding="utf-8").read().splitlines()
+              if not re.match(r"^(torch|torchvision)([<>=~ ]|$)", l.strip(), re.I)]
+_req_file = f"{WORK_BASE}/rtdetr_req.txt"
+open(_req_file, "w", encoding="utf-8").write("\n".join(_req_lines) + "\n")
+_up = ["-U"] if IN_COLAB else []          # ในเครื่อง: ไม่อัปเกรดไลบรารีของคุณเอง ติดตั้งเฉพาะที่ขาด
+subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", _req_file], check=False)
+subprocess.run([sys.executable, "-m", "pip", "install", "-q", *_up, "albumentations", "pycocotools", "pyyaml", "matplotlib"], check=False)
 
 
-# %% [Cell 2] เชื่อมต่อ Google Drive + ตั้ง path
+# %% [Cell 2] เชื่อมต่อ Google Drive (Colab) หรือโฟลเดอร์ในเครื่อง + ตั้ง path
 import os
-from google.colab import drive
+from pathlib import Path
 
-drive.mount('/content/drive')
+# --- เลือกรุ่นโมเดล RT-DETRv2 (config + น้ำหนัก COCO-pretrained จาก repo ทางการ) ---
+#   s  = r18vd   |  m* = r34vd   |  m = r50vd_m   |  l = r50vd   |  x = r101vd
+RTDETRV2_MODELS = {
+    's':  ('rtdetrv2_r18vd_120e_coco.yml', 'https://github.com/lyuwenyu/storage/releases/download/v0.2/rtdetrv2_r18vd_120e_coco_rerun_48.1.pth', 'rtdetrv2_r18vd'),
+    'm*': ('rtdetrv2_r34vd_120e_coco.yml', 'https://github.com/lyuwenyu/storage/releases/download/v0.1/rtdetrv2_r34vd_120e_coco_ema.pth', 'rtdetrv2_r34vd'),
+    'm':  ('rtdetrv2_r50vd_m_7x_coco.yml', 'https://github.com/lyuwenyu/storage/releases/download/v0.1/rtdetrv2_r50vd_m_7x_coco_ema.pth', 'rtdetrv2_r50vd_m'),
+    'l':  ('rtdetrv2_r50vd_6x_coco.yml', 'https://github.com/lyuwenyu/storage/releases/download/v0.1/rtdetrv2_r50vd_6x_coco_ema.pth', 'rtdetrv2_r50vd'),
+    'x':  ('rtdetrv2_r101vd_6x_coco.yml', 'https://github.com/lyuwenyu/storage/releases/download/v0.1/rtdetrv2_r101vd_6x_coco_from_paddle.pth', 'rtdetrv2_r101vd'),
+}
+MODEL_SIZE = "m"  # @param ["s", "m*", "m", "l", "x"]
+MODEL_SIZE = os.environ.get("PKT_MODEL_SIZE", MODEL_SIZE)
+BASE_CONFIG_NAME, PRETRAINED_WEIGHTS_URL, MODEL_NAME_TAG = RTDETRV2_MODELS[MODEL_SIZE]
+PRETRAINED_WEIGHTS = f'{WORK_BASE}/pretrained/{os.path.basename(PRETRAINED_WEIGHTS_URL)}'
 
-# --- โมเดล RT-DETRv2-M (ทางการ) ---
-BASE_CONFIG_NAME = 'rtdetrv2_r50vd_m_7x_coco.yml'   # RT-DETRv2-M
-PRETRAINED_WEIGHTS_URL = (
-    'https://github.com/lyuwenyu/storage/releases/download/v0.1/'
-    'rtdetrv2_r50vd_m_7x_coco_ema.pth'
-)
-PRETRAINED_WEIGHTS = f'/content/pretrained/{os.path.basename(PRETRAINED_WEIGHTS_URL)}'
-MODEL_NAME_TAG = 'rtdetrv2_r50vd_m'
+if IN_COLAB:
+    from google.colab import drive
+    drive.mount('/content/drive')
+    DRIVE_PROJECT_DIR = '/content/drive/MyDrive/PK Studio/PK Object Detection: Vehicles/RTDETRv2'
+    DRIVE_ZIP_PATH = '/content/drive/MyDrive/PSU Transport Project 2026.zip'
+    LOCAL_DATASET_SOURCE = ''     # Colab: ใช้ zip เสมอ
+    LOCAL_DIR = '/content/local_workspace'
+else:
+    # ============ รันในเครื่อง (ปรับ path ตรงนี้ หรือกำหนดตัวแปรแวดล้อม PKT_*) ============
+    # ชุดข้อมูลแบบโฟลเดอร์ปกติ (มี data.yaml + train/valid/test) ใช้ตรง ๆ ไม่ต้องคัดลอก/แตก zip
+    LOCAL_DATASET_SOURCE = os.environ.get(
+        "PKT_DATASET_DIR", r"F:\motorcycle group project\PSU Transport Project 2026\Dataset\PSU Transport Project 2026")
+    DRIVE_ZIP_PATH = os.environ.get(
+        "PKT_DATASET_ZIP", r"F:\motorcycle group project\PSU Transport Project 2026\Dataset\PSU Transport Project 2026.zip")
+    # ที่เก็บ run ถาวร (บทบาทเดียวกับ Google Drive ตอนอยู่บน Colab) — ถ้าอยากให้ซิงก์กับ Colab ใช้โฟลเดอร์ Google Drive for Desktop เช่น
+    #   r"G:\My Drive\PK Studio\PK Object Detection  Vehicles\RTDETRv2"
+    DRIVE_PROJECT_DIR = os.environ.get("PKT_STORE_DIR", str(_here / "Runs" / "RTDETRv2"))
+    LOCAL_DIR = WORK_BASE
 
-# --- Google Drive ---
-DRIVE_PROJECT_DIR = '/content/drive/MyDrive/PK Studio/PK Object Detection: Vehicles/RTDETRv2'
 DRIVE_MODELS_DIR = f'{DRIVE_PROJECT_DIR}/models_{MODEL_NAME_TAG}'
 os.makedirs(DRIVE_MODELS_DIR, exist_ok=True)
 
-# --- ดิสก์เครื่อง Colab ---
-LOCAL_DIR = '/content/local_workspace'
 LOCAL_DATASET_DIR = f'{LOCAL_DIR}/dataset'
 LOCAL_COCO_DIR = f'{LOCAL_DIR}/coco_ann'
 LOCAL_MODELS_DIR = f'{LOCAL_DIR}/models'
@@ -86,18 +141,26 @@ for _d in (LOCAL_DATASET_DIR, LOCAL_COCO_DIR, LOCAL_MODELS_DIR, os.path.dirname(
 
 # ดาวน์โหลด COCO-pretrained weights (ครั้งเดียว)
 if not os.path.exists(PRETRAINED_WEIGHTS):
-    !wget -q -O "{PRETRAINED_WEIGHTS}" "{PRETRAINED_WEIGHTS_URL}"
+    import urllib.request
+    try:
+        urllib.request.urlretrieve(PRETRAINED_WEIGHTS_URL, PRETRAINED_WEIGHTS)
+    except Exception as _e:
+        print(f"ดาวน์โหลดไม่สำเร็จ: {_e}")
 if not os.path.exists(PRETRAINED_WEIGHTS) or os.path.getsize(PRETRAINED_WEIGHTS) < 1_000_000:
     print("!! ดาวน์โหลด pretrained weights ไม่สำเร็จ -> ตรวจลิงก์ใน README ของ rtdetrv2_pytorch แล้วแก้ PRETRAINED_WEIGHTS_URL")
 
-print(f"ไฟล์ถาวร (Drive): {DRIVE_PROJECT_DIR}")
+print(f"รันที่: {'Google Colab' if IN_COLAB else 'ในเครื่อง'}  |  รุ่นโมเดล: RT-DETRv2-{MODEL_SIZE.upper()} ({BASE_CONFIG_NAME})")
+print(f"ไฟล์ถาวร ({'Drive' if IN_COLAB else 'โฟลเดอร์ Runs'}): {DRIVE_PROJECT_DIR}")
 print(f"โฟลเดอร์ models: {DRIVE_MODELS_DIR}")
-print(f"พื้นที่ทำงาน (Local VM): {LOCAL_DIR}")
+print(f"พื้นที่ทำงาน: {LOCAL_DIR}")
 print(f"Repo ทางการ: {RTDETR_DIR}")
 
 
 # %% [Cell 3] ตรวจสอบ GPU / CPU / RAM
-!nvidia-smi
+try:
+    subprocess.run(["nvidia-smi"], check=False)
+except FileNotFoundError:
+    print("(ไม่พบคำสั่ง nvidia-smi)")
 
 import torch
 
@@ -116,11 +179,14 @@ import shutil
 import zipfile
 from pathlib import Path
 
-drive_zip_path = '/content/drive/MyDrive/PSU Transport Project 2026.zip'
+drive_zip_path = DRIVE_ZIP_PATH
 local_zip_path = f'{LOCAL_DIR}/dataset.zip'
 fingerprint_path = f'{LOCAL_DATASET_DIR}/.zip_fingerprint.json'
 
-if not os.path.exists(drive_zip_path):
+if not IN_COLAB and LOCAL_DATASET_SOURCE and os.path.isdir(LOCAL_DATASET_SOURCE):
+    LOCAL_DATASET_DIR = LOCAL_DATASET_SOURCE      # ชุดข้อมูลแบบโฟลเดอร์ ใช้ตรง ๆ ไม่ต้องคัดลอก/แตก zip
+    print(f"ใช้ชุดข้อมูลแบบโฟลเดอร์ในเครื่องโดยตรง: {LOCAL_DATASET_DIR}")
+elif not os.path.exists(drive_zip_path):
     print(f"ยังไม่พบไฟล์ที่: {drive_zip_path}")
 else:
     zip_stat = os.stat(drive_zip_path)
@@ -156,7 +222,11 @@ from concurrent.futures import ThreadPoolExecutor
 from PIL import Image
 
 print("โครงสร้างโฟลเดอร์ที่พบ:")
-!find "{LOCAL_DATASET_DIR}" -maxdepth 2
+for _root, _dirs, _files in os.walk(LOCAL_DATASET_DIR):
+    _depth = os.path.relpath(_root, LOCAL_DATASET_DIR).count(os.sep) + (0 if _root == LOCAL_DATASET_DIR else 1)
+    if _depth >= 2:
+        _dirs[:] = []
+    print(f"  {_root}  ({len(_files)} ไฟล์)")
 
 dataset_format = "auto"  # @param ["auto", "yolo", "coco"]
 PRERESIZE_MAX_SIDE = 640  # @param {type:"integer"}
@@ -370,6 +440,17 @@ import subprocess
 import sys
 import threading
 import time
+
+
+def _kill_tree(proc):
+    """หยุด process เทรน (และ worker ลูก) — POSIX: killpg, Windows: taskkill /T"""
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True)
+    else:
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+
+
+_POPEN_EXTRA = {} if os.name == "nt" else {"start_new_session": True}
 
 DRIVE_MODELS_PATH = Path(DRIVE_MODELS_DIR)
 STOP_FLAG_PATH = Path(DRIVE_PROJECT_DIR) / 'STOP.flag'
@@ -1003,7 +1084,7 @@ except Exception:
     traceback.print_exc(); sys.exit(1)
 """
     print("กำลังตรวจ dataset/augmentation/โมเดล ก่อนเทรน (preflight)...")
-    r = subprocess.run([sys.executable, '-c', code], cwd=RTDETR_DIR, capture_output=True, text=True)
+    r = subprocess.run([sys.executable, '-c', code], cwd=RTDETR_DIR, capture_output=True, text=True, encoding='utf-8', errors='replace')
     print((r.stdout + r.stderr)[-4000:])
     if r.returncode != 0:
         raise RuntimeError("preflight ไม่ผ่าน -> ดู error ด้านบน (ส่งให้ Claude ได้เลย)")
@@ -1024,11 +1105,11 @@ def run_official_training(cfg_path: Path, tuning=None, resume=None):
         cmd += ['-t', str(tuning)]
 
     val_loss_path = run_dir / 'val_loss.jsonl'   # เขียนโดย det_engine.py ที่แพตช์ไว้ (1 บรรทัด/epoch)
-    env = dict(os.environ, CUDA_VISIBLE_DEVICES=str(device), PYTHONUNBUFFERED='1',
+    env = dict(os.environ, CUDA_VISIBLE_DEVICES=str(device), PYTHONUNBUFFERED='1', PYTHONUTF8='1', PYTHONIOENCODING='utf-8',
                PK_VAL_LOSS_PATH=str(val_loss_path))
     print("คำสั่ง:", ' '.join(cmd))
     proc = subprocess.Popen(cmd, cwd=RTDETR_DIR, env=env, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True, bufsize=1, start_new_session=True)
+                            stderr=subprocess.STDOUT, text=True, bufsize=1, encoding='utf-8', errors='replace', **_POPEN_EXTRA)
 
     log_path = run_dir / 'log.txt'
     n_done = sum(1 for l in open(log_path, encoding='utf-8') if l.strip()) if log_path.exists() else 0
@@ -1057,7 +1138,7 @@ def run_official_training(cfg_path: Path, tuning=None, resume=None):
     def _stop(reason):
         state['stopped_by'] = reason
         try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            _kill_tree(proc)
         except Exception:
             pass
 
@@ -1277,8 +1358,15 @@ print(best_epoch_path)
 
 
 # %% [Cell 8] ดูผลการเทรน
-from IPython.display import Image as IPyImage
-from IPython.display import display
+try:
+    from IPython.display import Image as IPyImage
+    from IPython.display import display
+except ImportError:                       # ในเครื่องที่ไม่มี IPython: แค่พิมพ์ที่อยู่ไฟล์ภาพ
+    def IPyImage(filename=None, width=None):
+        return filename
+
+    def display(obj):
+        print(f"  (ไฟล์ภาพ: {obj})")
 
 print("เปิดดูกราฟและผลลัพธ์ทั้งหมดได้ที่:")
 print(drive_run_dir)
@@ -1349,6 +1437,11 @@ PREDICT_TIMEOUT_SECONDS = 15
 skipped_images, succeeded_count = [], 0
 
 
+def _alarm(seconds):
+    if HAS_ALARM:
+        signal.alarm(seconds)
+
+
 class _PredictTimeout(Exception):
     pass
 
@@ -1358,23 +1451,24 @@ def _timeout_handler(signum, frame):
 
 
 print(f"กำลังทดสอบกับ {len(all_valid_images)} รูป (timeout {PREDICT_TIMEOUT_SECONDS} วินาที/รูป)...")
-_old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+_old_handler = signal.signal(signal.SIGALRM, _timeout_handler) if HAS_ALARM else None
 for idx, img_path in enumerate(all_valid_images, start=1):
-    signal.alarm(PREDICT_TIMEOUT_SECONDS)
+    _alarm(PREDICT_TIMEOUT_SECONDS)
     try:
         predict_and_save(img_path, local_predict_dir / f'{img_path.stem}.jpg')
-        signal.alarm(0)
+        _alarm(0)
         succeeded_count += 1
     except _PredictTimeout:
         skipped_images.append(img_path.name)
         print(f"  [ข้าม] {img_path.name} ใช้เวลาเกิน {PREDICT_TIMEOUT_SECONDS} วินาที")
     except Exception as e:
-        signal.alarm(0)
+        _alarm(0)
         skipped_images.append(img_path.name)
         print(f"  [ข้าม] {img_path.name} เกิดข้อผิดพลาด: {e}")
     if idx % 50 == 0:
         print(f"  ความคืบหน้า: {idx}/{len(all_valid_images)} รูป")
-signal.signal(signal.SIGALRM, _old_handler)
+if HAS_ALARM:
+    signal.signal(signal.SIGALRM, _old_handler)
 
 print(f"\nเสร็จสิ้น: ทำนายสำเร็จ {succeeded_count}/{len(all_valid_images)} รูป")
 if skipped_images:
