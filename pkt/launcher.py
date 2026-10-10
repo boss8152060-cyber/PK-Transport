@@ -1,11 +1,13 @@
 """The PK Transport window: one card per module (PKT Data, PKT Train, PKT Analyze) with its status, version and an Open button."""
 import os
+import queue
 import subprocess
 import sys
+import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from pkt import __version__, shared
+from pkt import __version__, shared, shortcut, updates
 from pkt.i18n import LANGS, LANG_NAMES, Translator
 from pkt.modules import (ROOT, SETTINGS_FILE, DEFAULT_MODULES_FILE, build_command, load_module_defs, load_settings,
                          read_version, resolve_module, save_settings)
@@ -27,11 +29,18 @@ class Launcher:
         self.cards = {}                 # module id -> dict of the widgets/vars of its card
         self.procs = {}                 # module id -> the Popen of the last start
         self.train_page = None          # the open PKT Train window
+        self.updates = {}               # module id (or 'app') -> result of updates.check_repo
+        self.checking = False
+        self.update_q = queue.Queue()   # results from the update threads (Tk is only touched from the main thread)
+        self.app_update_var = tk.StringVar(value="")
         root.minsize(900, 420)
         root.geometry("1040x470")
         self.body = ttk.Frame(root, padding=14)
         self.body.pack(fill="both", expand=True)
         self.build()
+        root.after(300, self._poll_updates)
+        if self.settings.get("auto_check_updates", True):
+            self.check_updates()
 
     # ---------------------------------------------------------------- texts / language
     def t(self, key, **kw):
@@ -74,6 +83,10 @@ class Launcher:
             ttk.Radiobutton(right, text=LANG_NAMES[lang], value=lang, variable=self.lang_var,
                             command=lambda lg=lang: self.set_language(lg)).grid(row=0, column=1 + i, padx=2)
         ttk.Button(right, text=self.t("settings"), command=self.open_settings).grid(row=0, column=3, padx=(12, 0))
+        ttk.Button(right, text=self.t("updates_check"), command=self.check_updates).grid(row=1, column=1, columnspan=3, sticky="e", pady=(6, 0))
+        self.app_update_btn = ttk.Button(right, text=self.t("updates_update"), command=lambda: self.update_module("app"), state="disabled")
+        self.app_update_btn.grid(row=2, column=3, sticky="e", pady=(4, 0))
+        ttk.Label(right, textvariable=self.app_update_var, foreground="#555555").grid(row=2, column=0, columnspan=3, sticky="e", pady=(4, 0))
 
         ttk.Label(self.body, text=self.t("pipeline_hint"), foreground="#555555").pack(anchor="w", pady=(8, 8))
 
@@ -104,12 +117,17 @@ class Launcher:
         folder.pack(anchor="w", pady=(4, 0))
         note = ttk.Label(card, text="", justify="left", foreground="#8a5a00", wraplength=260)
         note.pack(anchor="w", pady=(6, 0))
+        upd = ttk.Label(card, text="", justify="left", wraplength=260)
+        upd.pack(anchor="w", pady=(6, 0))
         buttons = ttk.Frame(card)
         buttons.pack(side="bottom", anchor="w", pady=(10, 0))
         open_btn = ttk.Button(buttons, text=self.t("open"), command=lambda m=mid: self.launch(m))
         open_btn.grid(row=0, column=0, padx=(0, 6))
         ttk.Button(buttons, text=self.t("open_folder"), command=lambda m=mid: self.open_folder(m)).grid(row=0, column=1)
-        self.cards[mid] = {"status": status, "version": version, "detail": detail, "folder": folder, "note": note, "open": open_btn}
+        upd_btn = ttk.Button(buttons, text=self.t("updates_update"), command=lambda m=mid: self.update_module(m), state="disabled")
+        upd_btn.grid(row=0, column=2, padx=(6, 0))
+        self.cards[mid] = {"status": status, "version": version, "detail": detail, "folder": folder, "note": note, "open": open_btn,
+                           "update": upd, "update_btn": upd_btn}
 
     def info_of(self, mid):
         mod_def = next(d for d in self.defs if d["id"] == mid)
@@ -139,6 +157,7 @@ class Launcher:
                 note = self.t("analyze_model_set", name=os.path.basename(shared.get_analyze_model(self.settings)))
             card["note"].config(text=note)
             card["open"].config(state=("normal" if (info["launchable"] and info["entry_exists"]) else "disabled"))
+        self._show_updates()
 
     # ---------------------------------------------------------------- actions
     def _open_path(self, path):
@@ -207,6 +226,132 @@ class Launcher:
             messagebox.showerror(self.t("app_title"), self.t("exited_early", name=name, code=code, log=log_path), parent=self.root)
 
     # ---------------------------------------------------------------- settings
+    # ---------------------------------------------------------------- updates (git)
+    def _update_targets(self):
+        """(id, folder) of every module that exists, and of this app."""
+        out = []
+        for mod_def in self.defs:
+            info = resolve_module(mod_def, self.settings, self.project_root)
+            if info["exists"]:
+                out.append((mod_def["id"], info["folder"]))
+        out.append(("app", self.project_root))
+        return out
+
+    def check_updates(self):
+        """Look on GitHub for new commits of every module and of this app (in a thread; the result is shown by _poll_updates)."""
+        if self.checking:
+            return False
+        self.checking = True
+        self.app_update_var.set(self.t("updates_checking"))
+        targets = self._update_targets()
+
+        def work():
+            for mid, folder in targets:
+                self.update_q.put(("check", mid, updates.check_repo(folder)))
+            self.update_q.put(("done", None, None))
+
+        threading.Thread(target=work, daemon=True).start()
+        return True
+
+    def _poll_updates(self):
+        try:
+            if not self.root.winfo_exists() or not self.body.winfo_exists():
+                return                              # the window (or this launcher's body) is gone: stop polling
+        except tk.TclError:
+            return
+        changed = False
+        try:
+            while True:
+                kind, mid, data = self.update_q.get_nowait()
+                if kind == "check":
+                    self.updates[mid] = data
+                    changed = True
+                elif kind == "done":
+                    self.checking = False
+                    changed = True
+                elif kind == "pulled":
+                    ok, msg = data
+                    name = self._name_of(mid)
+                    if ok:
+                        self.status_var.set(self.t("updates_done", name=name) + (" — " + self.t("updates_restart") if mid == "app" else ""))
+                        self.updates[mid] = updates.check_repo(self._folder_of(mid), fetch=False)
+                    else:
+                        messagebox.showerror(self.t("app_title"), self.t("updates_failed", name=name, msg=msg), parent=self.root)
+                    changed = True
+        except queue.Empty:
+            pass
+        if changed:
+            self.refresh()
+        self.root.after(300, self._poll_updates)
+
+    def _name_of(self, mid):
+        return self.t("app_self") if mid == "app" else next((d["name"] for d in self.defs if d["id"] == mid), mid)
+
+    def _folder_of(self, mid):
+        return self.project_root if mid == "app" else self.info_of(mid)[1]["folder"]
+
+    def _update_text(self, res):
+        """(text, colour) of an update-check result."""
+        st = res["state"]
+        if st == "uptodate":
+            text, col = self.t("updates_uptodate"), "#1b7f3b"
+        elif st == "behind":
+            text, col = self.t("updates_behind", n=res["behind"]), "#b45f00"
+        elif st == "ahead":
+            text, col = self.t("updates_ahead", n=res["ahead"]), "#555555"
+        elif st == "diverged":
+            text, col = self.t("updates_diverged", ahead=res["ahead"], behind=res["behind"]), "#b00020"
+        elif st == "no_git":
+            text, col = self.t("updates_no_git"), "#777777"
+        else:
+            text, col = self.t("updates_no_upstream"), "#777777"
+        if st in ("uptodate", "behind", "ahead", "diverged") and res.get("error"):
+            text += " · " + self.t("updates_offline")
+        return text, col
+
+    def _show_updates(self):
+        for mid, card in self.cards.items():
+            res = self.updates.get(mid)
+            if res is None or res["state"] == "missing":
+                card["update"].config(text="")
+                card["update_btn"].config(state="disabled")
+                continue
+            text, col = self._update_text(res)
+            card["update"].config(text=text, foreground=col)
+            card["update_btn"].config(state=("normal" if res["state"] == "behind" else "disabled"))
+        res = self.updates.get("app")
+        if self.checking and res is None:
+            return
+        if res is None or res["state"] == "missing":
+            self.app_update_var.set("")
+            self.app_update_btn.config(state="disabled")
+        else:
+            text, _col = self._update_text(res)
+            self.app_update_var.set(f"{self.t('app_self')} {__version__}: " + text)
+            self.app_update_btn.config(state=("normal" if res["state"] == "behind" else "disabled"))
+
+    def update_module(self, mid):
+        """Take the new commits of a module (or this app) with a fast-forward pull, after the user confirms."""
+        res = self.updates.get(mid)
+        if not res or res["state"] != "behind":
+            return False
+        folder = self._folder_of(mid)
+        name = self._name_of(mid)
+        log = chr(10).join(updates.incoming(folder)) or "-"
+        if not messagebox.askyesno(self.t("app_title"), self.t("updates_confirm", name=name, log=log), parent=self.root):
+            return False
+        self.status_var.set(self.t("updates_checking"))
+        threading.Thread(target=lambda: self.update_q.put(("pulled", mid, updates.pull_ff(folder))), daemon=True).start()
+        return True
+
+    def create_shortcut(self):
+        ok, result = shortcut.create_shortcut(self.project_root)
+        if ok:
+            self.status_var.set(self.t("shortcut_done", path=result))
+        else:
+            messagebox.showerror(self.t("app_title"), self.t("shortcut_fail", msg=result), parent=self.root)
+        return ok
+
     def open_settings(self):
         top = tk.Toplevel(self.root)
         top.title(self.t("settings_title"))
@@ -236,6 +381,9 @@ class Launcher:
         mbtns.grid(row=mrow + 1, column=2)
         ttk.Button(mbtns, text=self.t("browse"), command=lambda: self._browse_model(top.model_var, top)).pack(side="left")
         ttk.Button(mbtns, text=self.t("clear"), command=lambda: top.model_var.set("")).pack(side="left", padx=(4, 0))
+        top.auto_var = tk.BooleanVar(value=bool(self.settings.get("auto_check_updates", True)))
+        ttk.Checkbutton(frame, text=self.t("auto_check"), variable=top.auto_var).grid(row=len(self.defs) * 3 + 2, column=0, columnspan=2, sticky="w", pady=(12, 0))
+        ttk.Button(frame, text=self.t("shortcut_create"), command=self.create_shortcut).grid(row=len(self.defs) * 3 + 2, column=2, sticky="e", pady=(12, 0))
         bar = ttk.Frame(frame)
         bar.grid(row=len(self.defs) * 3 + 3, column=0, columnspan=3, sticky="e", pady=(14, 0))
         ttk.Button(bar, text=self.t("save"), command=lambda: self._save_settings(vars_, top)).pack(side="left", padx=4)
@@ -269,6 +417,8 @@ class Launcher:
             if entry:
                 mods[mod_def["id"]] = entry
         self.settings["modules"] = mods
+        if getattr(top, "auto_var", None) is not None:
+            self.settings["auto_check_updates"] = bool(top.auto_var.get())
         if getattr(top, "model_var", None) is not None:
             shared.set_analyze_model(self.settings, top.model_var.get().strip())
         self._save()

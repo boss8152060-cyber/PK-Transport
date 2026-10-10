@@ -11,7 +11,7 @@
   - `PKT-Train/` (repo root) — remote https://github.com/boss8152060-cyber/PKT-Train.git
   - `PKT-Analyze/` โฟลเดอร์แม่ (`Run/` = repo, `Input/ Output/ Other/` = ข้อมูลทดสอบนอก git) — remote https://github.com/boss8152060-cyber/PKT-Analyze.git
   - `_backups/` สำรองเก่า
-- โค้ดของแอปนี้: `main.py` (ตัวเปิด), `pkt/` (`modules.py` ตรรกะหาโมดูล/เวอร์ชัน/คำสั่งเปิด ไม่ผูก GUI, `launcher.py` หน้าต่างหลัก Tk, `train_core.py` ตรรกะ PKT Train ไม่ผูก GUI, `shared.py` สิ่งที่ใช้ร่วมกันระหว่างโมดูล (หา run ที่เทรนแล้ว, โมเดลของ PKT Analyze, `PKT_MODEL_PATH`), `train_page.py` หน้าเทรน, `i18n.py` ข้อความไทย/อังกฤษ), `modules.json` (ที่อยู่ตั้งต้นของโมดูล), `tests/`
+- โค้ดของแอปนี้: `main.py` (ตัวเปิด), `pkt/` (`modules.py` ตรรกะหาโมดูล/เวอร์ชัน/คำสั่งเปิด ไม่ผูก GUI, `launcher.py` หน้าต่างหลัก Tk, `train_core.py` ตรรกะ PKT Train ไม่ผูก GUI, `shared.py` สิ่งที่ใช้ร่วมกันระหว่างโมดูล (หา run ที่เทรนแล้ว, โมเดลของ PKT Analyze, `PKT_MODEL_PATH`), `updates.py` ตรวจ/อัปเดตผ่าน git (fetch, `pull --ff-only` อย่างเดียว), `shortcut.py` ทางลัดเดสก์ท็อป, `train_page.py` หน้าเทรน, `i18n.py` ข้อความไทย/อังกฤษ), `modules.json` (ที่อยู่ตั้งต้นของโมดูล), `tests/`
 - ใช้เฉพาะไลบรารีมาตรฐานของ Python (ไม่เพิ่ม dependency ภายนอกโดยไม่จำเป็น)
 - ไฟล์ของผู้ใช้ที่ไม่ขึ้น git: `pkt_settings.json` (ภาษา, โฟลเดอร์/Python ที่ผู้ใช้ตั้ง), `logs/`
 
@@ -25,17 +25,20 @@
 ## ตรวจก่อน commit ทุกครั้ง (รันจากโฟลเดอร์นี้)
 
 1. `python -m py_compile main.py pkt/*.py`
-2. `python -m unittest discover -s tests -v` (test_modules, test_i18n, test_train_core — อ่าน/แพตช์สคริปต์จริงใน `PKT-Train` ถ้ามีอยู่ข้างกัน, test_shared)
+2. `python -m unittest discover -s tests -v` (test_modules, test_i18n, test_train_core — อ่าน/แพตช์สคริปต์จริงใน `PKT-Train` ถ้ามีอยู่ข้างกัน, test_shared, test_updates — ใช้ repo git ชั่วคราวจริง, test_shortcut — สร้าง .lnk จริงในโฟลเดอร์ชั่วคราว)
 3. `py -3.12 tests/gui_launcher.py` (หน้าต่างจริงแบบซ่อน + โมดูลปลอมในโฟลเดอร์ชั่วคราว)
 4. `py -3.12 tests/gui_train.py` (หน้า PKT Train + โฟลเดอร์ PKT-Train ปลอม + สคริปต์เทรนปลอมที่รันจริงเป็น subprocess)
+5. `py -3.12 tests/gui_updates.py` (ตรวจ/อัปเดต/ทางลัดในหน้าต่างจริงกับ repo git ชั่วคราว)
 
 ## กฎการใช้ git
 
 หลังทำงานเสร็จและตรวจแล้ว commit + push ให้เอง (remote `origin` ของ repo นี้เท่านั้น):
 
 ```
-PK Transport <x.y.z>: <คำอธิบายสั้น ๆ_แบบ_CamelCase> [(PASS)]
+PK-Transport <x.y.z>: <คำอธิบายสั้น ๆ_แบบ_CamelCase> [(PASS)]
 ```
+
+- **ชื่อ repo นำหน้าเลขเวอร์ชัน เหมือนกันทุก repo ของ PK Transport** (`PK-Transport` / `PKT-Analyze` / `PKT-Data` / `PKT-Train` — รูปแบบ `<ชื่อ repo> <x.y.z>: <คำอธิบาย>`); commit เก่าที่ใช้ชื่อรูปแบบเดิมไม่แก้ (ไม่แก้ประวัติ); commit เก่าที่ขึ้นต้น `PK Transport x.y.z:` ไม่แก้
 - เพิ่มบรรทัดใน `CHANGELOG.md` + ติด tag `v<x.y.z>` + `git push` พร้อม `git push origin v<x.y.z>`
 - `(PASS)` เฉพาะเมื่อผู้ใช้ยืนยันแล้วว่าผ่าน; บรรทัดสุดท้ายของ message ใส่ trailer `Co-Authored-By: ...` ตามที่ระบบกำหนด
 - อัปเดต `plan.md` เมื่อทำงานเสร็จ
