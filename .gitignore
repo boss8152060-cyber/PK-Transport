@@ -1,0 +1,11 @@
+# ผลเทรน / พื้นที่ทำงาน / น้ำหนักโมเดล ไม่เก็บใน git
+_workspace/
+Runs/
+runs/
+_original_colab_versions/
+*.pt
+*.pth
+*.engine
+*.onnx
+*.log
+__pycache__/
