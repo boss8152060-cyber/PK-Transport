@@ -3,7 +3,7 @@
 ## สถานะ
 
 - **เวอร์ชันล่าสุด:** 0.2.0 (หน้า PKT Train) — ดู `CHANGELOG.md`
-- **Remote:** `origin` = https://github.com/boss8152060-cyber/PK-Transport.git (ผู้ใช้ต้องสร้าง repo เปล่าก่อน; ตอนเริ่มงาน repo นี้ยังไม่มีบน GitHub จึงยังไม่ได้ push)
+- **Remote:** `origin` = https://github.com/boss8152060-cyber/PK-Transport.git (push แล้ว: main + tag v0.1.0, v0.2.0)
 
 ## งาน
 
