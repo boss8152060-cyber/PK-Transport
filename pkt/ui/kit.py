@@ -110,15 +110,27 @@ class ScrollFrame(ttk.Frame):
         elif not need and self.scroll.winfo_ismapped():
             self.scroll.pack_forget()
 
+    _wheel_installed = False
+    _under_pointer = None
+
     def _bind_wheel(self, _e=None):
-        self.canvas.bind_all("<MouseWheel>", self._wheel)
+        ScrollFrame._under_pointer = self
+        if not ScrollFrame._wheel_installed:                 # one binding for all pages, added to what other code (embedded PKT Analyze) binds
+            ScrollFrame._wheel_installed = True
+            self.canvas.bind_all("<MouseWheel>", ScrollFrame._on_wheel, add="+")
 
     def _unbind_wheel(self, _e=None):
-        self.canvas.unbind_all("<MouseWheel>")
+        if ScrollFrame._under_pointer is self:
+            ScrollFrame._under_pointer = None
 
-    def _wheel(self, e):
-        if self.body.winfo_reqheight() > self.canvas.winfo_height():
-            self.canvas.yview_scroll(int(-e.delta / 120), "units")
+    @staticmethod
+    def _on_wheel(e):
+        sf = ScrollFrame._under_pointer
+        try:
+            if sf is not None and sf.winfo_ismapped() and sf.body.winfo_reqheight() > sf.canvas.winfo_height():
+                sf.canvas.yview_scroll(int(-e.delta / 120), "units")
+        except tk.TclError:
+            ScrollFrame._under_pointer = None
 
 
 def autowrap(label, container, pad=0, minimum=140):

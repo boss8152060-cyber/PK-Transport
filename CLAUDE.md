@@ -30,7 +30,8 @@
 3. `py -3.12 tests/gui_app.py` (หน้าต่างจริง + โมดูลปลอมในโฟลเดอร์ชั่วคราว: นำทาง/สลับภาษา/เปิดโมดูล/ตั้งค่า)
 4. `py -3.12 tests/gui_train.py` (หน้า PKT Train + โฟลเดอร์ PKT-Train ปลอม + สคริปต์เทรนปลอมที่รันจริงเป็น subprocess)
 5. `py -3.12 tests/gui_data.py` (PKT Data ฝังเป็นแท็บ — โหลดโค้ดจริงจาก `PKT-Data/src` ถ้ามี)
-6. `py -3.12 tests/gui_updates.py` (ตรวจ/อัปเดต/ทางลัดในหน้าต่างจริงกับ repo git ชั่วคราว)
+6. `py -3.12 tests/gui_analyze.py` (PKT Analyze ฝังเป็นหน้า — โหลดโค้ดจริง ต้องมี torch/ultralytics)
+7. `py -3.12 tests/gui_updates.py` (ตรวจ/อัปเดต/ทางลัดในหน้าต่างจริงกับ repo git ชั่วคราว)
 
 ## กฎการใช้ git
 

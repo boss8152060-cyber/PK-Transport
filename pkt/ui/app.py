@@ -72,6 +72,13 @@ class PKTApp:
             if not messagebox.askyesno(self.t("app_title"), self.t("train_busy_close"), parent=self.root):
                 return
             train.stop_for_exit()
+        analyze = self.pages.get("analyze")
+        if analyze is not None and analyze.is_running():
+            if not messagebox.askyesno(self.t("app_title"), self.t("analyze_busy_close"), parent=self.root):
+                return
+            analyze.stop_for_exit()
+            self.root.after(800, self.root.destroy)             # the run ends after its current frame
+            return
         self.root.destroy()
 
     # ================================================================ texts / language / settings
@@ -166,15 +173,15 @@ class PKTApp:
                 lb.configure(bg=COLORS["sidebar_hover"], fg=COLORS["sidebar_muted"])
 
     def _build_pages(self):
+        from pkt.ui.pages.analyze import AnalyzePage
         from pkt.ui.pages.data import DataPage
         from pkt.ui.pages.home import HomePage
-        from pkt.ui.pages.module import ModulePage
         from pkt.ui.pages.settings import SettingsPage
         from pkt.ui.pages.train import TrainPage
         self.pages["home"] = HomePage(self.container, self)
         self.pages["data"] = DataPage(self.container, self)
         self.pages["train"] = TrainPage(self.container, self)
-        self.pages["analyze"] = ModulePage(self.container, self, "analyze")
+        self.pages["analyze"] = AnalyzePage(self.container, self)
         self.pages["settings"] = SettingsPage(self.container, self)
         for page in self.pages.values():
             page.grid(row=0, column=0, sticky="nsew")

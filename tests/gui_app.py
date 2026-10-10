@@ -118,10 +118,8 @@ with open(model_file, "wb") as f:
     f.write(b"x")
 with open(os.path.join(tmp, "ModAnalyze", "go.py"), "w") as f:
     f.write("import os\nopen(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'env.txt'), 'w').write(os.environ.get('PKT_MODEL_PATH', 'NONE'))\nimport time; time.sleep(30)")
-page = app.pages["analyze"]
-check("the model box starts empty", page.model_var.get() == "")
-page.model_var.set(model_file)
-check("saving the model works", page.save_model() is True)
+check("the model starts empty", shared.get_analyze_model(app.settings) == "")
+check("saving the model works", app.set_analyze_model(model_file) is True)
 check("the model is saved in the settings", json.load(open(settings_path, encoding="utf-8"))["shared"]["analyze_model"] == os.path.normpath(model_file))
 check("Home shows the model", "mymodel.pt" in text(home.cards["analyze"]["metric"]), text(home.cards["analyze"]["metric"]))
 proc = app.launch("analyze")
@@ -133,8 +131,7 @@ for _ in range(60):
 check("PKT Analyze is started with PKT_MODEL_PATH", open(env_file).read() == os.path.normpath(model_file))
 proc.kill()
 proc.wait()
-page.model_var.set("")
-page.save_model()
+app.set_analyze_model("")
 check("clearing the model forgets it", shared.get_analyze_model(app.settings) == "")
 
 # open folder

@@ -136,6 +136,11 @@ def apply_theme(root):
     style.configure("Card.TRadiobutton", background=c["card"], foreground=c["text"], focuscolor=c["card"], indicatorcolor=c["field"])
     style.map("Card.TRadiobutton", indicatorcolor=[("selected", c["accent"])], background=[("active", c["card"])])
     style.configure("TCheckbutton", background=c["bg"])
+    style.configure("TNotebook", background=c["bg"], bordercolor=c["border"], lightcolor=c["bg"], darkcolor=c["bg"])
+    style.configure("TNotebook.Tab", background=c["surface_alt"], foreground=c["text"], bordercolor=c["border"], lightcolor=c["surface_alt"],
+                    darkcolor=c["surface_alt"], padding=(10, 5))
+    style.map("TNotebook.Tab", background=[("selected", c["card"]), ("active", c["select"])], lightcolor=[("selected", c["card"])],
+              darkcolor=[("selected", c["card"])])
     style.configure("TRadiobutton", background=c["bg"])
 
     # table, scrollbar, separator, progress

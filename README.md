@@ -79,6 +79,7 @@ py -3.12 main.py        (หรือดับเบิลคลิก run_pk_tr
 - **0.4.0:** ตรวจ/อัปเดตเวอร์ชันของโมดูลและของแอปนี้ผ่าน GitHub + ทางลัดบนเดสก์ท็อป (ดูหัวข้อด้านล่าง)
 - **0.5.0:** แอปหน้าต่างเดียว: แถบเมนูซ้าย (Home / PKT Data / PKT Train / PKT Analyze / ตั้งค่า), ธีมขาว-ดำ-เทาแบบเดียวกับ PKT Data + โลโก้ PKT Data, สลับไทย/อังกฤษทันที, PKT Train เป็นหน้าในแอป (PKT Data / PKT Analyze ยังเปิดเป็นหน้าต่างแยกจากหน้าโมดูล — ขั้นต่อไปฝังเป็นแท็บ)
 - **0.6.0:** PKT Data ฝังเป็นแท็บในแอป (Data / Label / Curate / Analytics / Zone / Other)
+- **0.7.0:** PKT Analyze ฝังเป็นหน้าในแอป (โหลดครั้งแรกใช้เวลาไม่กี่วินาที)
 - ถัดไป: ตามความต้องการ (เช่น ส่งโฟลเดอร์ชุดข้อมูลจาก PKT Data ไป PKT Train)
 
 ## ทดสอบ / Tests
@@ -89,4 +90,5 @@ py -3.12 tests/gui_app.py
 py -3.12 tests/gui_train.py
 py -3.12 tests/gui_updates.py
 py -3.12 tests/gui_data.py
+py -3.12 tests/gui_analyze.py
 ```

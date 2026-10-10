@@ -21,6 +21,7 @@
       "name": "PKT Analyze",
       "path": "PKT-Analyze/Run",
       "entry": "PKStudio.py",
+      "page": "analyze",
       "version_file": null
     }
   ]
