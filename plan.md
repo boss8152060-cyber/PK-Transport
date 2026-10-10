@@ -2,7 +2,7 @@
 
 ## สถานะ
 
-- **เวอร์ชันล่าสุด:** 0.8.0 (แอปหน้าต่างเดียว ธีมเดียวกับ PKT Data สลับภาษาไทย/อังกฤษ) — ดู `CHANGELOG.md`
+- **เวอร์ชันล่าสุด:** 0.8.1 (แอปหน้าต่างเดียว ธีมเดียวกับ PKT Data สลับภาษาไทย/อังกฤษ) — ดู `CHANGELOG.md`
 - **Remote:** `origin` = https://github.com/boss8152060-cyber/PK-Transport.git (push แล้ว: main + tag v0.1.0, v0.2.0)
 
 ## งาน
@@ -17,13 +17,14 @@
 ## ที่ตัดสินใจแล้ว
 
 - แอปรวม = หน้าเปิดหลัก + หน้า PKT Train ใหม่ **ไม่รวมโค้ดโมดูลเดิมเป็นไฟล์เดียว** (PKStudio.py ใหญ่ ~13,000 บรรทัด; แต่ละโมดูลรันแยกอยู่แล้ว)
-- ไม่ใช้ git submodule ตอนนี้ (repo ของ PKT-Analyze อยู่ที่ `PKT-Analyze/Run` ไม่ใช่รากของโฟลเดอร์) ใช้ `modules.json` + ตั้งค่าที่อยู่แทน
+- ไม่ใช้ git submodule ตอนนี้ (PKT-Analyze ถูกย้ายมาเป็น `PKT-Analyze/` ตรง ๆ แล้ว; โครงเก่า `PKT-Analyze/Run` ยังรองรับ) ใช้ `modules.json` + โฟลเดอร์วางข้างกัน
 - ภาษา: ไทย/อังกฤษ สลับได้ ศัพท์เฉพาะ (TTC, PET, LDP, ชื่อโมเดล ฯลฯ) ไม่แปล
 
 ## บันทึกความคืบหน้า
 
 | วันที่ | สิ่งที่ทำ | ไฟล์ |
 |---|---|---|
+| 2026-10-10 | **0.8.1** ผู้ใช้ย้าย PKT Analyze เป็น `PKT-Analyze/` (ไม่มี `Run/`, `.git` ของ Analyze ไม่อยู่ในโฟลเดอร์แล้ว, ข้อมูล Input/Output/Other ย้ายไป `PSU Transport Project 2026/Test/`) → ปรับ modules.json (+`fallback_paths`), setup.ps1, make_portable (เดินไฟล์เมื่อไม่มี .git), เพิ่ม `own_repo()` กัน git ตอบแทน repo รอบนอก; unit test 59 ตัว + GUI test ผ่าน; **ยังต้องถามผู้ใช้: .git ของ PKT-Analyze อยู่ที่ไหน/ตั้งใจรวมเข้า PK-Transport หรือไม่; ค่าตั้งต้น Input/Output ใน PKStudio.py ยังอ้าง `dirname(dirname(__file__))` = โฟลเดอร์ PK-Transport ต้องแก้ใน repo PKT-Analyze (ไม่แก้จากที่นี่)** | `modules.json`, `pkt/modules.py`, `pkt/updates.py`, `setup.ps1`, `make_portable.py`, `tests/` |
 | 2026-10-10 | **0.8.0** ขั้น 4: ตัวติดตั้งคลิกเดียว (`install.bat`/`setup.ps1`) + ZIP พกพา (`make_portable.py`) + `.venv` ถูกเลือกก่อน; ทดสอบ: `setup.ps1 -DryRun`, **ติดตั้งจริงในโฟลเดอร์ชั่วคราวด้วย `-ForceCpu`** (สร้าง .venv, ติดตั้ง torch CPU + ไลบรารี, import ผ่าน, แอปเปิดทุกหน้าจาก .venv ได้ — โมดูลโหลดผ่าน git clone เพราะเครื่องนี้ล็อกอิน GitHub ไว้), แตก ZIP แล้ว `-DryRun` เจอโมดูลครบ; unit test 56 ตัว; **ยังไม่ได้ทดสอบ: ติดตั้ง CUDA จริง (cu124), ติดตั้งบนเครื่องที่ไม่มี Python, เส้นทางโหลด ZIP จาก GitHub (repo เป็น private), ทางลัดจาก setup.ps1 จริง, RT-DETRv2 ต้องมีซอร์ส `src.core` ของมันเอง (ไม่ได้ติดตั้งให้)** | `install.bat`, `setup.ps1`, `make_portable.py`, `pkt/modules.py`, `pkt/shortcut.py`, `run_pk_transport.bat`, `tests/` |
 | 2026-10-10 | **0.7.0** ขั้น 3: ฝัง PKT Analyze เป็นแท็บ (`pages/analyze.py`; `modules.json` analyze มี `page: analyze`); ทดสอบ `tests/gui_analyze.py` (โหลดของจริง ต้องมี torch) + ถ่ายภาพหน้าจอจริง; **ยังไม่ได้วิเคราะห์วิดีโอจริงจากในแท็บ, ข้อความใน PKT Analyze ยังเป็นไทยล้วน (ยังไม่มีอังกฤษ), ปุ่มรีสตาร์ทด้วย Python CUDA ของ PKStudio.py ยังไม่ได้ลอง** | `pkt/ui/pages/analyze.py`, `pkt/ui/app.py`, `pkt/ui/kit.py`, `pkt/ui/theme.py`, `modules.json`, `tests/` |
 | 2026-10-10 | **0.6.0** ขั้น 2: ฝัง PKT Data เป็นแท็บ (`pages/data.py`; `modules.json` data มี `page: data`); `show()` ซ่อนหน้าอื่นจริง; ทดสอบ `tests/gui_data.py` (โหลดของจริง 6 แท็บ สลับ ซ่อน/แสดง ภาษา) + `gui_app.py` ปรับ, ถ่ายภาพหน้าจอจริง; **ยังไม่ได้ลองใช้งานจริงทีละฟีเจอร์ (ดึงเฟรม ตีกรอบ ฯลฯ) ในแท็บ และข้อความใน PKT Data ยังไม่แปลไทย** | `pkt/ui/pages/data.py`, `pkt/ui/app.py`, `modules.json`, `tests/` |

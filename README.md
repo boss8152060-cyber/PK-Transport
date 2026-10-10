@@ -28,7 +28,7 @@ PK-Transport/          ← repo นี้
 ├─ main.py, pkt/, modules.json ...
 ├─ PKT-Data/           ← git clone .../PKT-Data.git
 ├─ PKT-Train/          ← git clone .../PKT-Train.git
-└─ PKT-Analyze/        ← โฟลเดอร์แม่; repo อยู่ที่ PKT-Analyze/Run (git clone .../PKT-Analyze.git Run)
+└─ PKT-Analyze/        ← repo ของ PKT Analyze (PKStudio.py อยู่ในโฟลเดอร์นี้ตรง ๆ; โครงเก่า PKT-Analyze/Run ก็ยังเปิดได้)
 ```
 
 ถ้าวางที่อื่น ตั้งโฟลเดอร์ของแต่ละโมดูลได้ที่ปุ่ม **ตั้งค่า / Settings** ในแอป

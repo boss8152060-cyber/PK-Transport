@@ -19,7 +19,8 @@
     {
       "id": "analyze",
       "name": "PKT Analyze",
-      "path": "PKT-Analyze/Run",
+      "path": "PKT-Analyze",
+      "fallback_paths": ["PKT-Analyze/Run"],
       "entry": "PKStudio.py",
       "page": "analyze",
       "version_file": null

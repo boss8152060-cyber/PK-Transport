@@ -1,7 +1,7 @@
 # =========================================================================
 # PK Transport - one-time installer (called by install.bat; do not run it by hand)
 #   1. Python 3.12 (installed for the current user when missing)
-#   2. The three modules next to this file (PKT-Data, PKT-Train, PKT-Analyze\Run): used as they are when present
+#   2. The three modules next to this file (PKT-Data, PKT-Train, PKT-Analyze): used as they are when present
 #      (e.g. from the portable zip), otherwise downloaded from GitHub
 #   3. A private Python environment in .venv (nothing is installed into the system Python)
 #   4. PyTorch: the CUDA build that matches the NVIDIA driver, or the CPU build when there is no NVIDIA GPU
@@ -80,7 +80,7 @@ Write-Step "Step 2/6: PKT Data, PKT Train, PKT Analyze"
 $modules = @(
     @{ Name = "PKT Data";    Repo = "PKT-Data";    Dir = "PKT-Data";         Marker = "main.py" },
     @{ Name = "PKT Train";   Repo = "PKT-Train";   Dir = "PKT-Train";        Marker = "README.md" },
-    @{ Name = "PKT Analyze"; Repo = "PKT-Analyze"; Dir = "PKT-Analyze\Run"; Marker = "PKStudio.py" }
+    @{ Name = "PKT Analyze"; Repo = "PKT-Analyze"; Dir = "PKT-Analyze";     Marker = "PKStudio.py" }
 )
 $haveGit = [bool](Get-Command git -ErrorAction SilentlyContinue)
 $missing = @()

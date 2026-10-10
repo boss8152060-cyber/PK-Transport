@@ -9,7 +9,7 @@
 - โมดูลเป็น **repo แยก** วางข้างกันใต้โฟลเดอร์นี้ (อยู่ใน `.gitignore` ของ repo นี้ ห้าม commit โค้ดโมดูลที่นี่):
   - `PKT-Data/` (repo root) — remote https://github.com/boss8152060-cyber/PKT-Data.git
   - `PKT-Train/` (repo root) — remote https://github.com/boss8152060-cyber/PKT-Train.git
-  - `PKT-Analyze/` โฟลเดอร์แม่ (`Run/` = repo, `Input/ Output/ Other/` = ข้อมูลทดสอบนอก git) — remote https://github.com/boss8152060-cyber/PKT-Analyze.git
+  - `PKT-Analyze/` (ย้ายมาอยู่ระดับนี้แล้ว — `PKStudio.py` อยู่ในโฟลเดอร์นี้ตรง ๆ ไม่มี `Run/` แล้ว; ยังรองรับโครงเก่า `PKT-Analyze/Run` ผ่าน `fallback_paths` ใน modules.json) — remote https://github.com/boss8152060-cyber/PKT-Analyze.git; ถ้าโฟลเดอร์ไม่มี `.git` ของตัวเอง แอปถือว่า "ไม่ใช่โฟลเดอร์ git" (ไม่อ่าน/ไม่ pull จาก repo รอบนอก)
   - `_backups/` สำรองเก่า
 - โค้ดของแอปนี้: `main.py` (ตัวเปิด), `pkt/` (`modules.py` ตรรกะหาโมดูล/เวอร์ชัน/คำสั่งเปิด ไม่ผูก GUI, `ui/` หน้าต่างเดียวของแอป (theme/bind สลับภาษาสด/kit/app + pages home, module, settings, train), `train_core.py` ตรรกะ PKT Train ไม่ผูก GUI, `shared.py` สิ่งที่ใช้ร่วมกันระหว่างโมดูล (หา run ที่เทรนแล้ว, โมเดลของ PKT Analyze, `PKT_MODEL_PATH`), `updates.py` ตรวจ/อัปเดตผ่าน git (fetch, `pull --ff-only` อย่างเดียว), `shortcut.py` ทางลัดเดสก์ท็อป, `i18n.py` ข้อความไทย/อังกฤษ), `modules.json` (ที่อยู่ตั้งต้นของโมดูล), `install.bat` + `setup.ps1` (ตัวติดตั้งคลิกเดียว: Python 3.12, `.venv`, PyTorch GPU/CPU, ไลบรารี, ทางลัด — ไฟล์ .ps1 ต้องเป็น ASCII ล้วน), `make_portable.py` (ZIP พกพา), `tests/`
 - ใช้เฉพาะไลบรารีมาตรฐานของ Python (ไม่เพิ่ม dependency ภายนอกโดยไม่จำเป็น)

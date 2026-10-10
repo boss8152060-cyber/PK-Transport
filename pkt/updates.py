@@ -18,6 +18,13 @@ def _git(folder, *args, timeout=30):
     return r.returncode, r.stdout.strip(), r.stderr.strip()
 
 
+def own_repo(folder):
+    """True when `folder` is the top folder of its own git repo. A module folder without a .git of its own that sits inside another
+    repo (e.g. PKT-Analyze inside PK-Transport) is NOT: git would then answer for the outer repo, and an update would pull the wrong one."""
+    rc, top, _e = _git(folder, "rev-parse", "--show-toplevel")
+    return rc == 0 and bool(top) and os.path.normcase(os.path.realpath(top)) == os.path.normcase(os.path.realpath(folder))
+
+
 def check_repo(folder, fetch=True, timeout=40):
     """{'state', 'behind', 'ahead', 'upstream', 'fetched', 'error'} for the repo in `folder`.
     state: uptodate | behind (new commits on GitHub) | ahead (local commits not pushed) | diverged | no_upstream | no_git | missing.
@@ -26,7 +33,7 @@ def check_repo(folder, fetch=True, timeout=40):
     if not folder or not os.path.isdir(folder):
         return out
     rc, _o, _e = _git(folder, "rev-parse", "--git-dir")
-    if rc != 0:
+    if rc != 0 or not own_repo(folder):
         out["state"] = "no_git"
         return out
     rc, upstream, _e = _git(folder, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")

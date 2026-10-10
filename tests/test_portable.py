@@ -36,6 +36,19 @@ class Portable(unittest.TestCase):
         self.assertEqual(count, 5)
         self.assertEqual(missing, ["PKT-Train"])                       # a module that is not there is reported
 
+    def test_a_module_folder_without_its_own_repo_is_walked(self):
+        root = tempfile.mkdtemp(prefix="pkt_pz2_")
+        make_repo(root, {"main.py": b"app", ".gitignore": b"/PKT-Analyze/\n"})
+        folder = os.path.join(root, "PKT-Analyze")                      # inside the outer repo, ignored by it, no .git of its own
+        for rel, data in {"PKStudio.py": b"a", "tools/t.py": b"t", "__pycache__/x.pyc": b"c", "best.pt": b"w", "_ort_directml/dll": b"d"}.items():
+            os.makedirs(os.path.dirname(os.path.join(folder, rel)), exist_ok=True)
+            with open(os.path.join(folder, rel), "wb") as f:
+                f.write(data)
+        out = os.path.join(root, "dist", "q.zip")
+        MP.build(out, root=root, repos=[(".", "."), ("PKT-Analyze", "PKT-Analyze")])
+        self.assertEqual(sorted(zipfile.ZipFile(out).namelist()),
+                         ["PK-Transport/.gitignore", "PK-Transport/PKT-Analyze/PKStudio.py", "PK-Transport/PKT-Analyze/tools/t.py", "PK-Transport/main.py"])
+
 
 if __name__ == "__main__":
     unittest.main()

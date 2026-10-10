@@ -70,6 +70,12 @@ class Check(unittest.TestCase):
         self.assertEqual(U.check_repo(os.path.join(tempfile.gettempdir(), "pkt_no_such_folder_x"))["state"], "missing")
         plain = tempfile.mkdtemp(prefix="pkt_plain_")
         self.assertEqual(U.check_repo(plain)["state"], "no_git")
+        w = World()
+        inner = os.path.join(w.mine, "PKT-Analyze")                      # a module folder inside another repo, without a .git of its own
+        os.makedirs(inner)
+        self.assertEqual(U.check_repo(inner, fetch=False)["state"], "no_git")           # must not answer (or pull) for the outer repo
+        self.assertFalse(U.own_repo(inner))
+        self.assertTrue(U.own_repo(w.mine))
         lone = tempfile.mkdtemp(prefix="pkt_lone_")
         git(lone, "init", "-q", "-b", "main")
         self.assertEqual(U.check_repo(lone)["state"], "no_upstream")

@@ -25,7 +25,7 @@ def check(name, cond, detail=""):
         failures.append(name)
 
 
-if not os.path.isfile(os.path.join(ROOT, "PKT-Analyze", "Run", "PKStudio.py")):
+if not os.path.isfile(os.path.join(ROOT, "PKT-Analyze", "PKStudio.py")):
     print("SKIP: PKT-Analyze is not next to this app")
     sys.exit(0)
 

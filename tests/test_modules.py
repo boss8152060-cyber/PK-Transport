@@ -32,7 +32,7 @@ class Defs(unittest.TestCase):
         defs = M.load_module_defs()
         self.assertEqual([d["id"] for d in defs], ["data", "train", "analyze"])
         self.assertEqual([d["name"] for d in defs], ["PKT Data", "PKT Train", "PKT Analyze"])
-        self.assertEqual(next(d for d in defs if d["id"] == "analyze")["path"], "PKT-Analyze/Run")
+        self.assertEqual(next(d for d in defs if d["id"] == "analyze")["path"], "PKT-Analyze")
         self.assertIsNone(next(d for d in defs if d["id"] == "train")["entry"])
 
 

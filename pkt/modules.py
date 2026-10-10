@@ -44,6 +44,13 @@ def resolve_module(mod_def, settings=None, root=ROOT):
     folder = user.get("path") or mod_def["path"]
     if not os.path.isabs(folder):
         folder = os.path.normpath(os.path.join(root, folder))
+    entry_name = mod_def.get("entry")
+    if not user.get("path") and entry_name and not os.path.isfile(os.path.join(folder, entry_name)):
+        for alt in mod_def.get("fallback_paths") or []:              # an older layout of the same module (e.g. PKT-Analyze/Run)
+            alt_folder = os.path.normpath(os.path.join(root, alt))
+            if os.path.isfile(os.path.join(alt_folder, entry_name)):
+                folder = alt_folder
+                break
     entry = mod_def.get("entry")
     page = mod_def.get("page")                 # a module opened as a page inside this app (PKT Train) instead of a separate program
     entry_path = os.path.join(folder, entry) if entry else None
@@ -87,7 +94,9 @@ def read_version(info, mod_def):
                 out["version"] = m.group(1)
         except OSError:
             pass
-    commit = _git(folder, "rev-parse", "--short", "HEAD")
+    top = _git(folder, "rev-parse", "--show-toplevel")
+    own = bool(top) and os.path.normcase(os.path.realpath(top)) == os.path.normcase(os.path.realpath(folder))      # not the repo around it
+    commit = _git(folder, "rev-parse", "--short", "HEAD") if own else None
     if commit is not None:
         out["git"] = True
         out["commit"] = commit
