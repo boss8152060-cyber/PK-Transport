@@ -83,9 +83,16 @@ py -3.12 main.py        (หรือดับเบิลคลิก run_pk_tr
 - **0.8.0:** ตัวติดตั้งคลิกเดียว `install.bat` + ZIP พกพา `make_portable.py`
 - **1.0.0:** รวม repo ทั้ง 4 เป็นหนึ่งเดียว (เก็บประวัติเดิมครบ); ปุ่มอัปเดตครั้งเดียวครอบคลุมทุกโมดูล
 - **1.1.0:** ข้อความใน PKT Data / PKT Analyze เปลี่ยนตามปุ่มภาษา ไทย/อังกฤษ
+- **1.2.0:** ติดตั้งวิธีเดียว (Download ZIP / git clone → `install.bat`) และปุ่มอัปเดตใช้ได้ทั้งสองแบบ
 - ถัดไป: ตามความต้องการ (เช่น ส่งโฟลเดอร์ชุดข้อมูลจาก PKT Data ไป PKT Train)
 
-## ติดตั้งบนเครื่องใหม่ / Install on another PC
+## ติดตั้ง / Install (วิธีเดียว)
+
+**ติดตั้งครั้งแรก:** เปิด https://github.com/boss8152060-cyber/PK-Transport → **Code → Download ZIP** (หรือ `git clone https://github.com/boss8152060-cyber/PK-Transport.git`) → แตกไฟล์ → ดับเบิลคลิก **`install.bat`** → เปิดจากทางลัด **PK Transport** บน Desktop
+
+**อัปเดต:** ในแอปไปที่ **ตั้งค่า → อัปเดตแอปนี้** (หรือหน้า Home → ตรวจอัปเดต) แอปตรวจ GitHub ให้เองตอนเปิด ทั้งแบบ Download ZIP (ดาวน์โหลดไฟล์ใหม่มาทับ ไม่แตะ `.venv` ค่าตั้ง ผลเทรน) และแบบ git clone (git pull) — ถ้าเวอร์ชันใหม่ต้องใช้ไลบรารีเพิ่ม ให้ดับเบิลคลิก `install.bat` อีกครั้ง
+
+## ติดตั้งบนเครื่องใหม่ / Install on another PC (รายละเอียด)
 
 1. สร้างไฟล์ ZIP พกพา: `py -3.12 make_portable.py` → `dist/PK-Transport-<เวอร์ชัน>-portable.zip` (แอป + PKT Data + PKT Train + PKT Analyze ไม่มีโมเดล/วิดีโอ/ประวัติ git)
 2. ส่ง ZIP ให้ปลายทาง แตกไฟล์ แล้ว **ดับเบิลคลิก `install.bat` ครั้งเดียว** (ต้องมีอินเทอร์เน็ต ไม่ต้องใช้สิทธิ์ admin): ลง Python 3.12 ถ้ายังไม่มี, สร้าง `.venv`, ลง PyTorch (รุ่น GPU ถ้ามี NVIDIA ไม่งั้นรุ่น CPU) + ไลบรารีอื่น, สร้างทางลัด **PK Transport** บน Desktop/Start Menu, แล้วเปิดแอป

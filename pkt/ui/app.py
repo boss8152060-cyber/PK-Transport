@@ -340,7 +340,10 @@ class PKTApp:
 
         def work():
             for mid, folder in targets:
-                self.update_q.put(("check", mid, updates.check_repo(folder)))
+                if mid == "app" and not updates.own_repo(folder):        # a "Download ZIP" folder: compare the version number instead of git
+                    self.update_q.put(("check", mid, updates.check_zip(folder)))
+                else:
+                    self.update_q.put(("check", mid, updates.check_repo(folder)))
             self.update_q.put(("done", None, None))
 
         threading.Thread(target=work, daemon=True).start()
@@ -367,7 +370,8 @@ class PKTApp:
                     name = self.name_of(mid)
                     if ok:
                         self.status_var.set(self.t("updates_done", name=name) + (" — " + self.t("updates_restart") if mid == "app" else ""))
-                        self.updates[mid] = updates.check_repo(self.folder_of(mid), fetch=False)
+                        folder = self.folder_of(mid)
+                        self.updates[mid] = updates.check_repo(folder, fetch=False) if updates.own_repo(folder) else updates.check_zip(folder)
                         self.refresh_modules()
                     else:
                         messagebox.showerror(self.t("app_title"), self.t("updates_failed", name=name, msg=msg), parent=self.root)
@@ -386,6 +390,8 @@ class PKTApp:
         st = res["state"]
         if st == "uptodate":
             text, kind = self.t("updates_uptodate"), "ok"
+        elif st == "behind" and res.get("zip"):
+            text, kind = self.t("updates_new_version", new=res["remote"], old=res["local"]), "warn"
         elif st == "behind":
             text, kind = self.t("updates_behind", n=res["behind"]), "warn"
         elif st == "ahead":
@@ -417,6 +423,12 @@ class PKTApp:
             return False
         folder = self.folder_of(mid)
         name = self.name_of(mid)
+        if res.get("zip"):                                                  # no git here: download the zip of the new version
+            if not messagebox.askyesno(self.t("app_title"), self.t("updates_confirm_zip", name=name, new=res["remote"], old=res["local"]), parent=self.root):
+                return False
+            self.set_status("updates_checking")
+            threading.Thread(target=lambda: self.update_q.put(("pulled", mid, updates.apply_zip(folder))), daemon=True).start()
+            return True
         log = chr(10).join(updates.incoming(folder)) or "-"
         if not messagebox.askyesno(self.t("app_title"), self.t("updates_confirm", name=name, log=log), parent=self.root):
             return False
