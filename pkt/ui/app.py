@@ -1,46 +1,58 @@
-"""PK Transport main window: a navigation rail on the left, one page at a time on the right (Home, PKT Data, PKT Train, PKT Analyze, Settings).
+"""PK Transport main window: a navigation rail on the left, one page at a time on the right (Home, the modules, Modules, Settings).
 
-The logic that was in the first launcher (open a module as its own program, check GitHub for updates, the settings file) lives here;
-the pages only draw and call these methods."""
+This is the shell. PKT Data, PKT Train and PKT Analyze are modules: separate repositories that are installed into modules/<id> from the
+Modules page (pkt/modman.py) and appear as pages through their plugin file (pkt/plugin.py). The shell keeps the language, the settings,
+the update checks and the module operations; the pages only draw and call these methods (the plugin API of the modules)."""
 import os
 import queue
 import subprocess
+import sys
 import threading
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-from pkt import __version__, shared, shortcut, updates
+from pkt import __version__, envsetup, modman, plugin, shared, shortcut, updates
 from pkt.i18n import LANGS, LANG_NAMES, Translator
-from pkt.modules import (DEFAULT_MODULES_FILE, ROOT, SETTINGS_FILE, build_command, load_module_defs, load_settings, read_version,
-                         resolve_module, save_settings)
+from pkt.modules import DEFAULT_MODULES_FILE, ROOT, SETTINGS_FILE, load_settings, python_command, save_settings
 from pkt.ui import theme
 from pkt.ui.bind import TextBinder
 from pkt.ui.kit import SidebarItem
 from pkt.ui.theme import COLORS, F
 
 LOG_DIR = os.path.join(ROOT, "logs")
-EARLY_EXIT_CHECK_MS = 2500          # a module that closes (with an error) this soon after starting is reported with its log
-NAV = [("home", "\u2302", "nav_home", "nav_hint_home"), ("data", "\u25A3", None, "nav_hint_data"), ("train", "\u25C8", None, "nav_hint_train"),
-       ("analyze", "\u25EB", None, "nav_hint_analyze"), ("settings", "\u2699", "nav_settings", "nav_hint_settings")]
-MODULE_NAMES = {"data": "PKT Data", "train": "PKT Train", "analyze": "PKT Analyze"}
+NAV_GLYPHS = {"home": "⌂", "data": "▣", "train": "◈", "analyze": "◫", "modules": "⇩", "settings": "⚙"}
+NAV_TEXT = {"home": "nav_home", "modules": "nav_modules", "settings": "nav_settings"}
+NAV_HINT = {"home": "nav_hint_home", "data": "nav_hint_data", "train": "nav_hint_train", "analyze": "nav_hint_analyze",
+            "modules": "nav_hint_modules", "settings": "nav_hint_settings"}
 
 
 class PKTApp:
-    def __init__(self, root, settings_path=SETTINGS_FILE, defs_path=DEFAULT_MODULES_FILE, project_root=ROOT):
+    def __init__(self, root, settings_path=SETTINGS_FILE, defs_path=DEFAULT_MODULES_FILE, project_root=ROOT, github=None):
         self.root = root
         self.settings_path = settings_path
         self.project_root = project_root
-        self.defs = load_module_defs(defs_path)
+        self.github = {"api_base": modman.API_BASE, "zip_url": modman.ZIP_URL, "raw_url": updates.RAW_URL, "app_zip_url": updates.ZIP_URL}
+        self.github.update(github or {})                 # (the tests point these at a local web server)
+        self.defs = modman.load_registry(defs_path)
+        self.module_ids = [d["id"] for d in self.defs]
         self.settings = load_settings(settings_path)
         self.tr = Translator(self.settings.get("language", "th"))
         self.b = TextBinder(self.tr)
         self.status_var = tk.StringVar(value="")
         self.lang_var = tk.StringVar(value=self.tr.lang)
-        self.procs = {}                 # module id -> the Popen of the last start
-        self.versions = {}              # module id -> read_version(...) (git calls are done on refresh_modules, not on every redraw)
-        self.updates = {}               # module id (or 'app') -> result of updates.check_repo
+        self.mod_state = {}             # module id -> modman.installed_state(...)
+        self.tags = {}                  # module id -> released versions (newest first), from GitHub
+        self.tag_errors = {}            # module id -> why the versions could not be read
+        self.plugins = {}               # module id -> the imported plugin module
+        self.plugin_errors = {}         # module id -> why the plugin could not be loaded
+        self._plugin_catalogs = {}      # module id -> the xlate catalogs it registered
+        self.mod_busy = set()           # module ids with an install / update / uninstall running
+        self.mod_log = []               # lines of the module operations (shown on the Modules page)
+        self.restart_needed = set()     # modules whose files changed while their page is open
+        self._queue_after = []          # module ids still to install after the current one (install missing / update all)
+        self.updates = {}               # module id (or 'app') -> {'state': 'behind' | 'uptodate' ...}
         self.checking = False
-        self.update_q = queue.Queue()   # results of the update threads (Tk is only touched from the main thread)
+        self.update_q = queue.Queue()   # results of the threads (Tk is only touched from the main thread)
         self.refreshers = []            # functions the pages register: called when module data changed
         self.pages = {}
         self.nav_items = {}
@@ -57,28 +69,29 @@ class PKTApp:
             except tk.TclError:
                 pass
         self._build_shell()
-        self._build_pages()
         self._build_translator()
+        self._build_pages()
         self.refresh_modules()
         self.show("home")
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         root.after(300, self._poll_updates)
         if self.settings.get("auto_check_updates", True):
-            self.check_updates()
+            self.check_updates(force=False)
+
+    # ================================================================ closing
+    def hosts(self):
+        return [self.pages[m] for m in self.module_ids if m in self.pages]
 
     def on_close(self):
-        """Close the window; a training that is still running is stopped (it can be resumed later) after the user confirms."""
-        train = self.pages.get("train")
-        if train is not None and train.is_running():
-            if not messagebox.askyesno(self.t("app_title"), self.t("train_busy_close"), parent=self.root):
+        """Close the window; a module that is still working (a training, an analysis) is stopped after the user confirms."""
+        busy = [h for h in self.hosts() if h.is_running()]
+        if busy:
+            names = ", ".join(self.name_of(h.mid) for h in busy)
+            if not messagebox.askyesno(self.t("app_title"), self.t("module_busy_close", name=names), parent=self.root):
                 return
-            train.stop_for_exit()
-        analyze = self.pages.get("analyze")
-        if analyze is not None and analyze.is_running():
-            if not messagebox.askyesno(self.t("app_title"), self.t("analyze_busy_close"), parent=self.root):
-                return
-            analyze.stop_for_exit()
-            self.root.after(800, self.root.destroy)             # the run ends after its current frame
+            for h in busy:
+                h.stop_for_exit()
+            self.root.after(800, self.root.destroy)             # a run ends after its current frame
             return
         self.root.destroy()
 
@@ -87,7 +100,9 @@ class PKTApp:
         return self.tr.t(key, **kw)
 
     def name_of(self, mid):
-        return self.t("app_self") if mid == "app" else MODULE_NAMES.get(mid, mid)
+        if mid == "app":
+            return self.t("app_self")
+        return next((d["name"] for d in self.defs if d["id"] == mid), mid)
 
     def set_language(self, lang):
         if lang not in LANGS:
@@ -95,21 +110,49 @@ class PKTApp:
         self.tr.set_lang(lang)
         self.lang_var.set(lang)
         self.settings["language"] = lang
-        self._save()
+        self.save_settings()
         self.root.title(f"PK Transport {__version__}")
         self._paint_lang_switch()
         self.b.refresh()
         self._show_app_update()
-        self.xl.sweep()                                   # PKT Data / PKT Analyze texts
+        self.xl.sweep()                                   # the texts of the modules that were written in one language
 
-    def _save(self):
+    def save_settings(self):
         try:
             save_settings(self.settings, self.settings_path)
         except OSError:
             pass
 
+    _save = save_settings                                 # (the old name)
+
     def set_status(self, key=None, **kw):
         self.status_var.set(self.t(key, **kw) if key else "")
+
+    # ---------------------------------------------------------------- the API the module pages use
+    def user_data_dir(self, *parts):
+        """A folder for what the user makes (trained runs, results ...): outside the modules, so install / update / uninstall never touch it."""
+        return modman.user_data_dir(self.project_root, *parts)
+
+    def open_path(self, path):
+        if os.name == "nt":
+            os.startfile(path)                      # noqa: S606 (the user's own folder)
+        else:
+            subprocess.Popen(["xdg-open", path])
+
+    _open_path = open_path
+
+    def python_for(self, mid):
+        """The command (list) that starts a Python for the module: its override in the settings, else this Python."""
+        return python_command((((self.settings.get("modules") or {}).get(mid) or {}).get("python", "")))
+
+    def set_analyze_model(self, path):
+        ok = shared.set_analyze_model(self.settings, path)
+        self.save_settings()
+        self.notify()
+        return ok
+
+    def get_analyze_model(self):
+        return shared.get_analyze_model(self.settings)
 
     # ================================================================ shell
     def _build_shell(self):
@@ -130,15 +173,14 @@ class PKTApp:
         tk.Label(brand, text="PK Transport", bg=COLORS["sidebar"], fg=COLORS["sidebar_text"], font=F(14, "bold")).place(x=76, y=20)
         tk.Label(brand, text="TRAFFIC SAFETY STUDIO", bg=COLORS["sidebar"], fg=COLORS["sidebar_muted"], font=F(7, "bold")).place(x=77, y=52)
         tk.Label(self.sidebar, text="WORKSPACE", bg=COLORS["sidebar"], fg=COLORS["sidebar_muted"], font=F(8, "bold"), anchor="w").pack(fill="x", padx=20, pady=(9, 8))
-        for page, glyph, key, hint in NAV:
-            if page != "settings":
-                self._add_nav(page, glyph, key, hint)
+        for page in ["home"] + self.module_ids + ["modules"]:
+            self._add_nav(page)
         tk.Frame(self.sidebar, bg=COLORS["sidebar"]).pack(fill="both", expand=True)
-        self._add_nav("settings", "\u2699", "nav_settings", "nav_hint_settings")
+        self._add_nav("settings")
         tk.Frame(self.sidebar, bg=COLORS["sidebar_line"], height=1).pack(fill="x", padx=18, pady=(12, 12))
         lang_row = tk.Frame(self.sidebar, bg=COLORS["sidebar"])
         lang_row.pack(fill="x", padx=20, pady=(0, 6))
-        tk.Label(lang_row, text="\u25CE", font=("Segoe UI Symbol", 12), bg=COLORS["sidebar"], fg=COLORS["sidebar_muted"]).pack(side="left", padx=(0, 8))
+        tk.Label(lang_row, text="◎", font=("Segoe UI Symbol", 12), bg=COLORS["sidebar"], fg=COLORS["sidebar_muted"]).pack(side="left", padx=(0, 8))
         self.lang_buttons = {}
         for lang in LANGS:
             lb = tk.Label(lang_row, text=LANG_NAMES[lang], font=F(9, "bold"), padx=10, pady=3, cursor="hand2")
@@ -162,8 +204,10 @@ class PKTApp:
         self.app_update_var = tk.StringVar(value="")
         ttk.Label(bar, textvariable=self.app_update_var, style="Status.TLabel").pack(side="right", padx=14)
 
-    def _add_nav(self, page, glyph, key, hint):
-        item = SidebarItem(self.sidebar, glyph, lambda p=page: self.show(p), binder=self.b, key=key, text=MODULE_NAMES.get(page, ""), hint_key=hint)
+    def _add_nav(self, page):
+        is_module = page in self.module_ids
+        item = SidebarItem(self.sidebar, NAV_GLYPHS.get(page, "▣"), lambda p=page: self.show(p), binder=self.b, key=NAV_TEXT.get(page),
+                           text=self.name_of(page) if is_module else "", hint_key=NAV_HINT.get(page, "nav_hint_home"))
         item.pack(fill="x", padx=12, pady=2)
         self.nav_items[page] = item
 
@@ -175,26 +219,22 @@ class PKTApp:
                 lb.configure(bg=COLORS["sidebar_hover"], fg=COLORS["sidebar_muted"])
 
     def _build_pages(self):
-        from pkt.ui.pages.analyze import AnalyzePage
-        from pkt.ui.pages.data import DataPage
         from pkt.ui.pages.home import HomePage
+        from pkt.ui.pages.host import ModuleHost
+        from pkt.ui.pages.modules import ModulesPage
         from pkt.ui.pages.settings import SettingsPage
-        from pkt.ui.pages.train import TrainPage
         self.pages["home"] = HomePage(self.container, self)
-        self.pages["data"] = DataPage(self.container, self)
-        self.pages["train"] = TrainPage(self.container, self)
-        self.pages["analyze"] = AnalyzePage(self.container, self)
+        for mid in self.module_ids:
+            self.pages[mid] = ModuleHost(self.container, self, mid)
+        self.pages["modules"] = ModulesPage(self.container, self)
         self.pages["settings"] = SettingsPage(self.container, self)
         for page in self.pages.values():
             page.grid(row=0, column=0, sticky="nsew")
 
     def _build_translator(self):
-        """The language switch for the embedded programs: catalogs per target language, swept over their pages (pkt/ui/xlate.py)."""
+        """The language switch for modules written in one language: catalogs per target language, swept over their pages (pkt/ui/xlate.py)."""
         from pkt.ui import xlate
-        from pkt.ui.lang import analyze_en, data_th
-        self.xl = xlate.Translator(self.root, lambda: self.tr.lang, [xlate.Catalog("th", data_th.EXACT, data_th.TEMPLATES),
-                                                                   xlate.Catalog("en", analyze_en.EXACT, analyze_en.TEMPLATES, fragments=True)])
-        self.xl.areas = [self.pages["data"], self.pages["analyze"]]
+        self.xl = xlate.Translator(self.root, lambda: self.tr.lang, [])
         self.xl.install()
 
     def show(self, name):
@@ -215,16 +255,33 @@ class PKTApp:
         return self.pages[name]
 
     # ================================================================ module data
-    def info_of(self, mid):
-        mod_def = next(d for d in self.defs if d["id"] == mid)
-        return mod_def, resolve_module(mod_def, self.settings, self.project_root)
+    def mod_def(self, mid):
+        return next(d for d in self.defs if d["id"] == mid)
+
+    def state_of(self, mid):
+        return self.mod_state.get(mid) or modman.installed_state(self.project_root, self.mod_def(mid), self.settings)
+
+    def module_ready(self, mid):
+        st = self.state_of(mid)
+        return bool(st["installed"] and not st["problem"])
 
     def refresh_modules(self):
-        """Read the version/branch of every module from git again and tell the pages."""
-        for mod_def in self.defs:
-            info = resolve_module(mod_def, self.settings, self.project_root)
-            self.versions[mod_def["id"]] = read_version(info, mod_def)
+        """Read which modules are installed (and their versions) again and tell the pages."""
+        for d in self.defs:
+            self.mod_state[d["id"]] = modman.installed_state(self.project_root, d, self.settings)
+        self._module_updates()
         self.notify()
+
+    def _module_updates(self):
+        for d in self.defs:
+            mid = d["id"]
+            st, tags = self.mod_state[mid], self.tags.get(mid)
+            verdict = modman.update_state(st, tags) if tags else ""
+            if verdict:
+                self.updates[mid] = {"state": "behind" if verdict == "update" else "uptodate", "zip": True, "local": st["version"], "remote": tags[0]["version"],
+                                     "behind": 1 if verdict == "update" else 0, "ahead": 0, "error": ""}
+            else:
+                self.updates.pop(mid, None)
 
     def notify(self):
         for fn in list(self.refreshers):
@@ -234,58 +291,160 @@ class PKTApp:
                 pass
         self._show_app_update()
 
-    # ================================================================ actions
-    def _open_path(self, path):
-        if os.name == "nt":
-            os.startfile(path)                      # noqa: S606 (the user's own folder)
-        else:
-            subprocess.Popen(["xdg-open", path])
+    # ================================================================ plugins
+    def plugin_of(self, mid):
+        """The imported plugin module of an installed module (None, with plugin_errors[mid] set, when it cannot be used)."""
+        if mid in self.plugins:
+            return self.plugins[mid]
+        st = self.state_of(mid)
+        if not st["installed"]:
+            return None
+        if st["problem"]:
+            self.plugin_errors[mid] = st["problem"]
+            return None
+        os.environ["PKT_USER_DATA"] = self.user_data_dir(st["manifest"].get("name", mid).replace(" ", "-"))      # the modules keep their own files here
+        try:
+            mod = plugin.load_plugin(st["folder"], mid, st["manifest"])
+        except plugin.PluginError as exc:
+            self.plugin_errors[mid] = str(exc)
+            return None
+        self.plugin_errors.pop(mid, None)
+        self.plugins[mid] = mod
+        self._register_plugin(mid, mod)
+        return mod
 
-    def open_folder(self, mid):
-        _d, info = self.info_of(mid)
-        if not info["exists"]:
-            messagebox.showerror(self.t("app_title"), self.t("module_missing", name=info["name"], path=info["folder"]), parent=self.root)
+    def _register_plugin(self, mid, mod):
+        from pkt.ui import xlate
+        try:
+            extra = mod.texts() if hasattr(mod, "texts") else {}
+            if extra:
+                self.tr.add_texts(extra)
+            cats = [xlate.Catalog(c["lang"], c.get("exact"), c.get("templates"), fragments=c.get("fragments", False)) for c in (mod.catalogs() if hasattr(mod, "catalogs") else [])]
+        except Exception as exc:                                    # a module with a broken texts()/catalogs() must not break the window
+            self.plugin_errors[mid] = f"{type(exc).__name__}: {exc}"
+            return
+        self._plugin_catalogs[mid] = cats
+        self.xl.catalogs.extend(cats)
+
+    def forget_plugin(self, mid):
+        """After the files of a module changed: drop what was imported from it so the new version loads (only when its page was never created)."""
+        for cat in self._plugin_catalogs.pop(mid, []):
+            if cat in self.xl.catalogs:
+                self.xl.catalogs.remove(cat)
+        self.plugins.pop(mid, None)
+        self.plugin_errors.pop(mid, None)
+        plugin.purge(self.state_of(mid)["folder"], mid)
+
+    def page_created(self, mid):
+        host = self.pages.get(mid)
+        return bool(host is not None and getattr(host, "page", None) is not None)
+
+    # ================================================================ module operations (threads; results come through update_q)
+    def _log(self, mid, text):
+        self.update_q.put(("modlog", mid, text))
+
+    def install_module(self, mid, tag=None):
+        """Install a module (the newest version, or `tag`) / switch it to another version, then its libraries. Returns False when busy."""
+        if self.mod_busy:
+            messagebox.showinfo(self.t("app_title"), self.t("mod_busy"), parent=self.root)
             return False
-        self._open_path(info["folder"])
+        d = self.mod_def(mid)
+        if self.state_of(mid)["linked"]:
+            messagebox.showinfo(self.t("app_title"), self.t("mod_linked_note", name=d["name"]), parent=self.root)
+            return False
+        self.mod_busy.add(mid)
+        self.notify()
+        github = dict(self.github)
+        root, settings = self.project_root, dict(self.settings)
+        cache = self.user_data_dir("cache")
+
+        def work():
+            try:
+                pick = tag
+                if pick is None:
+                    tags = modman.list_tags(d, api_base=github["api_base"], cache_dir=cache)
+                    if not tags:
+                        raise modman.ModManError("no released version was found on GitHub")
+                    pick = tags[0]["tag"]
+                manifest = modman.install(root, d, pick, log=lambda m: self._log(mid, m), zip_url=github["zip_url"])
+                folder = modman.module_folder(root, d, settings)[0]
+                envsetup.prepare_module(manifest, folder, log=lambda m: self._log(mid, m))
+                self.update_q.put(("moddone", mid, (True, manifest["version"])))
+            except Exception as exc:                                 # a failed download / pip is shown to the user, never a crash
+                self.update_q.put(("moddone", mid, (False, str(exc))))
+
+        threading.Thread(target=work, daemon=True).start()
         return True
 
-    def launch(self, mid):
-        """PKT Train is a page of this app; the other modules start as their own program (their own window). Returns the Popen / the page / None."""
-        mod_def, info = self.info_of(mid)
-        name = info["name"]
-        if not info["exists"]:
-            messagebox.showerror(self.t("app_title"), self.t("module_missing", name=name, path=info["folder"]), parent=self.root)
-            return None
-        if not info["launchable"]:
-            return None
-        if mod_def.get("page") in self.pages:
-            return self.show(mod_def["page"])
-        if not info["entry_exists"]:
-            messagebox.showerror(self.t("app_title"), self.t("entry_missing", name=name, path=info["entry_path"]), parent=self.root)
-            return None
-        cmd = build_command(info)
-        if not cmd:
-            messagebox.showerror(self.t("app_title"), self.t("python_missing", name=name), parent=self.root)
-            return None
-        os.makedirs(LOG_DIR, exist_ok=True)
-        log_path = os.path.join(LOG_DIR, f"{mid}.log")
+    def uninstall_module(self, mid):
+        d = self.mod_def(mid)
+        st = self.state_of(mid)
+        if st["linked"]:
+            messagebox.showinfo(self.t("app_title"), self.t("mod_linked_note", name=d["name"]), parent=self.root)
+            return False
+        if self.mod_busy or not st["installed"]:
+            return False
+        if not messagebox.askyesno(self.t("app_title"), self.t("mod_confirm_uninstall", name=d["name"]), parent=self.root):
+            return False
+        created = self.page_created(mid)
         try:
-            log = open(log_path, "ab")
-            env = shared.analyze_environment(self.settings) if mid == "analyze" else None     # PKT Analyze gets the chosen model (PKT_MODEL_PATH)
-            proc = subprocess.Popen(cmd, cwd=info["folder"], env=env, stdout=log, stderr=subprocess.STDOUT)
+            modman.uninstall(self.project_root, d, log=lambda m: self.mod_log.append(m))
+        except modman.ModManError as exc:
+            messagebox.showerror(self.t("app_title"), self.t("mod_failed", name=d["name"], msg=str(exc)), parent=self.root)
+            return False
+        if created:
+            self.restart_needed.add(mid)
+        else:
+            self.forget_plugin(mid)
+        self.updates.pop(mid, None)
+        self.set_status("mod_removed", name=d["name"])
+        self.refresh_modules()
+        return True
+
+    def update_all(self):
+        """Update every installed module that has a newer version (one after the other)."""
+        todo = [d["id"] for d in self.defs if self.updates.get(d["id"], {}).get("state") == "behind" and not self.state_of(d["id"])["linked"]]
+        if not todo:
+            self.set_status("mod_all_uptodate")
+            return False
+        self._queue_after = todo[1:]
+        return self.install_module(todo[0])
+
+    def install_missing(self):
+        todo = [d["id"] for d in self.defs if not self.state_of(d["id"])["installed"]]
+        if not todo:
+            return False
+        self._queue_after = todo[1:]
+        return self.install_module(todo[0])
+
+    def fetch_tags(self, ids=None):
+        """Read the released versions of the modules from GitHub (in a thread)."""
+        ids = ids or self.module_ids
+        github = self.github
+        cache = self.user_data_dir("cache")
+
+        def work():
+            for mid in ids:
+                try:
+                    tags = modman.list_tags(self.mod_def(mid), api_base=github["api_base"], cache_dir=cache)
+                    self.update_q.put(("tags", mid, (tags, "")))
+                except modman.ModManError as exc:
+                    self.update_q.put(("tags", mid, (None, str(exc))))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def restart_app(self):
+        """Start PK Transport again and close this window (after a module that was open was replaced or removed)."""
+        main = os.path.join(self.project_root, "main.py")
+        try:
+            subprocess.Popen([sys.executable, main], cwd=self.project_root)
         except OSError as exc:
-            messagebox.showerror(self.t("app_title"), f"{self.t('launch_failed', name=name)}\n\n{exc}", parent=self.root)
-            return None
-        self.procs[mid] = proc
-        self.set_status("opened", name=name)
-        self.root.after(EARLY_EXIT_CHECK_MS, lambda: self._check_early_exit(mid, name, proc, log_path))
-        return proc
+            messagebox.showerror(self.t("app_title"), str(exc), parent=self.root)
+            return False
+        self.root.destroy()
+        return True
 
-    def _check_early_exit(self, mid, name, proc, log_path):
-        code = proc.poll()
-        if code is not None and code != 0:
-            messagebox.showerror(self.t("app_title"), self.t("exited_early", name=name, code=code, log=log_path), parent=self.root)
-
+    # ================================================================ shortcut / settings of the modules
     def create_shortcut(self):
         ok, result = shortcut.create_shortcut(self.project_root)
         if ok:
@@ -295,14 +454,14 @@ class PKTApp:
         return ok
 
     def save_modules_settings(self, folders, pythons, auto_check):
-        """Keep only what differs from modules.json (a folder or a Python command the user typed)."""
+        """Keep only what differs from the defaults: a linked development folder (instead of modules/<id>) and a Python command."""
         mods = {}
-        for mod_def in self.defs:
-            mid = mod_def["id"]
-            default_folder = resolve_module(mod_def, {}, self.project_root)["folder"]
+        for d in self.defs:
+            mid = d["id"]
+            default_folder = modman.module_folder(self.project_root, d, {})[0]
             entry = {}
             folder = os.path.normpath(folders.get(mid, "").strip()) if folders.get(mid, "").strip() else ""
-            if folder and folder != default_folder:
+            if folder and folder != os.path.normpath(default_folder):
                 entry["path"] = folder
             if pythons.get(mid, "").strip():
                 entry["python"] = pythons[mid].strip()
@@ -310,40 +469,33 @@ class PKTApp:
                 mods[mid] = entry
         self.settings["modules"] = mods
         self.settings["auto_check_updates"] = bool(auto_check)
-        self._save()
+        self.save_settings()
         self.set_status("saved")
         self.refresh_modules()
 
-    def set_analyze_model(self, path):
-        ok = shared.set_analyze_model(self.settings, path)
-        self._save()
-        self.notify()
-        return ok
-
-    # ================================================================ updates (git)
-    def _update_targets(self):
-        out = []
-        for mod_def in self.defs:
-            info = resolve_module(mod_def, self.settings, self.project_root)
-            if info["exists"] and updates.own_repo(info["folder"]):          # normally the modules are part of this repo: one "app" update covers them
-                out.append((mod_def["id"], info["folder"]))
-        out.append(("app", self.project_root))
-        return out
-
-    def check_updates(self):
-        """Look on GitHub for new commits of every module and of this app (in a thread; the results are drawn by _poll_updates)."""
+    # ================================================================ updates
+    def check_updates(self, force=True):
+        """Look on GitHub for a newer version of this app and of every installed module (in a thread; _poll_updates draws the results).
+        The list of versions of a module is kept for an hour; the button asks again (force), the check at start-up may use the kept list."""
         if self.checking:
             return False
         self.checking = True
         self.app_update_var.set(self.t("updates_checking"))
-        targets = self._update_targets()
+        folder = self.project_root
+        github = self.github
+        cache = self.user_data_dir("cache")
 
         def work():
-            for mid, folder in targets:
-                if mid == "app" and not updates.own_repo(folder):        # a "Download ZIP" folder: compare the version number instead of git
-                    self.update_q.put(("check", mid, updates.check_zip(folder)))
-                else:
-                    self.update_q.put(("check", mid, updates.check_repo(folder)))
+            if updates.own_repo(folder):
+                self.update_q.put(("check", "app", updates.check_repo(folder)))
+            else:                                                       # a "Download ZIP" folder: compare the version number instead of git
+                self.update_q.put(("check", "app", updates.check_zip(folder, raw_url=github["raw_url"])))
+            for mid in self.module_ids:
+                try:
+                    tags = modman.list_tags(self.mod_def(mid), api_base=github["api_base"], cache_dir=cache, ttl=0 if force else modman.TAG_CACHE_SECONDS)
+                    self.update_q.put(("tags", mid, (tags, "")))
+                except modman.ModManError as exc:
+                    self.update_q.put(("tags", mid, (None, str(exc))))
             self.update_q.put(("done", None, None))
 
         threading.Thread(target=work, daemon=True).start()
@@ -365,14 +517,29 @@ class PKTApp:
                 elif kind == "done":
                     self.checking = False
                     changed = True
-                elif kind == "pulled":
+                elif kind == "tags":
+                    tags, err = data
+                    if tags is not None:
+                        self.tags[mid] = tags
+                        self.tag_errors.pop(mid, None)
+                    else:
+                        self.tag_errors[mid] = err
+                    self._module_updates()
+                    changed = True
+                elif kind == "modlog":
+                    self.mod_log.append(data)
+                    self.status_var.set(data[:120])
+                    changed = True
+                elif kind == "moddone":
+                    self._module_done(mid, *data)
+                    changed = True
+                elif kind == "pulled":                                  # this app was updated (git pull / zip)
                     ok, msg = data
                     name = self.name_of(mid)
                     if ok:
-                        self.status_var.set(self.t("updates_done", name=name) + (" — " + self.t("updates_restart") if mid == "app" else ""))
-                        folder = self.folder_of(mid)
-                        self.updates[mid] = updates.check_repo(folder, fetch=False) if updates.own_repo(folder) else updates.check_zip(folder)
-                        self.refresh_modules()
+                        self.status_var.set(self.t("updates_done", name=name) + " — " + self.t("updates_restart"))
+                        folder = self.project_root
+                        self.updates[mid] = updates.check_repo(folder, fetch=False) if updates.own_repo(folder) else updates.check_zip(folder, raw_url=self.github["raw_url"])
                     else:
                         messagebox.showerror(self.t("app_title"), self.t("updates_failed", name=name, msg=msg), parent=self.root)
                     changed = True
@@ -382,8 +549,30 @@ class PKTApp:
             self.notify()
         self.root.after(300, self._poll_updates)
 
-    def folder_of(self, mid):
-        return self.project_root if mid == "app" else self.info_of(mid)[1]["folder"]
+    def _module_done(self, mid, ok, msg):
+        name = self.name_of(mid)
+        created = self.page_created(mid)
+        self.mod_busy.discard(mid)
+        if ok:
+            self.mod_log.append(self.t("mod_installed_ok", name=name, version=msg))
+            self.status_var.set(self.t("mod_installed_ok", name=name, version=msg))
+            if created:
+                self.restart_needed.add(mid)
+            else:
+                self.forget_plugin(mid)
+            self.refresh_modules()
+            self.fetch_tags([mid])                                        # the update state of this module
+            if self._queue_after:
+                nxt = self._queue_after.pop(0)
+                self.root.after(100, lambda: self.install_module(nxt))
+            elif created:
+                if messagebox.askyesno(self.t("app_title"), self.t("mod_restart_needed", name=name), parent=self.root):
+                    self.restart_app()
+        else:
+            self.mod_log.append(self.t("mod_failed", name=name, msg=msg))
+            self._queue_after = []
+            messagebox.showerror(self.t("app_title"), self.t("mod_failed", name=name, msg=msg), parent=self.root)
+            self.refresh_modules()
 
     def update_text(self, res):
         """(text, colour kind) of an update-check result; kind is ok / warn / bad / neutral."""
@@ -417,17 +606,23 @@ class PKTApp:
             self.app_update_var.set(f"{self.t('app_self')}: {self.update_text(res)[0]}")
 
     def update_module(self, mid):
-        """Take the new commits of a module (or this app) with a fast-forward pull, after the user confirms."""
-        res = self.updates.get(mid)
+        """Update a module (download the newest version) or this app (git pull / zip), after the user confirms."""
+        if mid != "app":
+            res = self.updates.get(mid)
+            if not res or res["state"] != "behind":
+                return False
+            return self.install_module(mid)
+        res = self.updates.get("app")
         if not res or res["state"] != "behind":
             return False
-        folder = self.folder_of(mid)
-        name = self.name_of(mid)
+        folder = self.project_root
+        name = self.name_of("app")
         if res.get("zip"):                                                  # no git here: download the zip of the new version
             if not messagebox.askyesno(self.t("app_title"), self.t("updates_confirm_zip", name=name, new=res["remote"], old=res["local"]), parent=self.root):
                 return False
             self.set_status("updates_checking")
-            threading.Thread(target=lambda: self.update_q.put(("pulled", mid, updates.apply_zip(folder))), daemon=True).start()
+            zip_url = self.github["app_zip_url"]
+            threading.Thread(target=lambda: self.update_q.put(("pulled", mid, updates.apply_zip(folder, zip_url=zip_url))), daemon=True).start()
             return True
         log = chr(10).join(updates.incoming(folder)) or "-"
         if not messagebox.askyesno(self.t("app_title"), self.t("updates_confirm", name=name, log=log), parent=self.root):

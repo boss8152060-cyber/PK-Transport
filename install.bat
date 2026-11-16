@@ -1,10 +1,10 @@
 @echo off
 REM =========================================================================
-REM PK Transport - double-click this file once. It installs everything:
-REM Python 3.12 (if missing), PKT Data / PKT Train / PKT Analyze, PyTorch (GPU or CPU),
-REM ultralytics, opencv-python and the other libraries, then makes a Desktop shortcut and opens the app.
-REM Needs an internet connection; the first run takes several minutes. No administrator rights needed.
-REM After that, open PK Transport from the Desktop shortcut (or run_pk_transport.bat).
+REM PK Transport - double-click this file once. It installs the app: Python 3.12 (if missing), a private
+REM environment (.venv), a Desktop shortcut, and opens the app. It is quick (the app needs no big libraries).
+REM The modules (PKT Data, PKT Train, PKT Analyze) are chosen and installed inside the app, on its Modules page.
+REM To install modules right now:   install.bat -Modules all        (or  -Modules data,train)
+REM Needs an internet connection. No administrator rights needed.
 REM =========================================================================
 title Installing PK Transport...
 cd /d "%~dp0"

@@ -1,7 +1,9 @@
 # สำรองเก่า (ไม่ขึ้น git)
 /_backups/
 
-# ไฟล์ของผู้ใช้/รันไทม์
+# ไฟล์ของผู้ใช้/รันไทม์ (โมดูลที่ติดตั้งอยู่ใน modules/ ข้อมูลของผู้ใช้อยู่ใน user_data/)
+/modules/
+/user_data/
 pkt_settings.json
 logs/
 
@@ -29,3 +31,4 @@ Thumbs.db
 # portable zip output
 /dist/
 .venv/
+/.pkt_files.json

@@ -1,158 +1,63 @@
-"""Unit tests of pkt.modules (no GUI): folders, versions, start commands."""
+"""Unit tests of pkt.modules (settings, the Python command) and of the registry modules.json."""
+import json
 import os
-import subprocess
 import sys
 import tempfile
 import unittest
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.dirname(HERE))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 
+from pkt import modman  # noqa: E402
 from pkt import modules as M  # noqa: E402
 
 
-def git(folder, *args):
-    subprocess.run(["git", "-C", folder, *args], check=True, capture_output=True)
-
-
-def make_repo(folder, tag="v9.9.9"):
-    os.makedirs(folder, exist_ok=True)
-    git(folder, "init", "-q", "-b", "main")
-    git(folder, "config", "user.email", "t@example.com")
-    git(folder, "config", "user.name", "t")
-    with open(os.path.join(folder, "a.txt"), "w") as f:
-        f.write("a")
-    git(folder, "add", "a.txt")
-    git(folder, "commit", "-q", "-m", "first")
-    git(folder, "tag", tag)
-
-
-class Defs(unittest.TestCase):
-    def test_default_modules_file_lists_the_three_modules(self):
-        defs = M.load_module_defs()
+class Registry(unittest.TestCase):
+    def test_the_real_registry(self):
+        defs = modman.load_registry(os.path.join(ROOT, "modules.json"))
         self.assertEqual([d["id"] for d in defs], ["data", "train", "analyze"])
-        self.assertEqual([d["name"] for d in defs], ["PKT Data", "PKT Train", "PKT Analyze"])
-        self.assertEqual(next(d for d in defs if d["id"] == "analyze")["path"], "PKT-Analyze")
-        self.assertIsNone(next(d for d in defs if d["id"] == "train")["entry"])
+        for d in defs:
+            self.assertRegex(d["repo"], r"^[\w-]+/[\w.-]+$")
+            self.assertTrue(d["tag_regex"].startswith("^") and "(" in d["tag_regex"])
+            self.assertTrue(modman.parse_tags([], d["tag_regex"]) == [])
+            self.assertRegex(d["min_version"], r"^\d+\.\d+\.\d+$")
+            self.assertTrue(d["desc_key"])
+        by_id = {d["id"]: d for d in defs}
+        self.assertEqual([t["version"] for t in modman.parse_tags(["PKT-1.46.3", "PKT-1.47.0", "v28-95", "PKT-1.10.0", "PKT-1.47.1"], by_id["analyze"]["tag_regex"], by_id["analyze"]["min_version"])],
+                         ["1.47.1", "1.47.0"])                                             # Analyze tags are written PKT-x.y.z; older ones are not modules
+        self.assertEqual([t["version"] for t in modman.parse_tags(["v1.3.8", "v1.4.0", "v1.10.0"], by_id["data"]["tag_regex"], by_id["data"]["min_version"])], ["1.10.0", "1.4.0"])
 
-
-class Resolve(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="pkt_mod_")
-        os.makedirs(os.path.join(self.tmp, "ModA"))
-        with open(os.path.join(self.tmp, "ModA", "start.py"), "w") as f:
-            f.write("print(1)")
-        self.d = {"id": "a", "name": "A", "path": "ModA", "entry": "start.py"}
-
-    def test_relative_folder_is_under_the_root(self):
-        info = M.resolve_module(self.d, {}, self.tmp)
-        self.assertEqual(info["folder"], os.path.join(self.tmp, "ModA"))
-        self.assertTrue(info["exists"] and info["entry_exists"] and info["launchable"])
-
-    def test_user_folder_wins(self):
-        other = os.path.join(self.tmp, "Other")
-        os.makedirs(other)
-        info = M.resolve_module(self.d, {"modules": {"a": {"path": other}}}, self.tmp)
-        self.assertEqual(info["folder"], other)
-        self.assertTrue(info["exists"])
-        self.assertFalse(info["entry_exists"])               # no start.py in the other folder
-
-    def test_missing_folder_and_module_without_entry(self):
-        info = M.resolve_module({"id": "b", "name": "B", "path": "Nope", "entry": None}, {}, self.tmp)
-        self.assertFalse(info["exists"])
-        self.assertFalse(info["launchable"])
-        self.assertIsNone(M.build_command(info))
-
-
-class Versions(unittest.TestCase):
-    def test_version_from_the_file_and_git_info(self):
-        tmp = tempfile.mkdtemp(prefix="pkt_ver_")
-        make_repo(tmp, "v1.2.3")
-        os.makedirs(os.path.join(tmp, "src"))
-        with open(os.path.join(tmp, "src", "ver.py"), "w") as f:
-            f.write('__version__ = "4.5.6"\n')
-        info = {"folder": tmp, "exists": True}
-        v = M.read_version(info, {"version_file": "src/ver.py"})
-        self.assertEqual(v["version"], "4.5.6")              # the module's own number wins over the tag
-        self.assertEqual((v["tag"], v["branch"], v["git"], v["dirty"]), ("v1.2.3", "main", True, False))
-        self.assertTrue(v["commit"])
-
-    def test_tag_is_the_version_without_a_file_and_dirty_is_seen(self):
-        tmp = tempfile.mkdtemp(prefix="pkt_ver_")
-        make_repo(tmp, "PKT-1.0.0")
-        with open(os.path.join(tmp, "a.txt"), "w") as f:
-            f.write("changed")
-        v = M.read_version({"folder": tmp, "exists": True}, {})
-        self.assertEqual(v["version"], "PKT-1.0.0")
-        self.assertTrue(v["dirty"])
-
-    def test_untracked_files_do_not_make_it_dirty(self):
-        tmp = tempfile.mkdtemp(prefix="pkt_ver_")
-        make_repo(tmp)
-        with open(os.path.join(tmp, "new.txt"), "w") as f:
-            f.write("x")
-        self.assertFalse(M.read_version({"folder": tmp, "exists": True}, {})["dirty"])
-
-    def test_not_a_repo_and_missing_folder(self):
-        tmp = tempfile.mkdtemp(prefix="pkt_ver_")
-        v = M.read_version({"folder": tmp, "exists": True}, {})
-        self.assertFalse(v["git"])
-        self.assertEqual(v["version"], "")
-        self.assertEqual(M.read_version({"folder": tmp + "_x", "exists": False}, {})["version"], "")
-
-
-class Command(unittest.TestCase):
-    def test_python_override_is_split(self):
-        self.assertEqual(M.python_command("python3 -X utf8"), ["python3", "-X", "utf8"])
-
-    def test_quoted_python_path_with_spaces(self):
-        cmd = M.python_command('"C:\Program Files\Python312\python.exe" -X utf8')
-        self.assertEqual(cmd, ["C:\Program Files\Python312\python.exe", "-X", "utf8"])
-
-    def test_automatic_command_is_a_list_ending_in_a_python(self):
-        cmd = M.python_command("")
-        self.assertIsInstance(cmd, list)
-        self.assertTrue(cmd[0] in ("py", sys.executable))
-
-    def test_build_command_adds_the_start_file(self):
-        tmp = tempfile.mkdtemp(prefix="pkt_cmd_")
-        with open(os.path.join(tmp, "s.py"), "w") as f:
-            f.write("")
-        info = M.resolve_module({"id": "x", "name": "X", "path": tmp, "entry": "s.py"}, {"modules": {"x": {"python": "mypy"}}}, tmp)
-        self.assertEqual(M.build_command(info), ["mypy", os.path.join(tmp, "s.py")])
-
-
-class ChangelogVersion(unittest.TestCase):
-    def test_version_is_the_last_row_of_the_modules_changelog(self):
-        folder = tempfile.mkdtemp(prefix="pkt_cl_")
-        with open(os.path.join(folder, "CHANGELOG.md"), "w", encoding="utf-8") as f:
-            f.write("| เวอร์ชัน | commit |\n|---|---|\n| **0.1.0** | `a` |\n| **PKT-Analyze 1.46.2** | `b` |\n| **PKT-Analyze 1.46.3** | (x) |\n\nถัดไป 9.9.9\n")
-        info = {"folder": folder, "exists": True}
-        self.assertEqual(M.read_version(info, {"version_changelog": "CHANGELOG.md"})["version"], "1.46.3")
-        self.assertEqual(M.read_version(info, {})["version"], "")                    # no source given: nothing guessed
-
-
-class VirtualEnv(unittest.TestCase):
-    def test_inside_a_venv_the_modules_use_it(self):
-        real_prefix = sys.prefix
-        try:
-            sys.prefix = os.path.join(real_prefix, "pretend_venv")
-            self.assertEqual(M.python_command(""), [sys.executable])
-            self.assertEqual(M.python_command("py -3.11"), ["py", "-3.11"])          # an override still wins
-        finally:
-            sys.prefix = real_prefix
+    def test_a_missing_registry_is_an_error(self):
+        with self.assertRaises(modman.ModManError):
+            modman.load_registry(os.path.join(tempfile.gettempdir(), "pkt_no_registry.json"))
 
 
 class Settings(unittest.TestCase):
-    def test_round_trip_and_bad_file(self):
-        tmp = tempfile.mkdtemp(prefix="pkt_set_")
-        path = os.path.join(tmp, "s.json")
-        M.save_settings({"language": "en", "modules": {"a": {"path": "ไทย"}}}, path)
-        self.assertEqual(M.load_settings(path)["modules"]["a"]["path"], "ไทย")
+    def test_load_save_round_trip(self):
+        path = os.path.join(tempfile.mkdtemp(), "s.json")
+        self.assertEqual(M.load_settings(path), {})                                         # missing file
+        M.save_settings({"language": "th", "x": [1]}, path)
+        self.assertEqual(M.load_settings(path), {"language": "th", "x": [1]})
         with open(path, "w") as f:
             f.write("not json")
+        self.assertEqual(M.load_settings(path), {})                                         # damaged file: start fresh, no crash
+        with open(path, "w") as f:
+            f.write("[1, 2]")
         self.assertEqual(M.load_settings(path), {})
-        self.assertEqual(M.load_settings(os.path.join(tmp, "none.json")), {})
+
+
+class Command(unittest.TestCase):
+    def test_override_is_split_and_quotes_are_stripped(self):
+        self.assertEqual(M.python_command("py -3.12"), ["py", "-3.12"])
+        self.assertEqual(M.python_command('"C:\\Program Files\\Python312\\python.exe" -u'), ["C:\\Program Files\\Python312\\python.exe", "-u"])
+
+    def test_inside_a_venv_this_python_is_used(self):
+        real = sys.prefix
+        try:
+            sys.prefix = os.path.join(real, "pretend_venv")
+            self.assertEqual(M.python_command(""), [sys.executable])
+        finally:
+            sys.prefix = real
 
 
 if __name__ == "__main__":

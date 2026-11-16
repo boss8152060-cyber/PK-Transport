@@ -3,29 +3,26 @@
     {
       "id": "data",
       "name": "PKT Data",
-      "path": "PKT-Data",
-      "entry": "main.py",
-      "page": "data",
-      "version_file": "src/pk_studio/__init__.py"
+      "repo": "boss8152060-cyber/PKT-Data",
+      "min_version": "1.4.0",
+      "tag_regex": "^v(\\d+\\.\\d+\\.\\d+)$",
+      "desc_key": "data_desc"
     },
     {
       "id": "train",
       "name": "PKT Train",
-      "path": "PKT-Train",
-      "entry": null,
-      "page": "train",
-      "version_file": null,
-      "version_changelog": "CHANGELOG.md"
+      "repo": "boss8152060-cyber/PKT-Train",
+      "min_version": "0.3.0",
+      "tag_regex": "^v(\\d+\\.\\d+\\.\\d+)$",
+      "desc_key": "train_desc"
     },
     {
       "id": "analyze",
       "name": "PKT Analyze",
-      "path": "PKT-Analyze",
-      "fallback_paths": ["PKT-Analyze/Run"],
-      "version_changelog": "CHANGELOG.md",
-      "entry": "PKStudio.py",
-      "page": "analyze",
-      "version_file": null
+      "repo": "boss8152060-cyber/PKT-Analyze",
+      "min_version": "1.47.0",
+      "tag_regex": "^PKT-(\\d+\\.\\d+\\.\\d+)$",
+      "desc_key": "analyze_desc"
     }
   ]
 }

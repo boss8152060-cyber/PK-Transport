@@ -2,7 +2,8 @@
 no .git, no models, no videos, no settings), ready to send to another PC.  The other person unzips it and double-clicks install.bat.
 
 Run from the PK-Transport folder:   py -3.12 make_portable.py            (writes dist/PK-Transport-<version>-portable.zip)
-Optional: --out <file.zip>
+Optional: --out <file.zip>   --with-modules  (also put the newest release of every module into modules/, so the other PC needs
+          no GitHub for the module files; its libraries are still downloaded by install.bat)
 """
 import argparse
 import os
@@ -61,11 +62,41 @@ def build(out_path, root=ROOT, repos=REPOS, top="PK-Transport"):
     return count, missing
 
 
+def add_modules(zip_path, top="PK-Transport"):
+    """Append the newest release of every module (downloaded from GitHub) to the zip as modules/<id>/...; returns the number of files."""
+    import shutil
+    import tempfile
+    from pkt import modman
+    tmp = tempfile.mkdtemp(prefix="pkt_portable_")
+    n = 0
+    try:
+        with zipfile.ZipFile(zip_path, "a", zipfile.ZIP_DEFLATED) as z:
+            for mod_def in modman.load_registry():
+                tags = modman.list_tags(mod_def)
+                if not tags:
+                    print(f"WARNING - no release of {mod_def['id']} found")
+                    continue
+                modman.install(tmp, mod_def, tags[0]["tag"], log=print)
+                base = os.path.join(modman.modules_dir(tmp), mod_def["id"])
+                for d, _dirs, files in os.walk(base):
+                    for name in files:
+                        full = os.path.join(d, name)
+                        rel = os.path.relpath(full, modman.modules_dir(tmp)).replace(os.sep, "/")
+                        z.write(full, f"{top}/modules/{rel}")
+                        n += 1
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return n
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=os.path.join(ROOT, "dist", f"PK-Transport-{__version__}-portable.zip"))
+    ap.add_argument("--with-modules", action="store_true", help="include the newest release of every module (needs the internet now)")
     args = ap.parse_args()
     count, missing = build(args.out)
+    if args.with_modules:
+        count += add_modules(args.out)
     size = os.path.getsize(args.out) / 1e6
     print(f"{args.out}  ({count} files, {size:.1f} MB)")
     if missing:

@@ -2,7 +2,7 @@
 
 ## สถานะ
 
-- **เวอร์ชันล่าสุด:** 1.2.0 (แอปหน้าต่างเดียว ธีมเดียวกับ PKT Data สลับภาษาไทย/อังกฤษ) — ดู `CHANGELOG.md`
+- **เวอร์ชันล่าสุด:** 2.0.0 (แอปหน้าต่างเดียว ธีมเดียวกับ PKT Data สลับภาษาไทย/อังกฤษ) — ดู `CHANGELOG.md`
 - **Remote:** `origin` = https://github.com/boss8152060-cyber/PK-Transport.git (push แล้ว: main + tag v0.1.0, v0.2.0)
 
 ## งาน
@@ -24,6 +24,7 @@
 
 | วันที่ | สิ่งที่ทำ | ไฟล์ |
 |---|---|---|
+| 2026-11-16 | **2.0.0** แอปหลัก + โมดูลแยก repo: ตัวจัดการโมดูล (`modman.py`: tag จาก GitHub API, ติดตั้ง/สลับ/ถอนแบบปลอดภัย), ปลั๊กอิน API 1, `envsetup.py`, หน้า โมดูล/host/Home ใหม่, ตัวติดตั้งเบา; ปล่อยโมดูล PKT-Data 1.4.0 / PKT-Train 0.3.0 / PKT-Analyze 1.47.0 (tag จริงบน GitHub); ทดสอบ: unit 59+ ตัว, `gui_modules.py` (49 ข้อ กับ GitHub ปลอม), `gui_app`, `gui_updates`, ชุดโมดูลจริง (`gui_real_modules`, `gui_train_module`, `test_lang_coverage`), ติดตั้งจริงจาก GitHub จริงในโฟลเดอร์ชั่วคราว + เปิดครบทุกหน้า; **ยังไม่ได้ทดสอบ: ลง torch CUDA จริงผ่านหน้าโมดูลบนเครื่องสะอาด, ติดตั้งบนเครื่องที่ไม่มี Python, การย้ายจากโฟลเดอร์ 1.x ของผู้ใช้ทุกกรณี** | `pkt/modman.py`, `pkt/plugin.py`, `pkt/envsetup.py`, `pkt/ui/`, `modules.json`, `setup.ps1`, `tests/`, เอกสาร |
 | 2026-11-16 | **1.2.0** ติดตั้งวิธีเดียว + อัปเดตได้ทั้ง ZIP และ git: `updates.check_zip` (เทียบ `__version__` กับ `pkt/__init__.py` บน GitHub) + `apply_zip` (ดาวน์โหลด main.zip คัดลอกทับ ข้ามโฟลเดอร์ของผู้ใช้ กันพาธหลุดโฟลเดอร์); ทดสอบ `test_zipupdate.py` กับเว็บเซิร์ฟเวอร์ในเครื่อง; **ยังไม่ได้ลองกดอัปเดตจริงกับ GitHub จริง** (ต้องมีเวอร์ชันใหม่กว่าบน GitHub ก่อน) | `pkt/updates.py`, `pkt/ui/app.py`, `pkt/i18n.py`, `tests/test_zipupdate.py`, README |
 | 2026-10-10 | **1.1.0** ข้อ 1 แปลข้อความ PKT Data/PKT Analyze ตามปุ่มภาษา: ตัวแปลแบบเดินวิดเจ็ต (`pkt/ui/xlate.py`) + พจนานุกรม; ซ่อม log ที่อักษรไทยหายใน `PKT-Data/.../extract_frames.py` (+ข้อความ OOM ใน tab_curator_splitter); เทสต์ unit 68 ตัว (`test_xlate.py` รวมตรวจครอบคลุมข้อความจากซอร์สจริง) + GUI test; ถ่ายภาพหน้าจอจริงไทย/อังกฤษ; **ข้อจำกัด: ค่าใน combo box ของ PKT Analyze (เช่น วิธีทำให้นิ่ง) และข้อความที่วาดบนภาพ (canvas) ไม่ถูกแปล, ข้อความที่โปรแกรมต่อสดบางแบบอาจแปลไม่ครบ (ใช้การแทนที่ชิ้นส่วน), ข้อความอังกฤษปนใน PKT Analyze (สถานะ/ข้อผิดพลาด) ยังเป็นอังกฤษในโหมดไทย; ยังไม่ได้ลองทุกหน้าต่างย่อย (วาด Line / จัดแนว / แก้โซน) ด้วยตา** | `pkt/ui/xlate.py`, `pkt/ui/lang/`, `pkt/ui/app.py`, `PKT-Data/src/pk_studio/tools/extract_frames.py`, `tests/` |
 | 2026-10-10 | **1.0.0** ขั้น 5: รวม 4 repo เป็นหนึ่ง — ทำใน clone ชั่วคราวด้วย `git merge -s ours --allow-unrelated-histories` + `git read-tree --prefix=` (ไม่แก้/ไม่ลบประวัติใด ๆ; ตรวจแล้วว่า tree ของโฟลเดอร์ตรงกับ main ของ repo เดิมทุกไฟล์ และประวัติเดิมของทั้ง 4 อยู่ในสายเดียวกัน); tag โมดูลเก็บเป็น `data/…` `train/…` `analyze/…`; repo เดิมของโมดูลเก็บบน GitHub เป็นที่เก็บถาวร | `.gitignore`, `pkt/`, `modules.json`, `setup.ps1`, `make_portable.py`, เอกสาร |

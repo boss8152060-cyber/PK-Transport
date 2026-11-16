@@ -1,6 +1,0 @@
-pyyaml
-pillow
-numpy
-opencv-python
-matplotlib
-ultralytics

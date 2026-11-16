@@ -1,59 +1,61 @@
-# CLAUDE.md — PK Transport (หน้าเปิดหลัก)
+# CLAUDE.md — PK Transport (แอปหลัก)
 
-แอปรวม **PK Transport (PKT)** = หน้าเปิดหลักของ 3 โมดูล: **PKT Data**, **PKT Train**, **PKT Analyze**
-(PKT = Pongsakorn Klaywun Transportation) ผู้ใช้เป็นคนไทย ไม่ชำนาญ git — **ตอบและอธิบายเป็นภาษาไทย**
+**PK Transport (PKT)** = แอปหลักของ 3 โมดูล: **PKT Data**, **PKT Train**, **PKT Analyze** (PKT = Pongsakorn Klaywun Transportation)
+ผู้ใช้เป็นคนไทย ไม่ชำนาญ git — **ตอบและอธิบายเป็นภาษาไทย**
 
-## โครงสร้าง
+## โครงสร้าง (ตั้งแต่ 2.0.0: แอปหลัก + โมดูลที่ติดตั้งแยก)
 
-- **git repo นี้อยู่ที่:** `F:\motorcycle group project\PSU Transport Project 2026\PK-Transport` (branch `main`)
-- **ตั้งแต่ 1.0.0 ทุกอย่างอยู่ใน repo เดียว** (https://github.com/boss8152060-cyber/PK-Transport): โมดูลเป็นโฟลเดอร์ของ repo นี้ พร้อมประวัติ git เดิมของแต่ละ repo (merge เข้ามาแบบเก็บประวัติ; tag เก่าของโมดูลเป็น `data/v1.3.9`, `train/v0.2.1`, `analyze/PKT-1.46.3` ฯลฯ):
-  - `PKT-Data/` — โค้ด PKT Data (`src/pk_studio/`), อ่านกฎของมันที่ `PKT-Data/CLAUDE.md`
-  - `PKT-Train/` — สคริปต์เทรน 3 ตัว (ห้ามแก้เกินจำเป็น: แอปแพตช์สำเนาตอนรัน)
-  - `PKT-Analyze/` — `PKStudio.py` + เอกสาร/เทสต์ของ PKT Analyze
-  - repo เดิมทั้ง 3 (PKT-Data / PKT-Train / PKT-Analyze) ยังอยู่บน GitHub เป็นที่เก็บถาวร ไม่ใช้ commit ใหม่แล้ว
-  - **กฎ commit/CHANGELOG ใน CLAUDE.md ของโมดูล (รูปแบบ `PKT-Data x.y.z` ฯลฯ) ใช้ไม่ได้แล้ว — ใช้กฎของไฟล์นี้ (`PK-Transport x.y.z`) แทน**; ส่วนกฎการแก้โค้ด/เทสต์ของโมดูลยังใช้
-  - `_backups/` สำรองเก่า (ไม่ขึ้น git)
-- โค้ดของแอปนี้: `main.py` (ตัวเปิด), `pkt/` (`modules.py` ตรรกะหาโมดูล/เวอร์ชัน/คำสั่งเปิด ไม่ผูก GUI, `ui/` หน้าต่างเดียวของแอป (theme/bind สลับภาษาสด/kit/app + pages home, module, settings, train), `train_core.py` ตรรกะ PKT Train ไม่ผูก GUI, `shared.py` สิ่งที่ใช้ร่วมกันระหว่างโมดูล (หา run ที่เทรนแล้ว, โมเดลของ PKT Analyze, `PKT_MODEL_PATH`), `updates.py` ตรวจ/อัปเดต: โฟลเดอร์ git ใช้ fetch + `pull --ff-only`; โฟลเดอร์จาก Download ZIP (ไม่มี .git) เทียบเลข `__version__` กับ GitHub แล้ว `apply_zip` (ต้อง bump `pkt/__init__.py` ทุกครั้งที่ปล่อยของใหม่ ไม่งั้นคนใช้ ZIP จะไม่เห็นอัปเดต), `shortcut.py` ทางลัดเดสก์ท็อป, `i18n.py` ข้อความไทย/อังกฤษ), `modules.json` (ที่อยู่ตั้งต้นของโมดูล), `install.bat` + `setup.ps1` (ตัวติดตั้งคลิกเดียว: Python 3.12, `.venv`, PyTorch GPU/CPU, ไลบรารี, ทางลัด — ไฟล์ .ps1 ต้องเป็น ASCII ล้วน), `make_portable.py` (ZIP พกพา), `tests/`
-- ใช้เฉพาะไลบรารีมาตรฐานของ Python (ไม่เพิ่ม dependency ภายนอกโดยไม่จำเป็น)
-- ไฟล์ของผู้ใช้ที่ไม่ขึ้น git: `pkt_settings.json` (ภาษา, โฟลเดอร์/Python ที่ผู้ใช้ตั้ง), `logs/`
+- repo นี้ https://github.com/boss8152060-cyber/PK-Transport (branch `main`) มี **เฉพาะแอปหลัก**; แต่ละโมดูลเป็น **repo ของตัวเอง** (เวอร์ชัน/tag/CHANGELOG ของตัวเอง):
+  - https://github.com/boss8152060-cyber/PKT-Data (tag `vX.Y.Z`), https://github.com/boss8152060-cyber/PKT-Train (tag `vX.Y.Z`), https://github.com/boss8152060-cyber/PKT-Analyze (tag `PKT-X.Y.Z`)
+  - ประวัติเดิมของทั้งสามอยู่ครบในแต่ละ repo (ช่วง 1.0.0–1.2.0 เคยรวมเป็น repo เดียวชั่วคราว ประวัติของช่วงนั้นอยู่ใน tag `v1.0.0`–`v1.2.0` ของ repo นี้)
+- แอปหลักโหลดโมดูลเวอร์ชันที่ผู้ใช้เลือก (ตาม git tag) มาไว้ใน `modules/<id>/` ผ่านหน้า **โมดูล**; ข้อมูลของผู้ใช้อยู่ใน `user_data/` (ไม่ถูกแตะตอนอัปเดต/ถอน/ย้อนเวอร์ชันโมดูล)
+- ไฟล์สำคัญ:
+  - `modules.json` — ทะเบียนโมดูล: `id`, `name`, `repo`, `tag_regex` (กลุ่ม 1 = เลขเวอร์ชัน), `min_version` (เวอร์ชันแรกที่เป็นโมดูลของ 2.0.0 ขึ้นไป), `desc_key`
+  - `pkt/modman.py` ตัวจัดการโมดูล (ไม่ผูก GUI; ใช้จากบรรทัดคำสั่งได้: `python -m pkt.modman list|install|update|uninstall|prepare`) — ดึง tag จาก GitHub API, ดาวน์โหลด ZIP ของ tag, ตรวจ manifest, สลับโฟลเดอร์แบบปลอดภัย (ของเก่าอยู่จนของใหม่เสร็จ), เก็บ `user_files`
+  - `pkt/plugin.py` — รูปแบบ `pkt_module.json` + API ปลั๊กอิน `pkt_plugin.py` (`PLUGIN_API = 1`) และการโหลด/ล้างโมดูลที่ import แล้ว
+  - `pkt/envsetup.py` — ลง PyTorch (CUDA ตาม nvidia-smi / CPU) + ไลบรารีของโมดูล (`pip` ในโปรแกรมที่รันอยู่ = `.venv`)
+  - `pkt/ui/app.py` — หน้าต่างหลัก + API ที่โมดูลเรียกใช้: `t`, `tr.add_texts`, `b` (TextBinder), `settings`, `save_settings`, `set_status`, `user_data_dir`, `open_path`, `python_for`, `set_analyze_model/get_analyze_model`, `show`, `notify`, `refreshers`, `status_var`, `root`, `project_root`
+  - `pkt/ui/pages/` — `home.py`, `host.py` (หน้าของโมดูลหนึ่งตัว: หน้าจริงถ้าติดตั้ง ไม่งั้นข้อความ+ปุ่มติดตั้ง), `modules.py` (หน้าจัดการ), `settings.py`
+  - `pkt/ui/xlate.py` — ตัวแปลข้อความของโมดูลที่เขียนไว้ภาษาเดียวตามปุ่มภาษา (พจนานุกรมอยู่ **ในโมดูล**: `pkt_data_lang.py`, `pkt_analyze_lang.py`)
+  - `pkt/updates.py` — อัปเดตตัวแอปหลัก: โฟลเดอร์ git ใช้ `pull --ff-only`; โฟลเดอร์จาก Download ZIP เทียบเลข `__version__` กับ GitHub แล้ว `apply_zip` (ลบไฟล์ที่เวอร์ชันใหม่ไม่มีแล้วด้วย โดยดูจาก `.pkt_files.json`) — **ต้อง bump `pkt/__init__.py` ทุกครั้งที่ปล่อย ไม่งั้นคนใช้ ZIP จะไม่เห็นอัปเดต**
+  - `install.bat` + `setup.ps1` (ตัวติดตั้งแอปหลัก เบา ไม่ลง torch; `-Modules` ลงโมดูลทันที; ไฟล์ .ps1 ต้องเป็น ASCII ล้วน), `make_portable.py` (ZIP พกพา, `--with-modules`)
+- ใช้เฉพาะไลบรารีมาตรฐานของ Python ในแอปหลัก (ไลบรารีหนักเป็นของโมดูล ลงตอนติดตั้งโมดูล)
+- ไฟล์ของผู้ใช้ที่ไม่ขึ้น git: `pkt_settings.json`, `logs/`, `modules/`, `user_data/`
 
 ## กฎของแอป
 
-- แก้โมดูลได้ใน repo นี้ (ตามกฎของโมดูลนั้นใน `PKT-*/CLAUDE.md` เรื่องโค้ด/เทสต์); PKT Data และ PKT Analyze ถูกฝังเป็นหน้าในแอป (ดู `pkt/ui/pages/data.py`, `analyze.py`) PKT Train เป็นหน้าของแอป
-- ข้อความบนหน้าจอใส่ใน `pkt/i18n.py` ทั้งไทยและอังกฤษ (key ต้องครบทั้งสองภาษา — มีเทสต์ตรวจ); **ศัพท์เฉพาะไม่แปล** (TTC, PET, LDP, Lateral Clearance, Gap Acceptance, Speed, ชื่อโมเดล YOLO26/RT-DETR/RT-DETRv2, Colab, ชื่อโมดูล) ดู `KEEP_TERMS`
-- **ข้อความใหม่ใน PKT Data / PKT Analyze ต้องเพิ่มคำแปลใน `pkt/ui/lang/data_th.py` (อังกฤษ→ไทย) / `analyze_en.py` (ไทย→อังกฤษ)** — `tests/test_xlate.py` อ่านซอร์สจริงแล้วเตือนถ้าข้อความไหนยังไม่มีคำแปล; ตัวแปลทำงานที่ `pkt/ui/xlate.py` (ไม่แตะ combo box/ช่องกรอก); ไม่ต้องแก้โค้ดหน้าจอของโมดูล
-- ธีม: ขาว-ดำ-เทาโทนเข้มเหมือน PKT Data (สีอยู่ใน `pkt/ui/theme.py`), โลโก้ = ของ PKT Data (`assets/icon.ico`) — ห้ามเปลี่ยนเป็นสีฉูดฉาด; ใช้ `TextBinder` ผูกข้อความเพื่อให้สลับภาษาสด
+- **ห้ามใส่โค้ดของโมดูลใน repo นี้** — แก้ในโมดูลนั้น ๆ (repo ของมัน) แล้วปล่อยเวอร์ชันใหม่ (tag); การเปลี่ยน API ที่โมดูลเรียกใช้ต้องคงความเข้ากันได้ย้อนหลัง หรือเพิ่ม `PLUGIN_API`/`min_shell`
+- ข้อความของแอปหลักอยู่ใน `pkt/i18n.py` ทั้งไทยและอังกฤษ (key ต้องครบทั้งสองภาษา — มีเทสต์ตรวจ); ข้อความของโมดูลอยู่ในโมดูล (`texts()` ใน `pkt_plugin.py` → `app.tr.add_texts`); **ศัพท์เฉพาะไม่แปล** (TTC, PET, LDP, Lateral Clearance, Gap Acceptance, Speed, ชื่อโมเดล YOLO26/RT-DETR/RT-DETRv2, Colab, ชื่อโมดูล) ดู `KEEP_TERMS`
+- ธีม: ขาว-ดำ-เทาโทนเข้มเหมือน PKT Data (สีใน `pkt/ui/theme.py`), โลโก้ = ของ PKT Data (`assets/icon.ico`) — ห้ามเปลี่ยนเป็นสีฉูดฉาด; ใช้ `TextBinder` ผูกข้อความให้สลับภาษาสด
 - เรียกตัวชี้วัดด้วยชื่อ ห้ามใช้รหัส Y1–Y7
-- เปลี่ยนเลย์เอาต์ต้องถ่ายภาพหน้าจอตรวจ (PIL `ImageGrab` ได้ แต่ Tk บนเครื่องนี้ไม่ DPI-aware ภาพจับอาจถูกตัด)
+- เปลี่ยนเลย์เอาต์ต้องถ่ายภาพหน้าจอตรวจ (PIL `ImageGrab`; ตั้ง `PKT_SHOT_DIR` ตอนรัน `tests/gui_modules.py` ได้ภาพหน้าหลัก ๆ; Tk บนเครื่องนี้ไม่ DPI-aware ภาพอาจถูกตัด)
 
 ## ตรวจก่อน commit ทุกครั้ง (รันจากโฟลเดอร์นี้)
 
 1. `python -m compileall -q pkt main.py`
-2. `python -m unittest discover -s tests -v` (test_modules, test_i18n, test_train_core — อ่าน/แพตช์สคริปต์จริงใน `PKT-Train` ถ้ามีอยู่ข้างกัน, test_shared, test_updates — ใช้ repo git ชั่วคราวจริง, test_shortcut — สร้าง .lnk จริงในโฟลเดอร์ชั่วคราว)
-3. `py -3.12 tests/gui_app.py` (หน้าต่างจริง + โมดูลปลอมในโฟลเดอร์ชั่วคราว: นำทาง/สลับภาษา/เปิดโมดูล/ตั้งค่า)
-4. `py -3.12 tests/gui_train.py` (หน้า PKT Train + โฟลเดอร์ PKT-Train ปลอม + สคริปต์เทรนปลอมที่รันจริงเป็น subprocess)
-5. `py -3.12 tests/gui_data.py` (PKT Data ฝังเป็นแท็บ — โหลดโค้ดจริงจาก `PKT-Data/src` ถ้ามี)
-6. `py -3.12 tests/gui_analyze.py` (PKT Analyze ฝังเป็นหน้า — โหลดโค้ดจริง ต้องมี torch/ultralytics)
-7. `py -3.12 tests/gui_updates.py` (ตรวจ/อัปเดต/ทางลัดในหน้าต่างจริงกับ repo git ชั่วคราว)
-
-- ก่อนแจก: `py -3.12 make_portable.py`; แก้ `setup.ps1` แล้วลอง `powershell -File setup.ps1 -DryRun` และติดตั้งจริงในโฟลเดอร์ชั่วคราวด้วย `-ForceCpu -NoLaunch -NoShortcuts` (อย่าติดตั้งทับ `.venv` ของโปรเจกต์โดยไม่จำเป็น)
+2. `python -m unittest discover -s tests -v` (modman/plugin/envsetup กับ GitHub ปลอม, i18n, updates กับ repo git ชั่วคราว, zip update, portable, shortcut, xlate)
+3. `py -3.12 tests/gui_modules.py` (ติดตั้ง/อัปเดต/ย้อน/ถอนโมดูลในหน้าต่างจริง กับ GitHub ปลอมในเครื่อง ไม่ใช้เน็ต/pip)
+4. `py -3.12 tests/gui_app.py`, `py -3.12 tests/gui_updates.py`
+5. ชุดที่ใช้โมดูลจริง ตั้ง `PKT_MODULES_SRC=<โฟลเดอร์ที่มี clone PKT-Data / PKT-Train / PKT-Analyze>`: `tests/gui_real_modules.py` (Data/Analyze จริง + ภาษา), `tests/gui_train_module.py` (หน้าเทรน), `python -m unittest tests.test_lang_coverage` (ทุกข้อความของโมดูลมีคำแปล)
+- แก้ `setup.ps1` แล้วลอง `powershell -File setup.ps1 -DryRun`; ก่อนแจก `py -3.12 make_portable.py`
 
 ## กฎการใช้ git
 
-หลังทำงานเสร็จและตรวจแล้ว commit + push ให้เอง (remote `origin` ของ repo นี้เท่านั้น):
+หลังทำงานเสร็จและตรวจแล้ว commit + push ให้เอง (remote `origin` ของ repo นั้นเท่านั้น) — **แต่ละ repo ใช้ชื่อ repo ของตัวเองนำหน้า**:
 
 ```
-PK-Transport <x.y.z>: <คำอธิบายสั้น ๆ_แบบ_CamelCase> [(PASS)]   # repo เดียวสำหรับทุกอย่าง
+PK-Transport <x.y.z>: <คำอธิบายสั้น ๆ_แบบ_CamelCase> [(PASS)]      (แอปหลัก, tag v<x.y.z>)
+PKT-Data <x.y.z>: ...   PKT-Train <x.y.z>: ...   PKT-Analyze <x.y.z>: ...      (โมดูล; ดู CLAUDE.md ของแต่ละ repo)
 ```
 
-- **ชื่อ repo นำหน้าเลขเวอร์ชัน เหมือนกันทุก repo ของ PK Transport** (`PK-Transport` / `PKT-Analyze` / `PKT-Data` / `PKT-Train` — รูปแบบ `<ชื่อ repo> <x.y.z>: <คำอธิบาย>`); commit เก่าที่ใช้ชื่อรูปแบบเดิมไม่แก้ (ไม่แก้ประวัติ); commit เก่าที่ขึ้นต้น `PK Transport x.y.z:` ไม่แก้
-- เพิ่มบรรทัดใน `CHANGELOG.md` + ติด tag `v<x.y.z>` + `git push` พร้อม `git push origin v<x.y.z>`
+- เพิ่มบรรทัดใน `CHANGELOG.md` + ติด tag + `git push` พร้อม `git push origin <tag>`; อัปเดต `plan.md`; bump `pkt/__init__.py` (แอปหลัก)
 - `(PASS)` เฉพาะเมื่อผู้ใช้ยืนยันแล้วว่าผ่าน; บรรทัดสุดท้ายของ message ใส่ trailer `Co-Authored-By: ...` ตามที่ระบบกำหนด
-- อัปเดต `plan.md` เมื่อทำงานเสร็จ
 - **ห้าม** `git push --force`, `git reset --hard`, `git rebase`, `git commit --amend` กับ commit ที่ push แล้ว, ลบ branch/tag/ประวัติ โดยไม่ขออนุญาต; ห้าม push ไป remote อื่น
+- ช่องคอมมิตใน CHANGELOG ที่ยังเป็น "(commit นี้)" ให้ใส่ hash จริงใน commit ถัดไป
 
 ## ข้อมูลอ้างอิง
 
-- Python 3.12 (`py -3.12`) มี torch+CUDA ใช้กับโมดูลที่ต้องใช้ GPU; แอปนี้เปิดโมดูลด้วย `py -3.12` ถ้ามี ไม่งั้นใช้ Python ปัจจุบัน (ตั้งเองได้ที่ตั้งค่า)
-- PKT Train = หน้าต่างของแอปนี้ (modules.json `page: "train"`) ไม่ใช่โปรแกรมแยก: ใส่ค่าที่เลือกลงใน **สำเนา** ของสคริปต์ (`PKT-Train/_workspace/_gui_runs/`) แล้วรันด้วย Python ที่ตั้งไว้ + ตัวแปร `PKT_*`; ห้ามแก้สคริปต์ต้นฉบับใน PKT-Train จากแอปนี้ (แก้และ commit ใน repo PKT-Train)
-- ถ้าเปลี่ยนชื่อ/รูปแบบบรรทัดค่าตั้งต้นในสคริปต์ PKT-Train (`epochs = ...`, `MODEL_SIZE = "..."`) ต้องปรับ regex ใน `train_core.py` — `test_train_core.RealScripts` จะเตือน
+- Python 3.12 (`py -3.12`); แอปนี้รันในโปรแกรมของ `.venv` (หลัง `install.bat`) โมดูลใช้ Python ตัวเดียวกัน (ตั้งคำสั่ง Python ต่อโมดูลได้ที่ตั้งค่า)
+- หน้า PKT Train อยู่ใน repo PKT-Train (`pkt_train/`): ใส่ค่าลงใน **สำเนา** ของสคริปต์ (`user_data/PKT-Train/_gui_runs/`) แล้วรัน + ตัวแปร `PKT_*`; ผลเทรนเริ่มต้นที่ `user_data/PKT-Train/Runs/<โมเดล>`
+- ตัวแปร `PKT_USER_DATA` (แอปตั้งก่อนโหลดโมดูล = `user_data/<ชื่อโมดูล>`) ให้โมดูลเก็บไฟล์ของผู้ใช้นอกโฟลเดอร์โมดูล; `PKT_MODEL_PATH` = โมเดลที่ส่งให้ PKT Analyze; `PKT_FORCE_CPU=1` = ลง PyTorch รุ่น CPU
+- โมดูลที่ผู้ใช้ชี้ "โฟลเดอร์ที่เชื่อมไว้" (สำหรับนักพัฒนา) ในตั้งค่า จะถูกใช้แทน `modules/<id>` และไม่ถูกติดตั้งทับ/ลบ

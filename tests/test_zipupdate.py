@@ -75,6 +75,23 @@ class ZipUpdate(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(os.path.dirname(root), "evil.txt")))               # a path leaving the folder is ignored
         self.assertEqual(U.check_zip(root, raw_url=self.base)["state"], "uptodate")
 
+    def test_a_file_that_was_taken_out_of_the_program_is_removed_by_the_next_update(self):
+        self.make_remote("9.9.9", extra={"old_module.py": "x", "sub/old.py": "y"})
+        root = self.make_local("1.0.0")
+        mine = os.path.join(root, "my_own_notes.txt")
+        write(mine, "keep")
+        ok, _msg = U.apply_zip(root, zip_url=self.base + "main.zip")
+        self.assertTrue(ok)
+        self.assertTrue(os.path.isfile(os.path.join(root, "sub", "old.py")))
+        self.make_remote("9.9.10")                                                                     # the next version no longer has those two files
+        ok, msg = U.apply_zip(root, zip_url=self.base + "main.zip")
+        self.assertTrue(ok, msg)
+        self.assertFalse(os.path.exists(os.path.join(root, "old_module.py")))
+        self.assertFalse(os.path.exists(os.path.join(root, "sub")))                                     # ... and the emptied folder
+        self.assertEqual(open(mine).read(), "keep")                                                     # a file the update never wrote stays
+        self.assertIn("old files removed", msg)
+        self.assertTrue(os.path.isfile(os.path.join(root, "main.py")))
+
     def test_same_version_is_up_to_date_and_unreachable_is_reported(self):
         self.make_remote("1.0.0")
         self.assertEqual(U.check_zip(self.make_local("1.0.0"), raw_url=self.base)["state"], "uptodate")

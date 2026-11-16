@@ -4,7 +4,7 @@ from tkinter import filedialog, ttk
 
 from pkt import __version__
 from pkt.i18n import LANGS, LANG_NAMES
-from pkt.modules import resolve_module
+from pkt import modman
 from pkt.ui.kit import Card, ScrollFrame, autowrap, page_header
 
 
@@ -54,9 +54,9 @@ class SettingsPage(ttk.Frame):
         r = 2
         for mod_def in app.defs:
             mid = mod_def["id"]
-            _d, info = app.info_of(mid)
-            self.folder_vars[mid] = tk.StringVar(value=info["folder"])
-            self.python_vars[mid] = tk.StringVar(value=info["python"])
+            st = app.state_of(mid)
+            self.folder_vars[mid] = tk.StringVar(value=st["folder"])
+            self.python_vars[mid] = tk.StringVar(value=((app.settings.get("modules") or {}).get(mid) or {}).get("python", ""))
             ttk.Label(c, text=mod_def["name"], style="Card.TLabel", font=("Segoe UI", 10, "bold")).grid(row=r, column=0, columnspan=3, sticky="w", pady=(14, 2))
             self.b.label(c, "module_folder", style="CardMuted.TLabel").grid(row=r + 1, column=0, sticky="w", padx=(0, 14))
             ttk.Entry(c, textvariable=self.folder_vars[mid]).grid(row=r + 1, column=1, sticky="ew", padx=(0, 8))
@@ -87,9 +87,9 @@ class SettingsPage(ttk.Frame):
         for mod_def in self.app.defs:
             mid = mod_def["id"]
             if mid in self.folder_vars:
-                info = resolve_module(mod_def, self.app.settings, self.app.project_root)
-                if self.folder_vars[mid].get() != info["folder"] and not self.focus_get():
-                    self.folder_vars[mid].set(info["folder"])
+                folder = modman.module_folder(self.app.project_root, mod_def, self.app.settings)[0]
+                if self.folder_vars[mid].get() != folder and not self.focus_get():
+                    self.folder_vars[mid].set(folder)
 
     def _browse_folder(self, mid):
         path = filedialog.askdirectory(parent=self.app.root, title=self.app.t("pick_folder", name=self.app.name_of(mid)), initialdir=self.folder_vars[mid].get() or self.app.project_root)

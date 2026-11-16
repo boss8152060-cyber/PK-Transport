@@ -20,7 +20,7 @@ REPO = "boss8152060-cyber/PK-Transport"
 RAW_URL = "https://raw.githubusercontent.com/" + REPO + "/main/"
 ZIP_URL = "https://github.com/" + REPO + "/archive/refs/heads/main.zip"
 # never overwritten by a zip update (the user's own environment, settings, results and data)
-KEEP = (".venv", "pkt_settings.json", "logs", "dist", "_backups", ".git", "__pycache__", "Runs", "_workspace", "_gui_runs", "_ort_directml")
+KEEP = (".venv", "pkt_settings.json", "logs", "dist", "_backups", ".git", "__pycache__", "modules", "user_data", "Runs", "_workspace", "_gui_runs", "_ort_directml")
 
 STATES = ("uptodate", "behind", "ahead", "diverged", "no_upstream", "no_git", "missing")
 
@@ -130,7 +130,9 @@ def check_zip(root, raw_url=RAW_URL, timeout=15):
 
 def apply_zip(root, zip_url=ZIP_URL, timeout=120):
     """Download the zip of the repository and copy its files over `root`. Returns (ok, message).
-    Only files of the repository are written (new and changed ones); nothing is deleted and KEEP folders / files are skipped."""
+    Only files of the repository are written (new and changed ones); KEEP folders / files are skipped. The list of the files written is kept
+    in .pkt_files.json: the next update removes the files that were in the previous version but are not in the new one (so a file that was
+    taken out of the program does not stay behind), and never anything that was not written by an update."""
     try:
         with urllib.request.urlopen(zip_url, timeout=timeout) as r:
             data = r.read()
@@ -143,7 +145,7 @@ def apply_zip(root, zip_url=ZIP_URL, timeout=120):
             top = names[0].split("/")[0] if names else ""
             if not top or not any(n == f"{top}/pkt/__init__.py" for n in names):
                 return False, "the downloaded file is not PK Transport"
-            written = 0
+            written = []
             for name in names:
                 rel = name[len(top) + 1:]
                 parts = [p for p in rel.split("/") if p]
@@ -155,9 +157,52 @@ def apply_zip(root, zip_url=ZIP_URL, timeout=120):
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
                 with z.open(name) as src, open(dest, "wb") as dst:
                     shutil.copyfileobj(src, dst)
-                written += 1
-        return True, f"{written} files updated"
+                written.append("/".join(parts))
+        removed = _remove_obsolete(root, written)
+        return True, f"{len(written)} files updated" + (f", {removed} old files removed" if removed else "")
     except (zipfile.BadZipFile, OSError) as exc:
         return False, str(exc)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+FILES_LIST = ".pkt_files.json"
+
+
+def _remove_obsolete(root, written):
+    """Remove what the previous zip update wrote and the new version no longer has; remember the new list. Returns how many were removed."""
+    import json
+    path = os.path.join(root, FILES_LIST)
+    old = []
+    try:
+        with open(path, encoding="utf-8") as f:
+            old = json.load(f).get("files", [])
+    except (OSError, ValueError, AttributeError):
+        pass
+    keep_now = set(written)
+    removed = 0
+    for rel in old:
+        parts = [p for p in rel.split("/") if p]
+        if rel in keep_now or not parts or ".." in parts or any(p in KEEP for p in parts):
+            continue
+        target = os.path.normpath(os.path.join(root, *parts))
+        if os.path.commonpath([os.path.abspath(target), os.path.abspath(root)]) != os.path.abspath(root):
+            continue
+        try:
+            os.remove(target)
+            removed += 1
+        except OSError:
+            continue
+        folder = os.path.dirname(target)
+        while os.path.abspath(folder) != os.path.abspath(root):             # an emptied folder goes too
+            try:
+                os.rmdir(folder)
+            except OSError:
+                break
+            folder = os.path.dirname(folder)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"files": sorted(keep_now)}, f)
+    except OSError:
+        pass
+    return removed
