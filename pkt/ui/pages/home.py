@@ -150,7 +150,7 @@ class HomePage(ttk.Frame):
                 card["chip"].configure(text="⚠ " + app.t("mod_incompatible"))
                 card["chip"].set_kind("bad")
             elif st["installed"]:
-                card["chip"].configure(text="✓ " + app.t("mod_installed_short"))
+                card["chip"].configure(text="✓ " + (st["version"] or app.t("mod_installed_short")))
                 card["chip"].set_kind("ok")
             else:
                 card["chip"].configure(text=app.t("mod_not_installed"))

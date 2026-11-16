@@ -133,6 +133,7 @@ def apply_zip(root, zip_url=ZIP_URL, timeout=120):
     Only files of the repository are written (new and changed ones); KEEP folders / files are skipped. The list of the files written is kept
     in .pkt_files.json: the next update removes the files that were in the previous version but are not in the new one (so a file that was
     taken out of the program does not stay behind), and never anything that was not written by an update."""
+    root = os.path.abspath(root)                                       # (a relative folder like "." works too)
     try:
         with urllib.request.urlopen(zip_url, timeout=timeout) as r:
             data = r.read()

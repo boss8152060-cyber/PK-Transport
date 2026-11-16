@@ -75,6 +75,18 @@ class ZipUpdate(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(os.path.dirname(root), "evil.txt")))               # a path leaving the folder is ignored
         self.assertEqual(U.check_zip(root, raw_url=self.base)["state"], "uptodate")
 
+    def test_a_relative_folder_works(self):
+        self.make_remote("9.9.9")
+        root = self.make_local("1.0.0")
+        here = os.getcwd()
+        try:
+            os.chdir(root)
+            ok, msg = U.apply_zip(".", zip_url=self.base + "main.zip")
+        finally:
+            os.chdir(here)
+        self.assertTrue(ok, msg)
+        self.assertEqual(open(os.path.join(root, "main.py")).read(), "print('new')\n")
+
     def test_a_file_that_was_taken_out_of_the_program_is_removed_by_the_next_update(self):
         self.make_remote("9.9.9", extra={"old_module.py": "x", "sub/old.py": "y"})
         root = self.make_local("1.0.0")
