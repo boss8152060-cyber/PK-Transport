@@ -110,7 +110,7 @@ class ModuleHost(ttk.Frame):
         app.xl.areas.append(self.page)
         if hasattr(self.page, "on_show"):
             self.page.on_show()
-        app.xl.sweep()
+        app.xl.sweep(full=True)                              # every tab of the module, so none shows the other language when it is opened
 
     # ---------------------------------------------------------------- what the window asks of every module
     def is_running(self):

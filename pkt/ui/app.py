@@ -115,7 +115,7 @@ class PKTApp:
         self._paint_lang_switch()
         self.b.refresh()
         self._show_app_update()
-        self.xl.sweep()                                   # the texts of the modules that were written in one language
+        self.xl.sweep(full=True)                          # the texts of the modules that were written in one language (every tab, shown or not)
 
     def save_settings(self):
         try:

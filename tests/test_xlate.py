@@ -103,6 +103,52 @@ class WidgetTest(unittest.TestCase):
         self.tr.sweep()
         self.assertEqual(str(lab.cget("text")), "บันทึก")
 
+    def test_a_text_the_program_sets_is_translated_at_once_not_at_the_next_sweep(self):
+        xlate._patch_tk()
+        xlate.Translator.active = self.tr
+        try:
+            lab = ttk.Label(self.frame, text="Save")                      # created with the original text: shown translated at once
+            lab.pack()
+            self.assertEqual(str(lab.cget("text")), "บันทึก")
+            lab.configure(text="Name")                                    # the program changes it again and again: never the other language
+            self.assertEqual(str(lab.cget("text")), "ชื่อ")
+            lab["text"] = "Ready"
+            self.assertEqual(str(lab.cget("text")), "พร้อม")
+            var = tk.StringVar(value="Save")
+            status = ttk.Label(self.frame, textvariable=var)               # a label of a text variable: what it shows now and later
+            status.pack()
+            self.assertEqual(var.get(), "บันทึก")
+            var.set("Name")
+            self.assertEqual(var.get(), "ชื่อ")
+            var.set("typed by the user")
+            self.assertEqual(var.get(), "typed by the user")
+            entry_var = tk.StringVar(value="Save")                         # an entry's variable is never touched
+            ttk.Entry(self.frame, textvariable=entry_var).pack()
+            entry_var.set("Name")
+            self.assertEqual(entry_var.get(), "Name")
+            outside = tk.Label(self.root, text="Save")                     # a widget outside the watched pages is left alone
+            self.assertEqual(str(outside.cget("text")), "Save")
+            # switching back restores the original wording
+            self.lang = "en"
+            self.tr.sweep(full=True)
+            self.assertEqual((str(lab.cget("text")), var.get()), ("Ready", "typed by the user"))
+        finally:
+            xlate.Translator.active = None
+
+    def test_a_full_sweep_reaches_the_tabs_that_are_not_shown(self):
+        nb = ttk.Notebook(self.frame)
+        nb.pack()
+        page1, page2 = ttk.Frame(nb), ttk.Frame(nb)
+        nb.add(page1, text="Name")
+        nb.add(page2, text="Save")
+        hidden = ttk.Label(page2, text="Save")
+        hidden.pack()
+        self.root.update()
+        self.tr.sweep()                                                   # the normal sweep leaves the hidden tab alone ...
+        self.assertEqual(str(hidden.cget("text")), "Save")
+        self.tr.sweep(full=True)                                          # ... the full one (language change) does not
+        self.assertEqual(str(hidden.cget("text")), "บันทึก")
+
     def test_windows_and_message_boxes(self):
         top = tk.Toplevel(self.root)
         top.title("Dialog")

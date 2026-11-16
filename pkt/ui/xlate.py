@@ -74,6 +74,7 @@ class Translator:
         self.areas = []                              # widgets whose subtree is swept while they are mapped (the program pages)
         self._pending = False
         self.installed = False
+        self.var_paths = {}                          # text variable name -> path of the label that shows it
 
     # ------------------------------------------------------------------ text
     def tr(self, text, lang=None):
@@ -103,6 +104,7 @@ class Translator:
             if isinstance(w, TEXT_WIDGETS):
                 var = str(w.cget("textvariable")) if isinstance(w, LABELS) else ""
                 if var:
+                    self.var_paths[var] = str(w)
                     self._swap((str(w), "var"), str(w.getvar(var)), lambda v, w=w, var=var: w.setvar(var, v))
                 else:
                     self._swap((str(w), "text"), str(w.cget("text")), lambda v, w=w: w.configure(text=v))
@@ -129,27 +131,29 @@ class Translator:
         values[index] = value
         tree.item(item, values=values)
 
-    def sweep(self, widget=None):
-        """Translate `widget` and everything below it that is visible (default: every registered area and every extra window)."""
+    def sweep(self, widget=None, full=False):
+        """Translate `widget` and everything below it that is visible (default: every registered area and every extra window).
+        full=True also does the pages that are hidden right now (other tabs): used when the language changes and when a page is created,
+        so that a tab shows the right language the moment it is opened."""
         if widget is not None:
-            self._walk(widget)
+            self._walk(widget, full)
             return
         for area in self.areas:
             try:
-                if area.winfo_exists() and area.winfo_ismapped():
-                    self._walk(area)
+                if area.winfo_exists() and (full or area.winfo_ismapped()):
+                    self._walk(area, full)
             except tk.TclError:
                 pass
         for child in self.root.winfo_children():
             if isinstance(child, tk.Toplevel):
-                self._walk(child)
+                self._walk(child, full)
 
-    def _walk(self, widget):
+    def _walk(self, widget, full=False):
         stack = [widget]
         while stack:
             w = stack.pop()
             try:
-                if w is not widget and not isinstance(w, tk.Toplevel) and not w.winfo_ismapped():
+                if not full and w is not widget and not isinstance(w, tk.Toplevel) and not w.winfo_ismapped():
                     continue                                              # a hidden page: translated when it is shown
             except tk.TclError:
                 continue
@@ -158,6 +162,30 @@ class Translator:
                 stack.extend(w.winfo_children())
             except tk.TclError:
                 pass
+
+    # ------------------------------------------------------------------ at the moment the program sets a text
+    def in_area(self, widget):
+        """True when `widget` is on one of the pages whose texts are translated."""
+        path = str(widget)
+        return any(path == str(a) or path.startswith(str(a) + ".") for a in self.areas)
+
+    def on_configure_text(self, widget, text):
+        """The program sets the text of a widget (many programs do it again and again): give it the translation straight away, so nothing
+        flashes in the original language until the next sweep. Returns the text to show."""
+        if not isinstance(text, str) or not self.in_area(widget):
+            return text
+        shown = self.tr(text)
+        self.memo[(str(widget), "text")] = (text, shown)
+        return shown
+
+    def on_set_variable(self, name, value):
+        """Same for a text variable of a label."""
+        path = self.var_paths.get(name)
+        if path is None or not isinstance(value, str):
+            return value
+        shown = self.tr(value)
+        self.memo[(path, "var")] = (value, shown)
+        return shown
 
     def _soon(self, _event=None):
         if not self._pending:
@@ -187,6 +215,7 @@ class Translator:
             self._wrap(messagebox, name)
         for name in ("askstring", "askinteger", "askfloat"):
             self._wrap(simpledialog, name)
+        _patch_tk()
         self.root.bind_all("<<NotebookTabChanged>>", self._soon, add="+")
         self.root.bind_all("<Map>", self._soon, add="+")
         self.root.after(SWEEP_MS, self._tick)
@@ -207,3 +236,67 @@ class Translator:
         wrapper._pkt_wrapped = True
         wrapper.__doc__ = original.__doc__
         setattr(module, name, wrapper)
+
+
+_PATCHED = False
+
+
+def _patch_tk():
+    """Make Misc.configure / widget["text"] = ... and Variable.set translate at once (only for the pages the active Translator watches)."""
+    global _PATCHED
+    if _PATCHED:
+        return
+    _PATCHED = True
+    original_configure = tk.Misc.configure
+
+    def configure(self, cnf=None, **kw):
+        tr = Translator.active
+        if tr is not None and tr.areas and tr.get_lang():
+            if isinstance(cnf, dict) and isinstance(cnf.get("text"), str):
+                cnf = dict(cnf, text=tr.on_configure_text(self, cnf["text"]))
+            elif isinstance(kw.get("text"), str):
+                kw["text"] = tr.on_configure_text(self, kw["text"])
+        return original_configure(self, cnf, **kw)
+
+    original_init = tk.BaseWidget.__init__
+
+    def init(self, master, widgetName, cnf={}, kw={}, extra=()):          # noqa: B006 (the signature of tkinter)
+        tr = Translator.active
+        text = kw.get("text") if kw.get("text") is not None else (cnf or {}).get("text")
+        shown = None
+        if tr is not None and tr.areas and isinstance(text, str) and master is not None and tr.in_area(master):
+            shown = tr.tr(text)
+            if shown != text:
+                if "text" in kw:
+                    kw = dict(kw, text=shown)
+                else:
+                    cnf = dict(cnf, text=shown)
+        original_init(self, master, widgetName, cnf, kw, extra)
+        if shown is not None:
+            tr.memo[(str(self), "text")] = (text, shown)
+        var = kw.get("textvariable") if kw.get("textvariable") is not None else (cnf or {}).get("textvariable")
+        if tr is not None and var is not None and tr.areas and isinstance(self, LABELS) and master is not None and tr.in_area(master):
+            name = str(var)                                              # a label that shows a text variable: translate what it shows now,
+            tr.var_paths[name] = str(self)                               # and (Variable.set below) whatever the program puts in it later
+            try:
+                current = str(self.getvar(name))
+                translated = tr.tr(current)
+                if translated != current:
+                    self.setvar(name, translated)
+                tr.memo[(str(self), "var")] = (current, translated)
+            except tk.TclError:
+                pass
+
+    tk.BaseWidget.__init__ = init
+    tk.Misc.configure = configure
+    tk.Misc.config = configure
+    original_set = tk.Variable.set
+
+    def set_variable(self, value):
+        tr = Translator.active
+        if tr is not None and tr.var_paths and isinstance(value, str):
+            value = tr.on_set_variable(str(self), value)
+        return original_set(self, value)
+
+    tk.Variable.set = set_variable
+    tk.StringVar.set = set_variable
